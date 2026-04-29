@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenv
+.venv/
+venv/
+
+# Build artifacts
+build/
+dist/
+
+# Benchmark database (canonical run state — should be regenerable)
+benchmark.db
+benchmark.db-journal
+benchmark.db-wal
+benchmark.db-shm
+
+# Local config overrides
+config/*.local.yaml
+.env
+.env.*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
