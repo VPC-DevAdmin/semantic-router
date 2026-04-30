@@ -54,7 +54,7 @@ validate-config:
 	$(BENCHMARK) validate-config --queries $(QUERIES)
 
 gold:
-	@echo "TODO(M2): generate gold answers via configured gold tier"
+	$(BENCHMARK) gold --db $(DB)
 
 run:
 	@echo "TODO(M3+M4): boot router subprocess, run pass1 + pass2, tear down"
