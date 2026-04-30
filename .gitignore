@@ -26,6 +26,9 @@ config/*.local.yaml
 .env
 .env.*
 
+# Runtime logs
+logs/
+
 # Editor / OS
 .DS_Store
 .idea/

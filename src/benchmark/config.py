@@ -61,6 +61,31 @@ class EndpointConfig(BaseModel):
     max_tokens: int | None = None
 
 
+class RouterProcessConfig(BaseModel):
+    """How to launch and reach the vLLM Semantic Router.
+
+    The router is a Go binary (`vllm-sr`) that exposes an apiserver (default 8080)
+    and an Envoy frontend (default 8801). We don't pass a config *into* the router
+    here — the router manages its own config — but we do tell the harness how to
+    invoke the binary and where to find its endpoints.
+    """
+
+    binary: str = "vllm-sr"
+    serve_args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    apiserver_host: str = "127.0.0.1"
+    apiserver_port: int = 8080
+    frontend_host: str = "127.0.0.1"
+    frontend_port: int = 8801
+    ready_timeout_s: int = 120
+    stop_timeout_s: int = 15
+    log_path: str | None = None  # if set, captures stdout+stderr there
+    auto_model_name: str = "auto"  # what to send as `model` to invoke routing
+    # If True, expect the binary to already be running externally; do not spawn
+    # a subprocess. Useful for CI or shared dev stacks.
+    external: bool = False
+
+
 class ScoringConfig(BaseModel):
     rubric_version: str
     scale: dict[int, str]
@@ -118,6 +143,14 @@ def load_endpoint(path: Path) -> EndpointConfig:
 
 def load_scoring(path: Path) -> ScoringConfig:
     return ScoringConfig.model_validate(_read_yaml(path))
+
+
+def load_router_process(path: Path) -> RouterProcessConfig:
+    raw = _read_yaml(path) or {}
+    # Tolerate the M0 placeholder file ({placeholder: true}) by treating it as defaults.
+    if isinstance(raw, dict) and raw.get("placeholder"):
+        raw = {}
+    return RouterProcessConfig.model_validate(raw)
 
 
 def load_queries(path: Path) -> QuerySet:

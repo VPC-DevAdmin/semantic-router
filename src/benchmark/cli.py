@@ -11,9 +11,11 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from .config import load_models, load_queries
+from .config import load_models, load_queries, load_router_process
 from .db import DEFAULT_DB_PATH, init_db
 from .gold import generate_gold
+from .router_client import RouterClient, TierLookup
+from .router_proc import RouterProcess
 from .seed import seed_from_yaml
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -23,6 +25,7 @@ DEFAULT_QUERIES = Path("data/queries.yaml")
 DEFAULT_MODELS = Path("config/models.yaml")
 DEFAULT_GOLD_CONFIG = Path("config/gold.yaml")
 DEFAULT_GOLD_DIR = Path("data/gold")
+DEFAULT_ROUTER_CONFIG = Path("config/router.yaml")
 
 
 @app.command("init-db")
@@ -77,6 +80,41 @@ def gold_cmd(
     console.print(str(report))
     if report.errors:
         raise typer.Exit(code=1)
+
+
+@app.command("router-smoke")
+def router_smoke_cmd(
+    prompt: str = typer.Argument(..., help="Prompt to send through the router."),
+    router_config: Path = typer.Option(DEFAULT_ROUTER_CONFIG, help="Path to router.yaml."),
+    models: Path = typer.Option(DEFAULT_MODELS, help="Path to models.yaml (for tier lookup)."),
+    max_tokens: int = typer.Option(64, "--max-tokens", help="Cap generation."),
+) -> None:
+    """Boot the router (or attach to an external one), send one prompt, print decision, tear down.
+
+    Use this as the M3 acceptance check. Requires `vllm-sr` installed unless
+    `external: true` is set in router.yaml.
+    """
+    cfg = load_router_process(router_config)
+    lookup = TierLookup(load_models(models))
+
+    async def _run() -> int:
+        async with RouterProcess(cfg) as _:
+            client = RouterClient(cfg, lookup)
+            result = await client.chat(prompt, max_tokens=max_tokens)
+        d = result.decision
+        console.print(f"[green]selected_model[/]: {d.selected_model}")
+        console.print(f"[green]selected_tier[/]:  {d.selected_tier}")
+        console.print(f"[green]category[/]:       {d.category}")
+        console.print(f"[green]reasoning[/]:      {d.reasoning}")
+        console.print(f"[green]cache_hit[/]:      {d.cache_hit}")
+        console.print(f"[green]latency_ms[/]:     {result.latency_ms}")
+        console.print(f"[green]tokens[/]:         "
+                      f"prompt={result.prompt_tokens} completion={result.completion_tokens}")
+        console.print()
+        console.print(f"[bold]response[/]:\n{result.content}")
+        return 0
+
+    raise typer.Exit(code=asyncio.run(_run()))
 
 
 @app.command("validate-config")
