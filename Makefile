@@ -4,7 +4,7 @@
 # Other targets remain stubs until their respective milestones (see PLAN.md).
 
 .PHONY: help setup seed gold run pass1 pass2 review judge report resume \
-        clean-results test fmt lint validate-config
+        clean-results test fmt lint validate-config router-smoke
 
 VENV := .venv
 PYTHON := $(VENV)/bin/python
@@ -21,6 +21,7 @@ help:
 	@echo "  seed             upsert data/queries.yaml into DB (idempotent)"
 	@echo "  validate-config  check config files without touching DB"
 	@echo "  gold             [M2] generate/refresh gold answers"
+	@echo "  router-smoke     [M3] boot router, send one prompt, print decision"
 	@echo "  run              [M3+M4] new run_id; pass1 + pass2"
 	@echo "  pass1            [M4] routing accuracy only (resumable)"
 	@echo "  pass2            [M4] response generation only (resumable)"
@@ -55,6 +56,12 @@ validate-config:
 
 gold:
 	$(BENCHMARK) gold --db $(DB)
+
+# Smoke test: boots router, sends PROMPT, prints decision, tears down.
+# Usage: make router-smoke PROMPT='What is 2+2?'
+PROMPT ?= What is 2+2?
+router-smoke:
+	$(BENCHMARK) router-smoke "$(PROMPT)"
 
 run:
 	@echo "TODO(M3+M4): boot router subprocess, run pass1 + pass2, tear down"

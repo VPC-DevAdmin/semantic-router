@@ -39,6 +39,12 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
+# B008: Typer's idiomatic API uses typer.Option(...) in default args.
+# SIM115: router_proc.py intentionally holds an open file handle for the
+#         subprocess lifetime; closing it in stop() is correct.
+# SIM117: combining patch() context managers reduces readability for tests
+#         where each patch documents one mocked seam.
+ignore = ["B008", "SIM115", "SIM117"]
 
 [tool.mypy]
 python_version = "3.11"
