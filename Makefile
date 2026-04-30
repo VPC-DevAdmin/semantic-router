@@ -4,7 +4,7 @@
 # Other targets remain stubs until their respective milestones (see PLAN.md).
 
 .PHONY: help setup seed gold run pass1 pass2 review judge report resume \
-        clean-results test fmt lint validate-config
+        clean-results test fmt lint validate-config router-smoke
 
 VENV := .venv
 PYTHON := $(VENV)/bin/python
@@ -21,13 +21,14 @@ help:
 	@echo "  seed             upsert data/queries.yaml into DB (idempotent)"
 	@echo "  validate-config  check config files without touching DB"
 	@echo "  gold             [M2] generate/refresh gold answers"
-	@echo "  run              [M3+M4] new run_id; pass1 + pass2"
-	@echo "  pass1            [M4] routing accuracy only (resumable)"
-	@echo "  pass2            [M4] response generation only (resumable)"
+	@echo "  router-smoke     [M3] boot router, send one prompt, print decision"
+	@echo "  run              new run_id; boot router; pass1 + pass2; tear down"
+	@echo "  pass1 [RUN=<id>] routing accuracy only (resumable)"
+	@echo "  pass2 [RUN=<id>] response generation only (resumable)"
+	@echo "  resume [RUN=<id>] resume pending/error rows; mark done if clean"
 	@echo "  review           [M5] human scoring TUI"
 	@echo "  judge            [M5] LLM-as-judge scoring"
 	@echo "  report           [M6] aggregate stats + export"
-	@echo "  resume RUN=<id>  [M4] resume a specific run"
 	@echo "  clean-results    wipe runs/results/scores; preserves queries + gold"
 	@echo "  test / fmt / lint"
 
@@ -56,14 +57,23 @@ validate-config:
 gold:
 	$(BENCHMARK) gold --db $(DB)
 
+# Smoke test: boots router, sends PROMPT, prints decision, tears down.
+# Usage: make router-smoke PROMPT='What is 2+2?'
+PROMPT ?= What is 2+2?
+router-smoke:
+	$(BENCHMARK) router-smoke "$(PROMPT)"
+
 run:
-	@echo "TODO(M3+M4): boot router subprocess, run pass1 + pass2, tear down"
+	$(BENCHMARK) run --db $(DB)
 
 pass1:
-	@echo "TODO(M4): pass 1 only (resumable)"
+	$(BENCHMARK) pass1 --db $(DB) $(if $(RUN),--run $(RUN),)
 
 pass2:
-	@echo "TODO(M4): pass 2 only (resumable)"
+	$(BENCHMARK) pass2 --db $(DB) $(if $(RUN),--run $(RUN),)
+
+resume:
+	$(BENCHMARK) resume --db $(DB) $(if $(RUN),--run $(RUN),)
 
 review:
 	@echo "TODO(M5): human scoring TUI"
@@ -74,11 +84,8 @@ judge:
 report:
 	@echo "TODO(M6): aggregate stats and export"
 
-resume:
-	@echo "TODO(M4): resume run $(RUN)"
-
 clean-results:
-	@echo "TODO(M1+): wipe runs/results/scores; preserve queries and gold"
+	$(BENCHMARK) clean-results --db $(DB)
 
 test:
 	$(VENV)/bin/pytest

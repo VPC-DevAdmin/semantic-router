@@ -46,7 +46,13 @@ def _is_tts_only(specs: list[str] | None) -> bool:
     return bool(specs) and all(s == "tts" for s in specs or [])
 
 
-def _format_gold_file(query_id: str, prompt: str, model: str, generated_at: datetime, answer: str) -> str:
+def _format_gold_file(
+    query_id: str,
+    prompt: str,
+    model: str,
+    generated_at: datetime,
+    answer: str,
+) -> str:
     return (
         f"# {query_id}\n\n"
         f"- **model**: `{model}`\n"

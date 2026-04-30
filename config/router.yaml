@@ -1,6 +1,40 @@
-# vLLM Semantic Router config — passed verbatim to the router subprocess in M3.
-# This file is intentionally a placeholder; M3 will populate it after we read the
-# router's own config schema. Do not parse this file in Python — `router_proc.py`
-# only computes its hash for run provenance.
+# How the harness launches and reaches the vLLM Semantic Router.
+#
+# This file does NOT configure the router internals — those live in the
+# router's own config (managed by `vllm-sr` itself). It tells the harness
+# which binary to spawn, what arguments to pass, and where to find the
+# router's apiserver and Envoy frontend.
+#
+# Install the router with:
+#   curl -fsSL https://vllm-semantic-router.com/install.sh | bash
 
-placeholder: true
+binary: vllm-sr
+
+# Extra args appended to `vllm-sr serve`. Common picks:
+#   - --image-pull-policy never   # use locally-built images (dev workflow)
+#   - --platform amd              # use ROCm on AMD systems
+serve_args: []
+
+# Environment variables merged into the subprocess env. Use these for HF_TOKEN
+# and any provider keys the router itself needs.
+env: {}
+#  HF_TOKEN: hf_xxx
+
+apiserver_host: 127.0.0.1
+apiserver_port: 8080            # GET /ready, /health, /api/v1/*
+
+frontend_host: 127.0.0.1
+frontend_port: 8801             # POST /v1/chat/completions (Envoy ingress)
+
+ready_timeout_s: 120
+stop_timeout_s: 15
+
+# If set, capture combined stdout+stderr to this path. Helpful for postmortems.
+log_path: logs/router.log
+
+# What the harness sends as the `model` field to invoke routing.
+auto_model_name: auto
+
+# If true, the harness assumes the router is already running externally and
+# will not spawn or stop it. Useful for shared dev stacks or CI.
+external: false

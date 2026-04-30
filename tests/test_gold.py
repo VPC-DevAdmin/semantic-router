@@ -14,7 +14,6 @@ from benchmark.gold import generate_gold
 from benchmark.seed import seed_from_yaml
 from benchmark.tiers import ChatResult
 
-
 QUERIES = """
 - id: g001
   prompt: "Easy"
