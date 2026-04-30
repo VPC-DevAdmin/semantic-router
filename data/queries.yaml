@@ -1,0 +1,139 @@
+# Curated benchmark query set.
+#
+# Each query carries the minimum tier the router should pick (`expected_min_tier`)
+# and the specialization(s) the prompt fits into. Domain knowledge — legal,
+# scientific, etc. — lives in free-form `domain_tags` (see PLAN.md for rationale).
+#
+# Tiering heuristic used here:
+#   1: trivial (greetings, lookup, single-digit arithmetic)
+#   2: simple but non-trivial (short code edits, basic word problems, translation)
+#   3: real reasoning or domain knowledge, single concept
+#   4: multi-step reasoning, formal proofs, careful synthesis
+#   5: requires frontier-level synthesis or novelty
+#
+# This 20-query starter set is deliberately broad-but-shallow so M2–M6 have
+# representative coverage. We grow toward 10k+ in M7 once the harness is proven.
+
+- id: q0001
+  prompt: "What is 7 + 5?"
+  expected_min_tier: 1
+  specializations: [general]
+  notes: trivial arithmetic
+
+- id: q0002
+  prompt: "Say hello to me in a friendly tone."
+  expected_min_tier: 1
+  specializations: [general]
+  notes: greeting
+
+- id: q0003
+  prompt: "What is the capital of France?"
+  expected_min_tier: 1
+  specializations: [general]
+  notes: factual lookup
+
+- id: q0004
+  prompt: "Translate 'Good morning, how are you?' into Spanish."
+  expected_min_tier: 2
+  specializations: [general]
+  notes: simple translation
+
+- id: q0005
+  prompt: "Convert this snippet to use a list comprehension:\n\nresult = []\nfor x in nums:\n    if x > 0:\n        result.append(x * 2)"
+  expected_min_tier: 2
+  specializations: [code]
+  notes: small idiomatic refactor
+
+- id: q0006
+  prompt: "A train leaves station A at 9:00 AM going 60 mph and a second train leaves station B at 10:00 AM going 80 mph toward station A. The stations are 300 miles apart. At what time do they meet?"
+  expected_min_tier: 2
+  specializations: [math]
+  notes: classic word problem
+
+- id: q0007
+  prompt: "Write a Python function that returns the nth Fibonacci number using memoization. Include a brief docstring."
+  expected_min_tier: 2
+  specializations: [code]
+  notes: standard algorithm with idiom
+
+- id: q0008
+  prompt: "Explain the difference between a process and a thread in an operating system, suitable for a junior engineer."
+  expected_min_tier: 3
+  specializations: [general, reasoning]
+  domain_tags: [computer-science]
+
+- id: q0009
+  prompt: "There is a Python function below that occasionally returns wrong results for inputs containing duplicates. Identify the bug and provide a corrected version.\n\ndef unique_sums(nums, target):\n    seen = set()\n    pairs = []\n    for n in nums:\n        if target - n in seen:\n            pairs.append((target - n, n))\n        seen.add(n)\n    return pairs"
+  expected_min_tier: 3
+  specializations: [code, reasoning]
+  notes: subtle correctness bug — needs reasoning, not just syntax
+
+- id: q0010
+  prompt: "Given a regression model with R^2 = 0.62 on training data and R^2 = 0.31 on held-out test data, diagnose the most likely problem and propose two concrete remedies."
+  expected_min_tier: 3
+  specializations: [reasoning, math]
+  domain_tags: [statistics, machine-learning]
+
+- id: q0011
+  prompt: "Summarize the doctrine of fair use under U.S. copyright law in roughly 150 words. Include the four statutory factors."
+  expected_min_tier: 3
+  specializations: [general, reasoning]
+  domain_tags: [legal]
+
+- id: q0012
+  prompt: "Write a short story (about 250 words) from the perspective of a lighthouse keeper who has just realized the lighthouse has been automated and they will be replaced next month."
+  expected_min_tier: 3
+  specializations: [creative]
+  notes: tone + voice; not just structural
+
+- id: q0013
+  prompt: "Prove that the square root of 2 is irrational. Use a proof by contradiction and explain each step."
+  expected_min_tier: 4
+  specializations: [math, reasoning]
+  domain_tags: [number-theory]
+
+- id: q0014
+  prompt: "You are designing a rate limiter for an API that must support both per-user and per-endpoint quotas, allow burst traffic up to 2x the steady rate for 10 seconds, and remain consistent across a fleet of 50 stateless servers. Sketch the algorithm and identify the two hardest correctness pitfalls."
+  expected_min_tier: 4
+  specializations: [reasoning, code]
+  domain_tags: [distributed-systems]
+
+- id: q0015
+  prompt: "Read the following excerpt and identify the three strongest unstated assumptions the author makes. Justify each.\n\n\"Remote work is more productive than in-office work because employees report higher satisfaction in surveys, and satisfied employees produce higher-quality output. Therefore companies that mandate office returns are sacrificing both morale and the bottom line.\""
+  expected_min_tier: 4
+  specializations: [reasoning]
+  notes: argument analysis — needs careful unpacking
+
+- id: q0016
+  prompt: "A drug shows a 15% absolute risk reduction in a Phase III trial with N=4,000 over 24 months, p<0.001. The control event rate is 30%. Compute the number-needed-to-treat, then explain three ways this NNT could mislead a patient making a treatment decision."
+  expected_min_tier: 4
+  specializations: [math, reasoning]
+  domain_tags: [medical, statistics]
+
+- id: q0017
+  prompt: "Synthesize a research agenda (5–7 directions, with concrete first experiments) for studying whether mixture-of-experts routers can be trained jointly with the experts they route to without collapse. Identify which directions are blocked on tooling versus blocked on theory."
+  expected_min_tier: 5
+  specializations: [reasoning, creative]
+  domain_tags: [machine-learning, research]
+  notes: open-ended synthesis at frontier
+
+- id: q0018
+  prompt: "Describe what is shown in this image in two sentences."
+  expected_min_tier: 3
+  specializations: [vision]
+  attachments:
+    - type: image
+      path: data/attachments/q0018.png
+  notes: vision attachment is a placeholder — file added in M2
+
+- id: q0019
+  prompt: "Read aloud the following sentence with a calm, measured tone: 'The tide pulled gently at the boats in the harbor as the fog lifted just before dawn.'"
+  expected_min_tier: 3
+  specializations: [tts]
+  notes: TTS placeholder; scoring rubric for audio is M5
+
+- id: q0020
+  prompt: "Translate the following Latin sentence to English and explain the grammatical role of each word: 'Gallia est omnis divisa in partes tres.'"
+  expected_min_tier: 3
+  specializations: [reasoning, general]
+  domain_tags: [linguistics, classics]
