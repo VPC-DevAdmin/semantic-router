@@ -1,0 +1,13 @@
+# Pass-2 scoring rubric. Bumped via rubric_version when the scale or wording
+# changes, so the `scores` table always knows which rubric a score was given under.
+rubric_version: v1
+scale:
+  1: "unusable — wrong, off-topic, or refused"
+  2: "partially correct but materially worse than gold"
+  3: "acceptable — meets the bar a user would tolerate"
+  4: "close to gold — minor gaps in completeness or polish"
+  5: "matches or exceeds gold"
+dimensions:
+  - correctness
+  - completeness
+  - style

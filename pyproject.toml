@@ -5,12 +5,23 @@ description = "Benchmark harness for the vLLM Semantic Router"
 requires-python = ">=3.11"
 readme = "README.md"
 
-# Dependencies are intentionally empty in M0; populated in M1 once the
-# DB + config layer lands.
-dependencies = []
+dependencies = [
+    "sqlalchemy>=2.0",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "typer>=0.12",
+    "rich>=13.7",
+    "httpx>=0.27",
+]
 
 [project.optional-dependencies]
-dev = []
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "types-PyYAML",
+]
 
 [project.scripts]
 benchmark = "benchmark.cli:app"
@@ -26,6 +37,14 @@ packages = ["src/benchmark"]
 line-length = 100
 target-version = "py311"
 
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
+files = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

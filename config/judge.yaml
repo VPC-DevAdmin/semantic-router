@@ -1,0 +1,9 @@
+# LLM-as-judge model — scores Pass 2 responses against the rubric.
+# Typically the same as gold, but kept separate so you can A/B different judges
+# against the same gold answers.
+endpoint: https://api.anthropic.com/v1
+model_id: claude-opus-4-7
+api_key_env: JUDGE_API_KEY
+timeout_s: 180
+temperature: 0.0
+max_tokens: 1024

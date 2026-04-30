@@ -1,0 +1,6 @@
+# vLLM Semantic Router config — passed verbatim to the router subprocess in M3.
+# This file is intentionally a placeholder; M3 will populate it after we read the
+# router's own config schema. Do not parse this file in Python — `router_proc.py`
+# only computes its hash for run provenance.
+
+placeholder: true
