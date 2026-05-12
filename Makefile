@@ -26,9 +26,9 @@ help:
 	@echo "  pass1 [RUN=<id>] routing accuracy only (resumable)"
 	@echo "  pass2 [RUN=<id>] response generation only (resumable)"
 	@echo "  resume [RUN=<id>] resume pending/error rows; mark done if clean"
-	@echo "  review           [M5] human scoring TUI"
-	@echo "  judge            [M5] LLM-as-judge scoring"
-	@echo "  report           [M6] aggregate stats + export"
+	@echo "  judge [RUN=<id>] LLM-as-judge scoring of pass-2 responses"
+	@echo "  review [RUN=<id>] [SAMPLE=N] [REVIEWER=<id>] human scoring TUI"
+	@echo "  report [RUN=<id>] [JSON=path] [CSV=path] aggregate stats + export"
 	@echo "  clean-results    wipe runs/results/scores; preserves queries + gold"
 	@echo "  test / fmt / lint"
 
@@ -83,7 +83,7 @@ judge:
 	$(BENCHMARK) judge $(if $(RUN),--run $(RUN),)
 
 report:
-	@echo "TODO(M6): aggregate stats and export"
+	$(BENCHMARK) report $(if $(RUN),--run $(RUN),) $(if $(JSON),--json $(JSON),) $(if $(CSV),--csv $(CSV),)
 
 clean-results:
 	$(BENCHMARK) clean-results --db $(DB)

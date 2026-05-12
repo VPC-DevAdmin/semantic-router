@@ -18,6 +18,7 @@ from .gold import generate_gold
 from .judge import judge_run
 from .pass1 import run_pass1
 from .pass2 import run_pass2
+from .report import compute_report, export_csv, export_json, render_console
 from .review import human_review
 from .router_client import RouterClient, TierLookup
 from .router_proc import RouterProcess
@@ -347,6 +348,25 @@ def review_cmd(
     )
     console.print(f"[bold]review[/] (run {run_id}, reviewer={reviewer})")
     console.print(str(report))
+
+
+@app.command("report")
+def report_cmd(
+    db: Path = typer.Option(DEFAULT_DB_PATH),
+    run: int | None = typer.Option(None, "--run", help="Run id (default: latest active)."),
+    json_out: Path | None = typer.Option(None, "--json", help="Write JSON to this path."),
+    csv_out: Path | None = typer.Option(None, "--csv", help="Write CSV to this path."),
+) -> None:
+    """Aggregate stats for a run. Stdout summary plus optional JSON/CSV export."""
+    run_id = _resolve_run(db, run)
+    rep = compute_report(db, run_id)
+    render_console(rep, console)
+    if json_out:
+        export_json(rep, json_out)
+        console.print(f"[green]wrote[/] {json_out}")
+    if csv_out:
+        export_csv(rep, csv_out)
+        console.print(f"[green]wrote[/] {csv_out}")
 
 
 @app.command("clean-results")
