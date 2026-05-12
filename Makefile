@@ -75,11 +75,12 @@ pass2:
 resume:
 	$(BENCHMARK) resume --db $(DB) $(if $(RUN),--run $(RUN),)
 
+REVIEWER ?= $(USER)
 review:
-	@echo "TODO(M5): human scoring TUI"
+	$(BENCHMARK) review --reviewer $(REVIEWER) $(if $(RUN),--run $(RUN),) $(if $(SAMPLE),--sample $(SAMPLE),)
 
 judge:
-	@echo "TODO(M5): LLM-as-judge scoring"
+	$(BENCHMARK) judge $(if $(RUN),--run $(RUN),)
 
 report:
 	@echo "TODO(M6): aggregate stats and export"

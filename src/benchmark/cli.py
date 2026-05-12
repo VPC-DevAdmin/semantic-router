@@ -15,8 +15,10 @@ from sqlalchemy import select
 from .config import load_models, load_queries, load_router_process
 from .db import DEFAULT_DB_PATH, Query, init_db, session_scope
 from .gold import generate_gold
+from .judge import judge_run
 from .pass1 import run_pass1
 from .pass2 import run_pass2
+from .review import human_review
 from .router_client import RouterClient, TierLookup
 from .router_proc import RouterProcess
 from .runs import (
@@ -36,6 +38,8 @@ DEFAULT_MODELS = Path("config/models.yaml")
 DEFAULT_GOLD_CONFIG = Path("config/gold.yaml")
 DEFAULT_GOLD_DIR = Path("data/gold")
 DEFAULT_ROUTER_CONFIG = Path("config/router.yaml")
+DEFAULT_JUDGE_CONFIG = Path("config/judge.yaml")
+DEFAULT_SCORING_CONFIG = Path("config/scoring.yaml")
 
 
 @app.command("init-db")
@@ -286,6 +290,63 @@ def resume_cmd(
         return 0
 
     raise typer.Exit(code=asyncio.run(_go()))
+
+
+@app.command("judge")
+def judge_cmd(
+    db: Path = typer.Option(DEFAULT_DB_PATH),
+    run: int | None = typer.Option(None, "--run", help="Run id (default: latest active)."),
+    judge_config: Path = typer.Option(DEFAULT_JUDGE_CONFIG),
+    scoring_config: Path = typer.Option(DEFAULT_SCORING_CONFIG),
+    concurrency: int = typer.Option(4, "--concurrency"),
+) -> None:
+    """LLM-as-judge scoring of pass-2 responses against gold."""
+    run_id = _resolve_run(db, run)
+    report = asyncio.run(
+        judge_run(
+            db_path=db,
+            run_id=run_id,
+            judge_config_path=judge_config,
+            scoring_config_path=scoring_config,
+            concurrency=concurrency,
+        )
+    )
+    console.print(f"[bold]judge[/] (run {run_id})")
+    console.print(str(report))
+    if report.parse_errors or report.other_errors:
+        raise typer.Exit(code=1)
+
+
+@app.command("review")
+def review_cmd(
+    reviewer: str = typer.Option(..., "--reviewer", help="Reviewer id (e.g. your username)."),
+    db: Path = typer.Option(DEFAULT_DB_PATH),
+    run: int | None = typer.Option(None, "--run"),
+    scoring_config: Path = typer.Option(DEFAULT_SCORING_CONFIG),
+    sample: int | None = typer.Option(
+        None, "--sample", help="Stratified sample size; omit to review all."
+    ),
+    by: str | None = typer.Option(
+        None, "--by",
+        help="Sampling stratum: 'specialization' (default when --sample is set).",
+    ),
+    seed: int = typer.Option(0, "--seed", help="Sampling seed for reproducibility."),
+) -> None:
+    """Interactive human scoring TUI. Resumable per reviewer."""
+    run_id = _resolve_run(db, run)
+    if sample is not None and by is None:
+        by = "specialization"
+    report = human_review(
+        db_path=db,
+        run_id=run_id,
+        reviewer_id=reviewer,
+        scoring_config_path=scoring_config,
+        sample=sample,
+        by=by,
+        seed=seed,
+    )
+    console.print(f"[bold]review[/] (run {run_id}, reviewer={reviewer})")
+    console.print(str(report))
 
 
 @app.command("clean-results")
