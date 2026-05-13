@@ -29,6 +29,12 @@ config/*.local.yaml
 # Runtime logs
 logs/
 
+# vllm-sr's auto-generated artifacts in the project root.
+# Our routing config lives at config/vllm-sr.yaml and is passed via
+# `vllm-sr serve --config`; the launcher may still leave its own files behind.
+/config.yaml
+/.vllm-sr/
+
 # Editor / OS
 .DS_Store
 .idea/

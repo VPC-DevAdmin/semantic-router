@@ -10,7 +10,7 @@
 #   make report         # aggregate stats; pass JSON=path or CSV=path to export
 
 .PHONY: help setup install-router load route answer resume judge review report \
-        clean-results router-smoke test fmt lint
+        clean-results router-smoke router-stop test fmt lint
 
 VENV := .venv
 PYTHON := $(VENV)/bin/python
@@ -32,6 +32,7 @@ help:
 	@echo "  report [RUN=<id>] [JSON=<path>] [CSV=<path>]"
 	@echo "  clean-results            wipe runs/results/scores; preserves queries"
 	@echo "  router-smoke PROMPT='...'  diagnostic: one query through the router"
+	@echo "  router-stop              tear down the vllm-sr Docker stack"
 	@echo "  test / fmt / lint"
 
 # ---- one-time setup ----
@@ -116,6 +117,12 @@ clean-results:
 PROMPT ?= What is 2+2?
 router-smoke:
 	$(BENCHMARK) router-smoke "$(PROMPT)"
+
+# Tear down the vllm-sr Docker stack. Useful when the router got into a bad
+# state (e.g. setup-mode bootstrap) and you want a clean slate before
+# `make route` re-launches it with the checked-in config.
+router-stop:
+	vllm-sr stop
 
 test:
 	$(VENV)/bin/pytest

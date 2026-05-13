@@ -1,0 +1,237 @@
+# vLLM Semantic Router internal config — passed via `vllm-sr serve --config`.
+#
+# This file is the router's own configuration: what listeners it exposes,
+# what models are available as backends, and what routing rules apply.
+# Our benchmark harness reads `config/router.yaml` for process management,
+# and reads `config/models.yaml` to map router-selected model names back to
+# numeric tiers. The three files have to stay in sync on the `model_id` /
+# model name strings.
+#
+# This starter config:
+#   - declares 5 tier models (tier1..tier5)
+#   - points every backend at the bundled simulator (vllm-sr-sim, host port 8810)
+#     so we can validate routing without any real LLM cost
+#   - uses simple keyword signals to differentiate routing decisions
+#
+# Once we have real backends (CPU models on a dedicated server, Anthropic API
+# for tier4/5), update `backend_refs.endpoint` per model.
+
+version: v0.3
+
+listeners:
+  - name: http-8899
+    address: 0.0.0.0
+    port: 8899
+    timeout: 300s
+
+providers:
+  defaults:
+    default_model: tier1
+  models:
+    - name: tier1
+      provider_model_id: tier1
+      api_format: openai
+      backend_refs:
+        - name: sim
+          endpoint: host.docker.internal:8810
+          protocol: http
+          weight: 100
+
+    - name: tier2
+      provider_model_id: tier2
+      api_format: openai
+      backend_refs:
+        - name: sim
+          endpoint: host.docker.internal:8810
+          protocol: http
+          weight: 100
+
+    - name: tier3
+      provider_model_id: tier3
+      api_format: openai
+      backend_refs:
+        - name: sim
+          endpoint: host.docker.internal:8810
+          protocol: http
+          weight: 100
+
+    - name: tier4
+      provider_model_id: tier4
+      api_format: openai
+      backend_refs:
+        - name: sim
+          endpoint: host.docker.internal:8810
+          protocol: http
+          weight: 100
+
+    - name: tier5
+      provider_model_id: tier5
+      api_format: openai
+      backend_refs:
+        - name: sim
+          endpoint: host.docker.internal:8810
+          protocol: http
+          weight: 100
+
+routing:
+  modelCards:
+    - name: tier1
+      modality: text
+      quality_score: 0.50
+      description: Tier 1 — tiny model, trivial queries.
+    - name: tier2
+      modality: text
+      quality_score: 0.65
+      description: Tier 2 — small model, simple coding and translation.
+    - name: tier3
+      modality: text
+      quality_score: 0.80
+      description: Tier 3 — mid-size model, substantive reasoning and code.
+    - name: tier4
+      modality: text
+      quality_score: 0.90
+      description: Tier 4 — large model, multi-step reasoning and synthesis.
+    - name: tier5
+      modality: text
+      quality_score: 0.98
+      description: Tier 5 — frontier model, novel synthesis and judgment.
+
+  signals:
+    keywords:
+      - name: coding_keywords
+        operator: OR
+        method: bm25
+        keywords:
+          - function
+          - python
+          - javascript
+          - typescript
+          - algorithm
+          - debug
+          - refactor
+          - implement
+          - regex
+          - SQL
+          - API
+          - class
+          - method
+        case_sensitive: false
+        bm25_threshold: 0.1
+
+      - name: complex_reasoning_keywords
+        operator: OR
+        method: bm25
+        keywords:
+          - analyze
+          - evaluate
+          - discuss
+          - compare
+          - design
+          - architect
+          - tradeoff
+          - tradeoffs
+          - critique
+          - synthesize
+          - propose
+        case_sensitive: false
+        bm25_threshold: 0.1
+
+      - name: creative_writing_keywords
+        operator: OR
+        method: bm25
+        keywords:
+          - story
+          - poem
+          - creative
+          - imagine
+          - narrative
+          - write a
+          - draft a
+        case_sensitive: false
+        bm25_threshold: 0.1
+
+  # Decisions are evaluated in priority order (highest first); the first match
+  # wins. A query that doesn't match any keyword-bearing decision falls through
+  # to the default at priority 10.
+  decisions:
+    - name: tier4-complex
+      description: Multi-step analytical queries route to tier 4.
+      priority: 90
+      rules:
+        operator: AND
+        conditions:
+          - type: keyword
+            name: complex_reasoning_keywords
+      modelRefs:
+        - model: tier4
+          use_reasoning: false
+
+    - name: tier3-coding
+      description: Coding tasks route to tier 3.
+      priority: 80
+      rules:
+        operator: AND
+        conditions:
+          - type: keyword
+            name: coding_keywords
+      modelRefs:
+        - model: tier3
+          use_reasoning: false
+
+    - name: tier3-creative
+      description: Creative writing routes to tier 3.
+      priority: 70
+      rules:
+        operator: AND
+        conditions:
+          - type: keyword
+            name: creative_writing_keywords
+      modelRefs:
+        - model: tier3
+          use_reasoning: false
+
+    - name: default-tier1
+      description: Fallback — trivial queries go to tier 1.
+      priority: 10
+      rules:
+        operator: AND
+        conditions: []
+      modelRefs:
+        - model: tier1
+          use_reasoning: false
+
+global:
+  stores:
+    semantic_cache:
+      enabled: false
+  model_catalog:
+    embeddings:
+      semantic:
+        mmbert_model_path: ""
+        qwen3_model_path: ""
+        gemma_model_path: ""
+        bert_model_path: ""
+        multimodal_model_path: ""
+    modules:
+      prompt_guard:
+        enabled: false
+        model_ref: ""
+        model_id: ""
+        jailbreak_mapping_path: ""
+        use_mmbert_32k: false
+      classifier:
+        domain:
+          model_ref: ""
+          model_id: ""
+          category_mapping_path: ""
+          use_mmbert_32k: false
+        pii:
+          model_ref: ""
+          model_id: ""
+          pii_mapping_path: ""
+          use_mmbert_32k: false
+      feedback_detector:
+        enabled: false
+        model_ref: ""
+        model_id: ""
+        use_mmbert_32k: false

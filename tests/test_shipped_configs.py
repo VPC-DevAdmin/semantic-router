@@ -52,3 +52,31 @@ def test_queries_json_parses() -> None:
     q = load_queries(ROOT / "data" / "queries.json")
     assert len(q.queries) >= 100
     assert all(qq.expected_answer for qq in q.queries), "every shipped query should have gold"
+
+
+def test_vllm_sr_config_parses_as_yaml() -> None:
+    """Smoke check that config/vllm-sr.yaml is valid YAML with the expected
+    top-level structure. The router itself will validate its schema; here we
+    just guard against typos and ensure the model names line up with
+    models.yaml model_ids — that alignment is what makes TierLookup work."""
+    import yaml
+
+    path = ROOT / "config" / "vllm-sr.yaml"
+    with path.open() as f:
+        cfg = yaml.safe_load(f)
+
+    # Top-level structure the router expects.
+    for key in ("version", "listeners", "providers", "routing"):
+        assert key in cfg, f"vllm-sr.yaml missing top-level key {key!r}"
+
+    router_model_names = {m["name"] for m in cfg["providers"]["models"]}
+    harness_model_ids = {t.model_id for t in load_models(ROOT / "config" / "models.yaml").tiers}
+
+    # Every router-declared model must have a corresponding entry in models.yaml
+    # so TierLookup can translate the `x-vsr-selected-model` header back to a
+    # numeric tier. Drift here is the most common config bug.
+    missing = router_model_names - harness_model_ids
+    assert not missing, (
+        f"router declares models {sorted(missing)} that have no entry in "
+        f"config/models.yaml; add them or rename so TierLookup works"
+    )

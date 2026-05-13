@@ -13,7 +13,13 @@ binary: vllm-sr
 # Extra args appended to `vllm-sr serve`. Common picks:
 #   - --image-pull-policy never   # use locally-built images (dev workflow)
 #   - --platform amd              # use ROCm on AMD systems
-serve_args: []
+#   - --minimal                   # skip dashboard + observability for faster startup
+# We always pass --config so vllm-sr loads our checked-in routing config
+# instead of its auto-generated setup-mode default.
+serve_args:
+  - --config
+  - config/vllm-sr.yaml
+  - --minimal
 
 # Environment variables merged into the subprocess env. Use these for HF_TOKEN
 # and any provider keys the router itself needs.
