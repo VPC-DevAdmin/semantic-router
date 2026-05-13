@@ -24,7 +24,7 @@ from typing import Any
 
 import httpx
 
-from .config import Attachment, EndpointConfig, TierConfig
+from .config import Attachment, TierConfig
 
 
 @dataclass
@@ -162,13 +162,4 @@ def client_from_tier(tier: TierConfig) -> OAIClient:
         model_id=tier.model_id,
         api_key=_resolve_api_key(tier.api_key_env),
         timeout_s=float(tier.timeout_s),
-    )
-
-
-def client_from_endpoint(cfg: EndpointConfig) -> OAIClient:
-    return OAIClient(
-        endpoint=cfg.endpoint,
-        model_id=cfg.model_id,
-        api_key=_resolve_api_key(cfg.api_key_env),
-        timeout_s=float(cfg.timeout_s),
     )

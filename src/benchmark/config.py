@@ -2,8 +2,6 @@
 
 Configs validated here:
   - models.yaml    : tier endpoints (OAI-compatible)
-  - judge.yaml     : LLM-as-judge endpoint
-  - scoring.yaml   : rubric and score scale
   - router.yaml    : process-management config for the router subprocess
   - queries.json   : curated query set with embedded gold answers
 
@@ -61,17 +59,6 @@ class ModelsConfig(BaseModel):
         raise KeyError(f"no tier named {name!r}")
 
 
-class EndpointConfig(BaseModel):
-    """Shape shared by gold.yaml and judge.yaml."""
-
-    endpoint: str
-    model_id: str
-    api_key_env: str | None = None
-    timeout_s: int = 120
-    temperature: float = 0.0
-    max_tokens: int | None = None
-
-
 class RouterProcessConfig(BaseModel):
     """How to launch and reach the vLLM Semantic Router.
 
@@ -101,19 +88,6 @@ class RouterProcessConfig(BaseModel):
     # harness exits. Default False: leave the stack running so repeat
     # benchmark runs don't pay the multi-second cold-start cost.
     stop_on_exit: bool = False
-
-
-class ScoringConfig(BaseModel):
-    rubric_version: str
-    scale: dict[int, str]
-    dimensions: list[str] = Field(default_factory=list)
-
-    @field_validator("scale")
-    @classmethod
-    def _check_scale(cls, v: dict[int, str]) -> dict[int, str]:
-        if sorted(v.keys()) != list(range(1, len(v) + 1)) or len(v) < 3:
-            raise ValueError("scale must be a 1..N dict with N>=3")
-        return v
 
 
 class Attachment(BaseModel):
@@ -153,14 +127,6 @@ def _read_yaml(path: Path) -> Any:
 
 def load_models(path: Path) -> ModelsConfig:
     return ModelsConfig.model_validate(_read_yaml(path))
-
-
-def load_endpoint(path: Path) -> EndpointConfig:
-    return EndpointConfig.model_validate(_read_yaml(path))
-
-
-def load_scoring(path: Path) -> ScoringConfig:
-    return ScoringConfig.model_validate(_read_yaml(path))
 
 
 def load_router_process(path: Path) -> RouterProcessConfig:

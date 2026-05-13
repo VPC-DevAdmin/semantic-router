@@ -1,7 +1,7 @@
-"""Pass 1 + Pass 2 tests with a fake RouterClient.
+"""Pass 1 (routing decision) tests with a fake RouterClient.
 
-The real RouterClient is exercised in test_router_client.py; here we focus on
-per-pass logic: tier comparison, spec match, status transitions, resume
+The real RouterClient is exercised in test_router_client.py; here we focus
+on per-pass logic: tier comparison, spec match, status transitions, resume
 semantics, error isolation.
 """
 from __future__ import annotations
@@ -12,9 +12,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from benchmark.db import Pass1Result, Pass2Result, session_scope
+from benchmark.db import Pass1Result, session_scope
 from benchmark.pass1 import run_pass1
-from benchmark.pass2 import run_pass2
 from benchmark.router_client import RouterResult, RoutingDecision
 from benchmark.runs import create_run, seed_pending
 
@@ -63,10 +62,8 @@ class _FakeClient:
         raise AssertionError(f"no fake response for: {prompt!r}")
 
 
-# ---- Pass 1 ----
-
 @pytest.mark.asyncio
-async def test_pass1_meets_and_misses_min_tier(tmp_path: Path) -> None:
+async def test_meets_and_misses_min_tier(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)
     client = _FakeClient(
         responses={
@@ -89,7 +86,7 @@ async def test_pass1_meets_and_misses_min_tier(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_pass1_specialization_match(tmp_path: Path) -> None:
+async def test_specialization_match(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)
     client = _FakeClient(
         responses={
@@ -107,7 +104,7 @@ async def test_pass1_specialization_match(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_pass1_unknown_tier(tmp_path: Path) -> None:
+async def test_unknown_tier(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)
     client = _FakeClient(
         responses={
@@ -127,7 +124,7 @@ async def test_pass1_unknown_tier(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_pass1_error_isolation(tmp_path: Path) -> None:
+async def test_error_isolation(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)
     client = _FakeClient(
         responses={
@@ -144,7 +141,7 @@ async def test_pass1_error_isolation(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_pass1_resume_skips_success_rows(tmp_path: Path) -> None:
+async def test_resume_skips_success_rows(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)
     client = _FakeClient(
         responses={
@@ -163,44 +160,3 @@ async def test_pass1_resume_skips_success_rows(tmp_path: Path) -> None:
     with session_scope(db) as s:
         rows = {r.query_id: r for r in s.execute(select(Pass1Result)).scalars()}
         assert all(r.status == "success" for r in rows.values())
-
-
-# ---- Pass 2 ----
-
-@pytest.mark.asyncio
-async def test_pass2_persists_response(tmp_path: Path) -> None:
-    db, rid = _bootstrap(tmp_path)
-    client = _FakeClient(
-        responses={
-            "easy":      ("model-x", 1, ["general"], "the answer"),
-            "hard math": ("model-y", 4, ["math"], "proof"),
-            "coder":     ("model-z", 2, ["coding"], "code answer"),
-        }
-    )
-    report = await run_pass2(db, rid, router_client=client, max_tokens=512)
-    assert report.succeeded == 3
-    with session_scope(db) as s:
-        rows = {r.query_id: r for r in s.execute(select(Pass2Result)).scalars()}
-        assert rows["q1"].response_text == "the answer"
-        assert rows["q1"].latency_ms == 42
-        assert rows["q1"].status == "success"
-
-
-@pytest.mark.asyncio
-async def test_pass2_resume_skips_success(tmp_path: Path) -> None:
-    db, rid = _bootstrap(tmp_path)
-    bad = _FakeClient(
-        responses={
-            "easy":      ("m", 1, ["general"], "ok"),
-            "coder":     ("m", 2, ["coding"], "ok"),
-            "hard math": ("m", 4, ["math"], "ok"),
-        },
-        error_substr="hard math",
-    )
-    await run_pass2(db, rid, router_client=bad)
-    happy = _FakeClient(responses={"hard math": ("m", 4, ["math"], "fixed")})
-    report = await run_pass2(db, rid, router_client=happy)
-    assert report.attempted == 1
-    with session_scope(db) as s:
-        q2 = s.execute(select(Pass2Result).where(Pass2Result.query_id == "q2")).scalar_one()
-        assert q2.response_text == "fixed"

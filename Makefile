@@ -1,15 +1,13 @@
-# Semantic Router Benchmark Harness
+# Semantic Routing Demo — Makefile
 #
-# Workflow:
-#   make setup          # one-time: venv, deps, empty DB
-#   make load           # load data/queries.json into DB (idempotent)
-#   make route          # send queries through the router, capture routing decisions
-#   make answer         # send queries through the router for full LLM responses
-#   make judge          # LLM-as-judge scoring against gold
-#   make review REVIEWER=alice   # human scoring TUI
-#   make report         # aggregate stats; pass JSON=path or CSV=path to export
+# Production-pass workflow:
+#   make setup        # one-time: venv, deps, DB, vllm-sr binary
+#   make load         # data/queries.json → DB (idempotent)
+#   make route        # for each query: ask the router which tier it picks
+#   make answers      # for each query × tier: collect that tier's response  [TODO]
+#   make export       # emit demo.json from the DB                            [TODO]
 
-.PHONY: help setup install-router load route answer resume judge review report \
+.PHONY: help setup install-router load route answers export resume \
         clean-results router-smoke router-stop test fmt lint
 
 VENV := .venv
@@ -24,13 +22,11 @@ help:
 	@echo "  setup                    venv + deps + init DB + install vllm-sr (if missing)"
 	@echo "  install-router           install the vllm-sr binary (idempotent)"
 	@echo "  load                     load data/queries.json into DB (idempotent)"
-	@echo "  route                    pass 1: routing decisions (no LLM generation)"
-	@echo "  answer [RUN=<id>]        pass 2: full LLM responses (resumable)"
+	@echo "  route                    for each query: capture the router's tier pick"
+	@echo "  answers [RUN=<id>]       [TODO] for each query × tier: capture that tier's response"
+	@echo "  export [RUN=<id>]        [TODO] write demo.json from DB"
 	@echo "  resume [RUN=<id>]        re-run pending/error rows; mark done if clean"
-	@echo "  judge [RUN=<id>]         LLM-as-judge scoring of answers"
-	@echo "  review REVIEWER=<id>     human scoring TUI"
-	@echo "  report [RUN=<id>] [JSON=<path>] [CSV=<path>]"
-	@echo "  clean-results            wipe runs/results/scores; preserves queries"
+	@echo "  clean-results            wipe runs/results; preserves queries + gold"
 	@echo "  router-smoke PROMPT='...'  diagnostic: one query through the router"
 	@echo "  router-stop              tear down the vllm-sr Docker stack"
 	@echo "  test / fmt / lint"
@@ -84,30 +80,22 @@ endif
 load:
 	$(BENCHMARK) load --db $(DB)
 
-# ---- benchmark passes ----
+# ---- production pass ----
 
 route:
 	$(BENCHMARK) route --db $(DB)
 
-answer:
-	$(BENCHMARK) answer --db $(DB) $(if $(RUN),--run $(RUN),)
+# `answers` and `export` not yet wired through the CLI; see PLAN.md §13.
+answers:
+	@echo "TODO: make answers — hit each tier endpoint per query. See PLAN.md §13."
+	@exit 1
+
+export:
+	@echo "TODO: make export — emit demo.json from DB. See PLAN.md §13."
+	@exit 1
 
 resume:
 	$(BENCHMARK) resume --db $(DB) $(if $(RUN),--run $(RUN),)
-
-# ---- scoring ----
-
-REVIEWER ?= $(USER)
-judge:
-	$(BENCHMARK) judge $(if $(RUN),--run $(RUN),)
-
-review:
-	$(BENCHMARK) review --reviewer $(REVIEWER) $(if $(RUN),--run $(RUN),) $(if $(SAMPLE),--sample $(SAMPLE),)
-
-# ---- reporting ----
-
-report:
-	$(BENCHMARK) report $(if $(RUN),--run $(RUN),) $(if $(JSON),--json $(JSON),) $(if $(CSV),--csv $(CSV),)
 
 # ---- utility ----
 

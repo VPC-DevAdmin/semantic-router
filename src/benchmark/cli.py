@@ -4,13 +4,11 @@ Surface (one command per make target):
 
   init-db        create the SQLite schema
   load           upsert data/queries.json into the DB (gold from `expected_answer`)
-  route          pass 1: send each query through the router, capture routing decision
-  answer         pass 2: send each query through the router for full LLM responses
-  resume         continue an in-progress run (route + answer over pending/error rows)
-  judge          LLM-as-judge scoring of `answer` responses
-  review         human scoring TUI
-  report         aggregate stats + JSON/CSV export
-  clean-results  wipe runs/results/scores; preserves queries and gold
+  route          for each query: send through router, capture routing decision
+  answers        for each query × each tier: call the tier backend directly (TODO)
+  export         emit demo.json from the DB (TODO)
+  resume         continue an in-progress run over pending/error rows
+  clean-results  wipe runs/results; preserves queries and gold
   router-smoke   one-shot routing diagnostic
 """
 from __future__ import annotations
@@ -20,16 +18,11 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
-from sqlalchemy import select
 
 from .config import load_models, load_router_process
-from .db import DEFAULT_DB_PATH, Query, init_db, session_scope
-from .judge import judge_run
+from .db import DEFAULT_DB_PATH, init_db
 from .load import load_into_db
 from .pass1 import run_pass1
-from .pass2 import run_pass2
-from .report import compute_report, export_csv, export_json, render_console
-from .review import human_review
 from .router_client import RouterClient, TierLookup
 from .router_proc import RouterProcess
 from .runs import (
@@ -46,8 +39,6 @@ console = Console()
 DEFAULT_QUERIES = Path("data/queries.json")
 DEFAULT_MODELS = Path("config/models.yaml")
 DEFAULT_ROUTER_CONFIG = Path("config/router.yaml")
-DEFAULT_JUDGE_CONFIG = Path("config/judge.yaml")
-DEFAULT_SCORING_CONFIG = Path("config/scoring.yaml")
 
 
 # ---------- DB / data ----------
@@ -75,18 +66,7 @@ def load_cmd(
     console.print(str(report))
 
 
-# ---------- Helpers shared by route/answer/resume ----------
-
-def _tts_only_query_ids(db: Path) -> set[str]:
-    """Queries whose specializations are exclusively `tts`. Skipped from `answer`."""
-    out: set[str] = set()
-    with session_scope(db) as session:
-        for q in session.execute(select(Query)).scalars():
-            specs = list(q.specializations or [])
-            if specs and all(s == "tts" for s in specs):
-                out.add(q.query_id)
-    return out
-
+# ---------- Helpers shared by route/resume ----------
 
 def _resolve_run(db: Path, run: int | None) -> int:
     if run is not None:
@@ -110,8 +90,7 @@ def _ensure_run(
     rid = create_run(
         db, router_config_path=router_config, models_config_path=models, notes=notes
     )
-    skip = _tts_only_query_ids(db)
-    seed_pending(db, rid, only=only, skip_query_ids=skip)
+    seed_pending(db, rid, only=only)
     return rid
 
 
@@ -153,37 +132,6 @@ def route_cmd(
     raise typer.Exit(code=asyncio.run(_go()))
 
 
-@app.command("answer")
-def answer_cmd(
-    db: Path = typer.Option(DEFAULT_DB_PATH),
-    router_config: Path = typer.Option(DEFAULT_ROUTER_CONFIG),
-    models: Path = typer.Option(DEFAULT_MODELS),
-    run: int | None = typer.Option(None, "--run", help="Run id (default: latest active)."),
-    concurrency: int = typer.Option(8, "--concurrency"),
-    max_tokens: int = typer.Option(2048, "--max-tokens"),
-) -> None:
-    """Pass 2: send each query through the router for the full LLM response.
-
-    The routing decision is captured again (cheap) but the focus is the
-    response text. Resumable.
-    """
-    rid = _resolve_run(db, run)
-    proc_cfg = load_router_process(router_config)
-    lookup = TierLookup(load_models(models))
-
-    async def _go() -> int:
-        async with RouterProcess(proc_cfg):
-            client = RouterClient(proc_cfg, lookup)
-            report = await run_pass2(
-                db, rid, router_client=client, concurrency=concurrency, max_tokens=max_tokens
-            )
-        console.print(f"[green]answer[/] run={rid}")
-        console.print(str(report))
-        return 0
-
-    raise typer.Exit(code=asyncio.run(_go()))
-
-
 @app.command("resume")
 def resume_cmd(
     db: Path = typer.Option(DEFAULT_DB_PATH),
@@ -191,9 +139,13 @@ def resume_cmd(
     models: Path = typer.Option(DEFAULT_MODELS),
     run: int | None = typer.Option(None, "--run"),
     concurrency: int = typer.Option(8, "--concurrency"),
-    answer_max_tokens: int = typer.Option(2048, "--answer-max-tokens"),
 ) -> None:
-    """Resume a run: re-process pending/error rows for route then answer; mark done if clean."""
+    """Resume a run: re-process pending/error route rows; mark done if clean.
+
+    Currently only resumes `make route` (pass 1). `make answers` (per-tier
+    response collection) is not yet implemented; once it lands this command
+    will also resume that pass.
+    """
     rid = _resolve_run(db, run)
     proc_cfg = load_router_process(router_config)
     lookup = TierLookup(load_models(models))
@@ -204,13 +156,7 @@ def resume_cmd(
             r1 = await run_pass1(db, rid, router_client=client, concurrency=concurrency)
             console.print("[bold]route[/]")
             console.print(str(r1))
-            r2 = await run_pass2(
-                db, rid, router_client=client,
-                concurrency=concurrency, max_tokens=answer_max_tokens,
-            )
-            console.print("[bold]answer[/]")
-            console.print(str(r2))
-        if r1.errors == 0 and r2.errors == 0:
+        if r1.errors == 0:
             mark_finished(db, rid, status="done")
             console.print(f"[green]run[/] {rid} finished")
         else:
@@ -220,75 +166,6 @@ def resume_cmd(
     raise typer.Exit(code=asyncio.run(_go()))
 
 
-# ---------- Scoring ----------
-
-@app.command("judge")
-def judge_cmd(
-    db: Path = typer.Option(DEFAULT_DB_PATH),
-    run: int | None = typer.Option(None, "--run"),
-    judge_config: Path = typer.Option(DEFAULT_JUDGE_CONFIG),
-    scoring_config: Path = typer.Option(DEFAULT_SCORING_CONFIG),
-    concurrency: int = typer.Option(4, "--concurrency"),
-) -> None:
-    """LLM-as-judge scoring of `answer` responses against gold."""
-    rid = _resolve_run(db, run)
-    report = asyncio.run(
-        judge_run(
-            db_path=db, run_id=rid,
-            judge_config_path=judge_config,
-            scoring_config_path=scoring_config,
-            concurrency=concurrency,
-        )
-    )
-    console.print(f"[bold]judge[/] (run {rid})")
-    console.print(str(report))
-    if report.parse_errors or report.other_errors:
-        raise typer.Exit(code=1)
-
-
-@app.command("review")
-def review_cmd(
-    reviewer: str = typer.Option(..., "--reviewer", help="Reviewer id (e.g. your username)."),
-    db: Path = typer.Option(DEFAULT_DB_PATH),
-    run: int | None = typer.Option(None, "--run"),
-    scoring_config: Path = typer.Option(DEFAULT_SCORING_CONFIG),
-    sample: int | None = typer.Option(None, "--sample"),
-    by: str | None = typer.Option(None, "--by"),
-    seed: int = typer.Option(0, "--seed"),
-) -> None:
-    """Interactive human scoring TUI. Resumable per reviewer."""
-    rid = _resolve_run(db, run)
-    if sample is not None and by is None:
-        by = "specialization"
-    report = human_review(
-        db_path=db, run_id=rid,
-        reviewer_id=reviewer,
-        scoring_config_path=scoring_config,
-        sample=sample, by=by, seed=seed,
-    )
-    console.print(f"[bold]review[/] (run {rid}, reviewer={reviewer})")
-    console.print(str(report))
-
-
-@app.command("report")
-def report_cmd(
-    db: Path = typer.Option(DEFAULT_DB_PATH),
-    run: int | None = typer.Option(None, "--run"),
-    json_out: Path | None = typer.Option(None, "--json", help="Write JSON to this path."),
-    csv_out: Path | None = typer.Option(None, "--csv", help="Write CSV to this path."),
-) -> None:
-    """Aggregate stats for a run. Stdout summary plus optional JSON/CSV export."""
-    rid = _resolve_run(db, run)
-    rep = compute_report(db, rid)
-    render_console(rep, console)
-    if json_out:
-        export_json(rep, json_out)
-        console.print(f"[green]wrote[/] {json_out}")
-    if csv_out:
-        export_csv(rep, csv_out)
-        console.print(f"[green]wrote[/] {csv_out}")
-
-
 # ---------- Utility ----------
 
 @app.command("clean-results")
@@ -296,7 +173,7 @@ def clean_results_cmd(
     db: Path = typer.Option(DEFAULT_DB_PATH),
     yes: bool = typer.Option(False, "--yes", help="Skip confirmation prompt."),
 ) -> None:
-    """Wipe runs/results/scores. Preserves queries and gold answers."""
+    """Wipe runs and per-pass results. Preserves queries and gold answers."""
     if not yes and not typer.confirm("This will delete all run data. Continue?"):
         raise typer.Exit(code=1)
     deleted = clean_results(db)

@@ -81,34 +81,6 @@ class Pass1Result(Base):
     attempted_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
-class Pass2Result(Base):
-    __tablename__ = "pass2_results"
-
-    run_id: Mapped[int] = mapped_column(ForeignKey("runs.run_id"), primary_key=True)
-    query_id: Mapped[str] = mapped_column(ForeignKey("queries.query_id"), primary_key=True)
-    router_selected_model: Mapped[str | None] = mapped_column(String)
-    response_text: Mapped[str | None] = mapped_column(Text)
-    prompt_tokens: Mapped[int | None] = mapped_column(Integer)
-    completion_tokens: Mapped[int | None] = mapped_column(Integer)
-    latency_ms: Mapped[int | None] = mapped_column(Integer)
-    status: Mapped[str] = mapped_column(String, nullable=False)
-    error_msg: Mapped[str | None] = mapped_column(Text)
-    attempted_at: Mapped[datetime | None] = mapped_column(DateTime)
-
-
-class Score(Base):
-    __tablename__ = "scores"
-
-    run_id: Mapped[int] = mapped_column(ForeignKey("runs.run_id"), primary_key=True)
-    query_id: Mapped[str] = mapped_column(ForeignKey("queries.query_id"), primary_key=True)
-    scorer: Mapped[str] = mapped_column(String, primary_key=True)  # human|judge
-    reviewer_id: Mapped[str] = mapped_column(String, primary_key=True)
-    score: Mapped[int] = mapped_column(Integer, nullable=False)
-    rubric_version: Mapped[str] = mapped_column(String, nullable=False)
-    rationale: Mapped[str | None] = mapped_column(Text)
-    scored_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
-
-
 def make_engine(db_path: Path = DEFAULT_DB_PATH):
     # check_same_thread=False lets the async passes share a connection pool safely
     # under our per-row commit pattern; we still serialize writes via the session.

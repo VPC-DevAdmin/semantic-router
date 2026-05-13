@@ -16,15 +16,18 @@ Seven user-facing make targets (see `make help`):
 ```
 make setup    # one-time: venv + deps + DB + installs vllm-sr if missing
 make load     # data/queries.json → DB (with gold from `expected_answer`)
-make route    # Pass 1: routing decisions, max_tokens=1 (cheap)
-make answer   # Pass 2: full LLM responses
-make judge    # LLM-as-judge scoring vs. gold
-make review   # human scoring TUI
-make report   # aggregate stats; JSON=path or CSV=path to export
+make route    # for each query: ask the router which tier it picks (max_tokens=1)
+make answers  # [TODO] for each query × tier: call that tier's endpoint directly
+make export   # [TODO] emit demo.json (query, routed_tier, gold + routed answers)
 ```
 
 Plus `resume`, `clean-results`, `router-smoke`, `router-stop`, `test`,
 `fmt`, `lint`.
+
+**Judging is intentionally out of scope.** PLAN.md §4 documents the
+adequacy rubric for context, but no `make judge` or `make review` exists
+in this repo. The demo.json that `make export` produces is consumed by an
+external judging workflow.
 
 ## Key files (canonical, don't be confused by lookalikes)
 
@@ -50,9 +53,9 @@ Plus `resume`, `clean-results`, `router-smoke`, `router-stop`, `test`,
 
 - **JSON for data, YAML for human-edited config.** `queries.json` is data
   from an upstream source; configs are operator-tunable so they're YAML.
-- **OAI-compatible everywhere.** All model endpoints, gold, judge, and the
-  router frontend speak `/v1/chat/completions`. Swap backends in YAML;
-  no code changes.
+- **OAI-compatible everywhere.** All tier model endpoints and the router
+  frontend speak `/v1/chat/completions`. Swap backends in YAML; no code
+  changes.
 - **Per-row resume.** Every pass row in the DB transitions
   `pending → success | error`. Workers re-process rows where
   `status IN ('pending', 'error')`. Killing mid-run is safe.
