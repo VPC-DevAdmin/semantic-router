@@ -7,7 +7,7 @@
 #   make answers      # for each query × tier: collect that tier's response  [TODO]
 #   make export       # emit demo.json from the DB                            [TODO]
 
-.PHONY: help setup install-router load route answers export resume \
+.PHONY: help setup load route answers export resume \
         clean-results router-smoke router-stop test fmt lint
 
 VENV := .venv
@@ -20,7 +20,6 @@ HAS_UV := $(shell command -v uv 2>/dev/null)
 help:
 	@echo "Targets:"
 	@echo "  setup                    venv + deps + init DB + install vllm-sr (if missing)"
-	@echo "  install-router           install the vllm-sr binary (idempotent)"
 	@echo "  load                     load data/queries.json into DB (idempotent)"
 	@echo "  route                    for each query: capture the router's tier pick"
 	@echo "  answers [RUN=<id>]       [TODO] for each query × tier: capture that tier's response"
@@ -41,32 +40,36 @@ else
 	$(VENV)/bin/python -m pip install --upgrade pip
 endif
 
-setup: $(VENV)/bin/python install-router
+# `make setup` does four things:
+#   1. create the venv (uv if available, else stdlib venv)
+#   2. install our Python package in editable mode
+#   3. install the vllm-sr binary if it's not already on PATH
+#   4. initialize the SQLite schema
+#
+# Override the router-install source with VLLM_SR_INSTALL_URL=..., or skip
+# the install step entirely with SKIP_ROUTER_INSTALL=1 (use this if you
+# manage vllm-sr some other way — system package, container image, etc.).
+VLLM_SR_INSTALL_URL ?= https://vllm-semantic-router.com/install.sh
+
+setup: $(VENV)/bin/python
 ifdef HAS_UV
 	uv pip install --python $(PYTHON) -e ".[dev]"
 else
 	$(VENV)/bin/pip install -e ".[dev]"
 endif
-	$(BENCHMARK) init-db --db $(DB)
-
-# Install the vllm-sr binary if it's not already on PATH. Idempotent.
-# Override the source by passing VLLM_SR_INSTALL_URL=... or skip entirely with
-# SKIP_ROUTER_INSTALL=1 if you manage it some other way.
-VLLM_SR_INSTALL_URL ?= https://vllm-semantic-router.com/install.sh
-install-router:
 ifdef SKIP_ROUTER_INSTALL
-	@echo "[install-router] skipped (SKIP_ROUTER_INSTALL is set)"
+	@echo "[setup] skipping vllm-sr install (SKIP_ROUTER_INSTALL is set)"
 else
 	@if command -v vllm-sr >/dev/null 2>&1; then \
-	    echo "[install-router] vllm-sr already present: $$(command -v vllm-sr)"; \
+	    echo "[setup] vllm-sr already present: $$(command -v vllm-sr)"; \
 	else \
-	    echo "[install-router] installing from $(VLLM_SR_INSTALL_URL)"; \
+	    echo "[setup] installing vllm-sr from $(VLLM_SR_INSTALL_URL)"; \
 	    curl -fsSL $(VLLM_SR_INSTALL_URL) | bash; \
 	    if command -v vllm-sr >/dev/null 2>&1; then \
-	        echo "[install-router] installed: $$(command -v vllm-sr)"; \
+	        echo "[setup] installed: $$(command -v vllm-sr)"; \
 	    else \
 	        echo ""; \
-	        echo "[install-router] WARN: vllm-sr is not on PATH after install."; \
+	        echo "[setup] WARN: vllm-sr is not on PATH after install."; \
 	        echo "The installer may have placed it in ~/.local/bin or similar."; \
 	        echo "Add the install dir to PATH, then re-run \`make setup\`,"; \
 	        echo "or set \`binary:\` to the full path in config/router.yaml."; \
@@ -74,6 +77,7 @@ else
 	    fi; \
 	fi
 endif
+	$(BENCHMARK) init-db --db $(DB)
 
 # ---- data ----
 
