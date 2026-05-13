@@ -1,83 +1,187 @@
-# Semantic Router Benchmark Harness — Project Plan
+# Semantic Routing Demo — Project Plan
 
-> **Status as of latest commit:** the harness is feature-complete (M0–M6) and
-> currently being dogfooded against a real `vllm-sr` install. We're working
-> through last-mile integration issues (Envoy route generation) before
-> swapping in real LLM backends. See [§ Current State](#current-state) for
-> exactly where we are.
+> **This document is the source of truth.** When the project changes, update
+> this file in the same commit. PLAN.md, [CLAUDE.md](CLAUDE.md), and
+> [README.md](README.md) together let any new contributor (human or Claude
+> session) become productive in minutes.
 
 ---
 
-## 1. Purpose
+## 1. Goal
 
-The [vLLM Semantic Router](https://github.com/vllm-project/semantic-router) is
-an intelligent traffic-routing layer for a "mixture-of-models" deployment: it
-inspects an incoming query and dispatches it to the appropriately sized model
-(tiny CPU model for trivial questions, frontier LLM for synthesis tasks).
+Demonstrate that a semantic router can send each query to the **smallest
+model tier capable of answering it satisfactorily**, with substantial cost
+savings versus sending everything to a frontier model (Opus).
 
-The promise: **same answer quality at a fraction of the cost**, because most
-queries don't need a frontier model.
+The demo presents this as a single claim:
+**the router picks the right tier, and that tier's answer is good enough.**
 
-This project quantifies that promise on a curated query set, in two passes:
+Behind the scenes this is two independent measurements (routing accuracy and
+answer adequacy), but the audience sees one event per query.
 
-1. **Routing accuracy (Pass 1 — `make route`)**
-   Does the router pick a model at or above the expected minimum tier (and
-   matching specialization) for each query? Cheap to run; per-query
-   `max_tokens=1` because we only care about the routing decision in the
-   response headers.
+## 2. Tiers
 
-2. **Response quality (Pass 2 — `make answer`)**
-   Does the response from the router-selected model meet the bar set by a
-   gold reference produced by a frontier model? Scored either by an
-   LLM-as-judge (`make judge`) or a human reviewer (`make review`).
+| Tier | Model (planned) | Notes |
+|---|---|---|
+| 1 | Small open model (~1B) | Trivial queries |
+| 2 | Qwen 3 30B-A3B | MoE, ~3B active; most "real" queries |
+| 3 | GPT-OSS 120B | Heavy reasoning and synthesis |
+| 4 | Claude Sonnet | Frontier quality at API cost |
+| 5 | Claude Opus | Top tier; also the gold-answer source |
 
-A SQL database is the canonical record. Each row corresponds to one query
-× one run. Runs are resumable — kill and restart, the next invocation picks
-up `status IN ('pending', 'error')` rows.
+In code and config, tiers are referenced by neutral identifiers
+(`tier1` … `tier5`) so the model behind each tier can change without
+touching any code. See `config/models.yaml`; the `model_id` is the tier
+label, the `endpoint` is the actual backend.
 
-## 2. What success looks like
+## 3. Dataset
 
-A complete benchmark run produces a report (Rich table to stdout + optional
-JSON/CSV export) showing:
+`data/queries.json` is the curated query set. Every query carries:
 
-- **Pass 1 topline**: % of queries where `router_selected_tier ≥ expected_min_tier`,
-  broken down by tier and specialization. Surfaces the cases where the router
-  under-routed (assigned a too-small model to a hard query) or over-routed
-  (used the frontier for trivia).
-- **Pass 2 score histogram**: distribution of 1–5 judge scores against gold,
-  per scorer (one entry per LLM judge model + one entry per human reviewer).
-  Means and per-spec breakdowns to find weak categories.
-- **Cost/quality trade-off** *(future)*: token counts and latency per tier,
-  multiplied by per-million prices in `models.yaml`, to express the value
-  in dollars saved per quality point lost.
+- `id` (e.g. `q00001`)
+- `prompt`
+- `expected_answer` — the gold standard, produced by Opus upstream
+- `expected_min_tier` — the lowest tier we believe should answer this well
+- `specializations` — `general | coding | creative_writing | math | reasoning`
+- `domain_tags` — free-form
+- `notes`
 
-## 3. Tech stack
+**Current distribution:** 110 queries — T1=25, T2=36, T3=32, T4=7, T5=10.
 
-- **Python 3.11+** (we use 3.12 on the server, 3.14 on dev macOS)
-- **SQLite** with WAL — canonical run store; comfortably handles 10k+ rows
-- **SQLAlchemy 2.x** for schema + sessions
-- **Pydantic v2** for YAML/JSON config validation
-- **Typer** + **Rich** for the CLI and human review TUI
-- **httpx** (async) for OpenAI-compatible HTTP — every backend (tier models,
-  the gold reference source, the judge, the router itself) speaks OAI
-- **pytest** + **ruff** for tests and lint
+**Action items (data work, not code):**
+- Add ~8–10 more T4 queries before the production run; T4 is the
+  cost-savings story and is currently underpowered.
+- (External, optional) Extract 2–5 `required_key_points` per gold answer —
+  the load-bearing claims an adequate answer must cover. This is the
+  highest-leverage input to eval quality but is consumed by the external
+  judging workflow, not by this harness.
 
-## 4. Repository layout (current)
+## 4. Adequacy rubric (documented for context — implemented externally)
+
+Four dimensions, same for every query, judged independently:
+
+1. **Correctness** — facts, code, math, reasoning all correct.
+2. **Completeness** — covers the query-specific required key points
+   extracted from the gold answer.
+3. **Fitness for purpose** — right form (code/prose/recommendation) and
+   right depth.
+4. **No serious defects** — no refusals, padding, wrong-language responses,
+   made-up citations, or instruction-following failures.
+
+**Verdict:** Adequate (all four pass), Inadequate (any fail), or Borderline
+(uncertain — flagged for human review).
+
+The framing put to the judge:
+> *"A user who would have received the gold answer received this candidate
+> instead. Would they be satisfied?"*
+
+Two judges run independently (Sonnet + one open model). Both Adequate =
+pass. Both Inadequate = fail. Disagreement = human review.
+
+Creative-writing queries (n=9) get a narrower adequacy definition (follows
+requested form, engages with topic) or are shown qualitatively rather than
+scored.
+
+**This harness does NOT implement the judge.** The judging step happens
+outside this repo, consuming the file produced by `make export`. The rubric
+lives in PLAN.md so the broader story is legible and so the export shape
+is justifiable.
+
+## 5. Unified per-query outcome (downstream framing)
+
+Each query ultimately gets one of four outcomes by combining the routing
+decision with the externally-produced adequacy verdict:
+
+| Outcome | Definition |
+|---|---|
+| **Hit** | Router picked ≥ min_tier AND answer judged adequate |
+| **Wasteful hit** | Router picked > min_tier + 1 AND adequate (correct but over-spent) |
+| **Quality miss** | Router picked ≥ min_tier BUT answer judged inadequate |
+| **Under-route** | Router picked < min_tier |
+
+Headline metric: **Hit %**. Cost story: `Hit / (Hit + Wasteful)`. Quality
+story: `Hit / (Hit + Quality miss)`.
+
+Outcome derivation is also downstream — this harness produces the inputs
+(router decision + tier answers) and an external script computes the
+outcome from those plus the external judge verdicts.
+
+## 6. Workflow
+
+The demo is **pre-recorded and replayed**; no live inference during the
+talk. The harness exists to drive the production pass.
+
+**Production pass (run once, in this repo):**
+
+```
+make setup     # one-time
+make load      # data/queries.json → SQLite
+make route     # for each query: ask router which tier it picks
+make answers   # for each query × each of T1..T5: get the answer
+make export    # emit demo.json (the single artifact downstream uses)
+```
+
+The resulting `demo.json` is the only output anyone outside this repo
+needs. It is the source of truth for the external judge, the replay UI,
+slides, and plots.
+
+**Replay (downstream, not in this repo):**
+- Walks through queries one at a time from `demo.json`.
+- Shows prompt, routed tier, routed answer, adequacy verdict.
+- Optional drill-down: signal trace, what other tiers produced for the
+  same query.
+
+## 7. The `demo.json` shape
+
+`make export` writes a single JSON file containing, per query:
+
+```jsonc
+{
+  "id": "q00001",
+  "prompt": "What is the capital of France?",
+  "specializations": ["general"],
+  "expected_min_tier": 1,
+  "routed_tier": 1,                  // from `make route`
+  "routing_metadata": {              // signal trace from the router
+    "selected_category": "...",
+    "selected_reasoning": "off",
+    "raw_headers": { ... }
+  },
+  "responses": {
+    "gold":  { "tier": 5, "answer": "Paris." },     // from data/queries.json
+    "routed": { "tier": 1, "answer": "Paris." }      // tier1 from `make answers`
+  },
+  "all_tier_answers": {              // optional: every tier's response, for drill-down
+    "tier1": "Paris.",
+    "tier2": "Paris, France.",
+    "tier3": "...",
+    "tier4": "...",
+    "tier5": "..."
+  }
+}
+```
+
+The `responses` block is the minimum the external judge needs: two LLM
+outputs to compare for each query (gold vs. routed tier). The
+`all_tier_answers` block is included so the replay UI can show "what would
+tier X have said" without re-running anything.
+
+## 8. Repository layout
 
 ```
 semantic-router/
-├── PLAN.md                       # this document
-├── README.md                     # quickstart
-├── Makefile                      # 7-target user-facing workflow
+├── PLAN.md                       # this document — source of truth
+├── CLAUDE.md                     # context primer for fresh Claude sessions
+├── README.md                     # operator quickstart
+├── Makefile                      # 5 user-facing targets + supporting
 ├── pyproject.toml
 ├── config/
-│   ├── models.yaml               # 5 tier registry — maps model name → numeric tier
-│   ├── router.yaml               # process-management for the `vllm-sr` subprocess
-│   ├── vllm-sr.yaml              # the router's INTERNAL config (passed via --config)
-│   ├── judge.yaml                # judge model endpoint
-│   └── scoring.yaml              # rubric + 1-5 scale
+│   ├── models.yaml               # tier1..tier5 → backend endpoint
+│   ├── router.yaml               # process-management for `vllm-sr` subprocess
+│   ├── vllm-sr.yaml              # the router's INTERNAL config
+│   └── (no judge.yaml or scoring.yaml — judging is external)
 ├── data/
-│   └── queries.json              # 110 queries (tier 1-5) with embedded gold answers
+│   └── queries.json              # 110 queries with `expected_answer` gold
 ├── src/benchmark/
 │   ├── cli.py                    # Typer entrypoint
 │   ├── config.py                 # pydantic-validated config loaders
@@ -86,78 +190,61 @@ semantic-router/
 │   ├── tiers.py                  # async OAI-compatible client
 │   ├── router_proc.py            # `vllm-sr serve` lifecycle (launcher pattern)
 │   ├── router_client.py          # talks to Envoy; extracts x-vsr-* headers
-│   ├── runs.py                   # run lifecycle + pending-row seeding
-│   ├── pass1.py                  # routing accuracy
-│   ├── pass2.py                  # response generation
-│   ├── judge.py                  # LLM-as-judge scoring
-│   ├── review.py                 # human scoring TUI
-│   └── report.py                 # aggregate stats + JSON/CSV export
-└── tests/                        # 69 tests covering everything except live router
+│   ├── runs.py                   # run lifecycle + per-row resume
+│   ├── pass1.py                  # `make route` — routing decisions
+│   ├── pass2.py                  # `make answers` — per-tier answer collection
+│   └── export.py                 # `make export` — produces demo.json
+└── tests/                        # unit tests covering everything except live router
 ```
 
-## 5. The 7-target workflow
+## 9. The Makefile
 
-| Target | What it does | Idempotent? | LLM cost |
-|---|---|---|---|
-| `make setup` | venv + deps + DB init + installs `vllm-sr` if missing | yes | $0 |
-| `make load` | `data/queries.json` → DB (queries + gold) | yes | $0 |
-| `make route` | Pass 1: boots router, sends queries, captures routing decisions | resumable | ~$0 (max_tokens=1) |
-| `make answer` | Pass 2: sends queries for full LLM responses | resumable | varies by tier |
-| `make judge` | LLM-as-judge scoring vs. gold | resumable | judge tokens only |
-| `make review` | Human scoring TUI (`REVIEWER=alice [SAMPLE=N]`) | resumable per-reviewer | $0 |
-| `make report` | Aggregate stats + `JSON=path` / `CSV=path` export | safe | $0 |
+| Target | What it does |
+|---|---|
+| `make setup` | venv + deps + DB + installs `vllm-sr` if missing |
+| `make load` | `data/queries.json` → DB (queries + gold) |
+| `make route` | For each query: send through router with `max_tokens=1`, capture `x-vsr-selected-model` header → tier number |
+| `make answers` | For each query × each tier (T1..T5): call the tier's backend directly, save the full response |
+| `make export` | Read DB + router decisions + tier answers → write `demo.json` |
 
-Supporting targets: `resume`, `clean-results`, `router-smoke`, `router-stop`,
+Supporting: `resume`, `clean-results`, `router-smoke`, `router-stop`,
 `test`, `fmt`, `lint`.
 
-## 6. Data model
+Note that `make answers` bypasses the router. The router has already been
+asked (in `make route`) which tier it would pick; for `make answers` we
+need every tier's response so the demo can show what each tier produced.
 
-### `data/queries.json` (110 entries today, schema is open-ended)
+## 10. Data model (SQLite intermediate)
 
-```json
-{
-  "id": "q00001",
-  "prompt": "What is the capital of France?",
-  "expected_answer": "Paris.",
-  "expected_min_tier": 1,
-  "specializations": ["general"],
-  "domain_tags": ["geography"],
-  "notes": "trivial factual lookup"
-}
-```
-
-`expected_answer` is the upstream Opus-level gold — there is no separate
-`make gold` step. Tier distribution:
-`{tier 1: 25, tier 2: 36, tier 3: 32, tier 4: 7, tier 5: 10}`.
-Specializations: `general`, `coding`, `creative_writing`. The whitelist also
-permits `math`, `reasoning`, `vision`, `tts` for future extension.
-
-### SQLite schema (canonical run state)
+SQLite is the resumable intermediate store. `make export` reads from here
+and produces `demo.json`. The DB is gitignored; `demo.json` is the
+checked-in artifact when stable.
 
 ```
 queries          (query_id PK, prompt, prompt_hash, expected_min_tier,
                   specializations, domain_tags, gold_answer, gold_model, ...)
-runs             (run_id PK, started_at, finished_at, router_config_hash,
-                  models_config_hash, status, notes)
-pass1_results    (run_id, query_id PK, router_selected_model,
-                  router_selected_tier, meets_minimum_tier,
-                  matches_specialization, raw_routing_metadata, status, ...)
-pass2_results    (run_id, query_id PK, router_selected_model, response_text,
+runs             (run_id PK, started_at, finished_at, status, notes)
+pass1_results    (run_id, query_id PK, routed_tier, raw_routing_metadata,
+                  status, ...)
+tier_answers     (run_id, query_id, tier_level PK, response_text,
                   prompt_tokens, completion_tokens, latency_ms, status, ...)
-scores           (run_id, query_id, scorer, reviewer_id PK, score,
-                  rubric_version, rationale, scored_at)
 ```
 
-**Resume rule:** each per-pass row transitions `pending → success | error`.
-Workers select rows where `status IN ('pending', 'error')` for the active
-run. Per-row session commits make killing the process mid-run safe.
+> Note: today the schema still uses the M4 `pass2_results` table for
+> router-routed responses. As part of building `make answers` we either
+> rename it to `tier_answers` and broaden its PK to include `tier_level`,
+> or add a new table and drop the old one. See §13 (Roadmap).
 
-## 7. Router integration model
+**Resume rule:** workers select rows where `status IN ('pending', 'error')`
+for the active run. Per-row session commits make killing the process
+mid-run safe.
 
-`vllm-sr serve` is not a daemon — it's a **launcher** that brings up a
-Docker stack (router + envoy + dashboard + simulator + datastores +
-observability) and exits cleanly. The actual router lives in those
-background containers, managed by the host `vllm-sr` CLI.
+## 11. Router integration model
+
+`vllm-sr serve` is **a launcher, not a daemon**. It brings up a Docker
+stack (router + envoy + dashboard + simulator + datastores +
+observability) and exits cleanly with code 0. The router service lives in
+those background containers, managed by the host `vllm-sr` CLI.
 
 The harness handles this in [`router_proc.py`](src/benchmark/router_proc.py):
 
@@ -165,134 +252,183 @@ The harness handles this in [`router_proc.py`](src/benchmark/router_proc.py):
 2. Wait for the launcher subprocess to exit. Exit 0 = launch succeeded.
 3. Poll `/ready` on the router's apiserver (`:8080`) until it returns 200.
 4. Hand control to the benchmark passes.
-5. **Leave the stack running on exit** (cold-start is slow, repeat runs are
-   fast). User controls the long-lived lifecycle via `make router-stop`.
+5. Leave the stack running on exit (cold-start is slow, repeat runs are
+   fast). Set `stop_on_exit: true` in `config/router.yaml` to tear down,
+   or run `make router-stop` manually.
 
 `config/vllm-sr.yaml` is the router's internal config — 5 tier models with
 backends, plus keyword-signal routing decisions. It's the file that
-`--config` points at. All tier backends currently point at the bundled
-simulator (`host.docker.internal:8810`) so we can validate routing without
-any real LLM cost.
+`--config` points at.
 
-The routing decision lands in three response headers added by the router on
-2xx-non-cached responses:
+The routing decision lands in three response headers added by the router
+on 2xx-non-cached responses:
 
-- `x-vsr-selected-model` → e.g. `tier3`
+- `x-vsr-selected-model` → the tier id, e.g. `tier3`
 - `x-vsr-selected-category` → e.g. `math`
 - `x-vsr-selected-reasoning` → `on` | `off`
 
-`config/models.yaml` maps each `x-vsr-selected-model` value back to a numeric
-tier so we can compare against `expected_min_tier`. The shipped-configs test
-asserts every model name in `vllm-sr.yaml` has a matching `model_id` entry
-in `models.yaml` — drift between the two is the most common config bug.
+`config/models.yaml` maps each `x-vsr-selected-model` value back to a
+numeric tier level. The shipped-configs test asserts every model name in
+`vllm-sr.yaml` has a matching `model_id` entry in `models.yaml` — drift
+between the two is the most common config bug.
 
-## 8. Backend strategy (current and planned)
+## 12. Backend strategy
 
-The harness is intentionally agnostic about what's behind the router. Three
-phases of backend deployment, ordered by maturity:
+The harness is intentionally agnostic about what's behind each tier label.
+Three phases of backend deployment, ordered by maturity:
 
 **Phase A — Simulator only (where we are now).**
-All 5 tiers point at the bundled `vllm-sr-sim` mock. Validates the routing
-pipeline and our reporting end-to-end without spending a cent on tokens.
-Pass 2 responses are stub text; not meaningful for quality scoring, but
-fine for testing the plumbing.
+All 5 tiers point at the bundled `vllm-sr-sim` mock at
+`host.docker.internal:8810`. Validates routing pipeline + export end-to-end
+with zero LLM cost. Pass-2 responses are stub text; useful for plumbing
+verification, not adequacy claims.
 
 **Phase B — Real small + simulator.**
-Two CPU models (tier 1 + tier 2) on the user's existing CPU server, tier 3–5
-still on the simulator. First real signal on small-model performance.
+Two CPU models (T1 + T2) on the user's existing CPU server, T3–T5 still on
+the simulator. First real signal on small-model performance.
 
 **Phase C — Full ladder.**
-Tier 1–2 on CPU, tier 3 on GPU server (once acquired), tier 4 = Anthropic
-Sonnet, tier 5 = Anthropic Opus, via their OpenAI-compatible endpoints.
-Real Pass 2 responses; real judge scoring; real cost numbers.
+T1–T2 on CPU, T3 on GPU server (once acquired), T4 = Anthropic Sonnet,
+T5 = Anthropic Opus, via their OpenAI-compatible endpoints. Real Pass-2
+responses; real numbers for the demo.
 
 Swapping phases is a config-only change: update `backend_refs.endpoint` in
 `config/vllm-sr.yaml` per tier, update the matching `endpoint` in
-`config/models.yaml` for direct-tier calls, no code changes.
+`config/models.yaml` for direct-tier calls in `make answers`. No code
+changes.
 
-## 9. Implementation milestones (history)
+## 13. Current state and roadmap
 
-All shipped to main:
+### What works (HEAD)
 
-| M | Title | Notes |
-|---|---|---|
-| M0 | Plan + skeleton | PLAN.md, README, Makefile stubs |
-| M1 | DB schema, config loaders, idempotent loader | SQLAlchemy + pydantic |
-| M2 | Tier client + gold (now folded into `make load`) | async OAI client |
-| M3 | Router subprocess + client + x-vsr-* extraction | initially mis-modeled the router as a daemon; corrected during dogfooding |
-| M4 | Pass 1 + Pass 2 + run lifecycle + resume | per-row commits, bounded concurrency |
-| M5 | LLM-as-judge + human review TUI | injectable I/O for TTY-less testing |
-| M6 | Aggregate report + JSON/CSV export | per-spec breakdown |
-| **Simplification pass** | queries.json + 7-target Makefile | dropped YAML, `seed`, `gold`, `validate-config` targets |
-| **Dogfood fixes** | RouterProcess launcher pattern + `make setup` installs router + shipped vllm-sr.yaml | in response to real-world failures |
+- ✅ `make setup` installs vllm-sr, venv, DB schema
+- ✅ `make load` reads 110 queries with embedded gold into the DB
+- ✅ `make route` launches `vllm-sr serve` with our config; apiserver
+  `/ready` returns 200
 
-## 10. Current state
+### Active blocker
 
-Live dogfooding against a real `vllm-sr` install on a user's Linux server:
-
-- ✅ `make setup` installs `vllm-sr`, sets up venv, inits DB
-- ✅ `make load` reads 110 queries with embedded gold
-- ✅ `make route` launches `vllm-sr serve` with our config, waits for `/ready`,
-  successfully gets 200 from the apiserver
-- ❌ **Active bug:** all 110 chat-completion requests to Envoy at
+- ❌ `make route` chat-completion requests to Envoy at
   `http://127.0.0.1:8899/v1/chat/completions` return HTTP 404. Envoy is
-  listening but doesn't know how to route the path. Almost certainly a
-  missing field in our `config/vllm-sr.yaml` listener spec that drives
-  Envoy route generation. Diagnostics requested:
-  - `vllm-sr chat "hello"` — does upstream's own client get through?
-  - `cat .vllm-sr/envoy.yaml` — what was actually generated
-  - `vllm-sr logs envoy | tail -40` — Envoy's verdict on the request
+  listening but doesn't know how to route the path.
 
-## 11. Roadmap
+**Hypotheses, in order of likelihood:**
 
-In likely order:
+1. Our `config/vllm-sr.yaml`'s `listeners` block is missing a field
+   (`paths:`, `routes:`, or a reference to a filter chain) that drives
+   Envoy route generation. The auto-generated `.vllm-sr/envoy.yaml` will
+   reveal exactly what's missing.
+2. The path is non-standard in this build of the router. Unlikely — their
+   docs are explicit about `/v1/chat/completions`.
+3. `host.docker.internal:8810` may not resolve from inside the router
+   container on Linux. Would cause 5xx not 404, so probably not the issue
+   *for the 404* but will bite us next.
 
-1. **Unblock `make route`.** Resolve the 404 (see § Current State).
-2. **Read end-to-end Pass 1 report.** First real routing-accuracy numbers
-   against simulator backends; expect 40–60% `meets_min_tier` with the
-   current keyword-only signals.
-3. **Tune signals.** Inspect misroutes, refine `coding_keywords` /
-   `complex_reasoning_keywords` / `creative_writing_keywords`, or enable the
-   router's built-in MMLU domain classifier for smarter signals.
-4. **Phase B: real small CPU models behind tier 1+2.** Validate real
-   inference end-to-end on the cheap end of the ladder.
-5. **Run Pass 2.** Now that backends are real, `make answer` produces real
-   responses; `make judge` scores them.
-6. **Phase C: Anthropic API for tier 4+5.** Spend tokens on the cases the
-   router actually routes there.
-7. **First public report.** `make report` numbers + `make report JSON=...`
-   for ad-hoc analysis. Decide whether to scale the query set further
-   (10k+ was an early aspiration; the 110-query set may be enough for the
-   initial demonstration).
+**Diagnostic order (run on the server where vllm-sr is installed):**
 
-## 12. Known open design questions
+1. `vllm-sr chat "hello"` — does upstream's own CLI client get through
+   Envoy? If yes, our request shape is the bug. If no, our config + the
+   auto-generated Envoy config are the bugs.
+2. `cat .vllm-sr/envoy.yaml` — find `route_config.virtual_hosts[].routes`.
+   If it's empty or lacks a `/v1/chat/completions` matcher, that's the
+   smoking gun.
+3. `vllm-sr logs envoy 2>&1 | tail -50` — Envoy's verdict on the request.
+4. `vllm-sr logs router 2>&1 | tail -50` — has the router-side service
+   registered anything?
 
-- **Routing intelligence.** Current `vllm-sr.yaml` uses only BM25 keyword
-  signals — fast, deterministic, but coarse. The router supports embedding
-  signals, domain classifiers, prompt-guard, semantic-cache. Adding any of
-  these makes Pass 1 results more interesting but requires the corresponding
-  classifier/embedding model files (which the upstream config example
-  references via `global.model_catalog`).
-- **Combined Pass 1 + Pass 2.** PLAN's original M4 mentioned a `--combined`
-  mode that uses one router call per query for both passes. Not implemented.
-  Easy to add when token costs matter.
-- **Multimodal.** Vision and TTS are reserved in the spec whitelist but no
-  queries today exercise them. `data/queries.json` schema supports
-  `attachments`; the router config doesn't yet wire them through.
-- **Concurrency tuning.** Default is 8 concurrent calls per pass. May be too
-  aggressive for real backends (rate limits) or too low for the simulator.
+### Roadmap (in order)
 
-## 13. Testing strategy
+1. **Unblock `make route`.** Resolve the Envoy 404 (above).
+2. **Implement `make answers`.** New file `src/benchmark/pass2.py` rewrite
+   (or replacement) that, for each query, calls every tier endpoint
+   directly. New table `tier_answers` or repurposed `pass2_results` with
+   composite PK `(run_id, query_id, tier_level)`.
+3. **Implement `make export`.** New `src/benchmark/export.py` produces
+   `demo.json` from the DB. Shape per §7.
+4. **Add ~8–10 more T4 queries** to `data/queries.json`.
+5. **Phase B backend rollout:** stand up T1 + T2 on the CPU server,
+   update `config/models.yaml` and `config/vllm-sr.yaml` endpoints.
+6. **Phase C backend rollout:** wire Anthropic for T4 + T5.
+7. **First production pass** — `make route && make answers && make export`
+   produces a real `demo.json`. Hand to external judging workflow.
 
-- **69 unit tests** cover the schema, loaders, run lifecycle, pass logic
-  with mocked router responses, judge verdict parsing, human-review state
-  machine, report aggregation, and shipped config files.
+## 14. Known open design questions
+
+- **Envoy route generation in `vllm-sr serve`.** What field in
+  `config/vllm-sr.yaml`'s `listeners` block drives the auto-generated
+  Envoy `route_config.virtual_hosts[].routes`? The minimal upstream
+  example we modeled ours on may have omitted required fields. Confirm by
+  inspecting `.vllm-sr/envoy.yaml` and the upstream's 1,254-line reference
+  config.
+- **Docker networking from router to backend on Linux.**
+  `host.docker.internal:8810` works on Docker Desktop but may need
+  `--add-host=host.docker.internal:host-gateway` on Linux. If not, the
+  alternative is to point backends at the container name
+  (`vllm-sr-sim-container:8000`) and ensure the simulator is attached to
+  `vllm-sr-network`.
+- **Tier identifiers vs. real model names.** Keep `tier1..tier5` in code
+  and configs so we can rotate models behind a tier with no code edits.
+  Surface real model names only in `models.yaml`'s `endpoint` and in
+  reporting metadata.
+
+## 15. Testing strategy
+
+- **Unit tests** cover the schema, loaders, run lifecycle, pass logic with
+  mocked router responses, and shipped config files.
 - **No live-router tests in CI.** `RouterProcess` and `RouterClient` are
   exercised with `httpx.MockTransport` and `subprocess.Popen` mocks. The
   one thing not testable in CI is whether the actual `vllm-sr` binary
   behaves as documented — that's what dogfooding is for, and is what
-  surfaced the launcher-vs-daemon bug we just fixed.
+  surfaced the launcher-vs-daemon bug we already fixed.
 - **`tests/test_shipped_configs.py`** asserts every YAML/JSON file under
   `config/` and `data/` actually parses with the real loaders, plus that
   `vllm-sr.yaml`'s model names line up with `models.yaml`'s `model_id`
-  values. This catches the failure modes that have actually bitten us.
+  values.
+
+## 16. Maintaining this document
+
+PLAN.md is the project's source of truth. When state changes, update the
+relevant section in the same commit:
+
+- **§13 Current state** must reflect what works and what's broken at HEAD.
+  When a bug is fixed, remove it from "active blocker" and add a one-line
+  note in §17 history.
+- **§13 Roadmap** gets reordered or pruned as items ship.
+- **§14 Open questions** gets new entries when we hit an unknown;
+  resolved questions move to §17 with the answer.
+- **§17 History** captures the chronology of what we built and what
+  surprised us.
+
+A fresh Claude session opening this repo should be able to read PLAN.md +
+CLAUDE.md and know what's true, what's not, and what to do next.
+
+## 17. Implementation history
+
+Chronological record of what we built and what surprised us. New entries
+go at the bottom.
+
+- **M0** — Plan + skeleton: PLAN.md, README, Makefile stubs.
+- **M1** — DB schema, config loaders, idempotent loader (SQLAlchemy +
+  pydantic).
+- **M2** — `tiers.py` OAI-compatible client (Pass 2 backbone).
+- **M3** — Router subprocess + client + `x-vsr-*` header extraction.
+  *Surprise: initially modeled `vllm-sr serve` as a daemon; it's actually
+  a launcher that spawns a Docker stack and exits. Corrected during
+  dogfooding.*
+- **M4** — Pass 1 + Pass 2 + run lifecycle + per-row resume; bounded
+  concurrency.
+- **M5** — *(deleted)* Originally added LLM-as-judge + human review TUI.
+  Removed when we narrowed scope to "harness produces inputs; judging is
+  external."
+- **M6** — *(deleted)* Originally added aggregate report. Removed; the
+  demo consumes `demo.json` directly via the replay UI.
+- **Simplification pass** — queries.json (not YAML), folded `seed` and
+  `gold` targets into `make load`, dropped `validate-config`.
+- **Dogfood fixes** — RouterProcess launcher pattern; `make setup`
+  installs vllm-sr; shipped first real `config/vllm-sr.yaml` with 5 tiers
+  + keyword routing.
+- **Scope reframe** — pivoted from "continuously-runnable benchmark
+  harness with internal scoring" to "production-pass that emits a single
+  `demo.json` consumed by external judging + replay UI." Dropped M5+M6
+  surface area; added `make answers` (per-tier collection) and
+  `make export` as the new top-level targets.
