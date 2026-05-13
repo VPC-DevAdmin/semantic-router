@@ -1,19 +1,30 @@
-"""Manage the `vllm-sr` router as a subprocess.
+"""Manage the `vllm-sr` router lifecycle.
 
-The router is a Go binary that exposes an apiserver (default :8080) and an
-Envoy-fronted OpenAI-compatible endpoint (default :8801). The lifecycle:
+`vllm-sr serve` is a *launcher*: it brings up a stack of Docker containers
+(router + envoy + dashboard + simulator + datastores + observability) and
+EXITS CLEANLY with code 0. The actual router service then lives in those
+containers, managed by the host `vllm-sr` CLI. `vllm-sr stop` tears the
+stack down.
 
-  1. Spawn `vllm-sr serve [serve_args...]` with stdout/stderr → log file.
-  2. Poll `GET http://apiserver/ready` until it returns 200 (router fully up).
-  3. Yield to the caller.
-  4. On exit, send SIGTERM. If the process has not exited within
-     `stop_timeout_s`, send SIGKILL.
+Lifecycle the harness implements:
+
+  1. Run `vllm-sr serve [serve_args...]` with stdout/stderr → log file.
+  2. Wait for the launcher subprocess to exit. Exit 0 = launch succeeded;
+     non-zero = launch failed (read the log to diagnose).
+  3. Poll `GET http://apiserver/ready` against the now-background router
+     until it returns 200, with a clear timeout error pointing at the
+     dashboard if the router is in setup mode.
+  4. Yield to the caller.
+  5. On exit, by default LEAVE THE STACK RUNNING (re-runs are fast and the
+     user controls the long-lived lifecycle via `vllm-sr stop` themselves).
+     If `stop_on_exit: true`, run `vllm-sr stop` to tear down.
 
 Tests mock the spawn + poll seams; this module never starts a real router in CI.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import shutil
 import signal
@@ -93,18 +104,34 @@ class RouterProcess:
         )
 
     async def _wait_until_ready(self) -> None:
+        """Wait for the launcher to exit cleanly, then poll /ready.
+
+        The `vllm-sr serve` launcher runs synchronously and exits 0 once the
+        Docker stack is up. A non-zero exit is a real failure. After the
+        launcher exits, we poll the router's apiserver /ready endpoint until
+        it returns 200, which signals the router is configured and routing.
+        """
+        # Phase 1: wait for the launcher subprocess (if we spawned one) to exit.
+        if self._proc is not None:
+            launcher_deadline = time.monotonic() + self.cfg.ready_timeout_s
+            while time.monotonic() < launcher_deadline:
+                rc = self._proc.poll()
+                if rc is None:
+                    await asyncio.sleep(0.5)
+                    continue
+                if rc != 0:
+                    raise RouterStartupError(
+                        f"`vllm-sr serve` exited with code {rc}; "
+                        f"see {self.cfg.log_path or '(no log path configured)'}"
+                    )
+                break  # exit 0 = launch succeeded; move on to readiness probe
+
+        # Phase 2: poll /ready on the apiserver.
         deadline = time.monotonic() + self.cfg.ready_timeout_s
         url = f"{self.apiserver_base}/ready"
         last_err: str | None = None
         async with httpx.AsyncClient(timeout=2.0) as client:
             while time.monotonic() < deadline:
-                # Surface a clear failure if the subprocess died during startup.
-                if self._proc is not None and self._proc.poll() is not None:
-                    raise RouterStartupError(
-                        f"router process exited during startup with "
-                        f"code {self._proc.returncode}; "
-                        f"see {self.cfg.log_path or '(no log path configured)'}"
-                    )
                 try:
                     resp = await client.get(url)
                     if resp.status_code == 200:
@@ -113,24 +140,51 @@ class RouterProcess:
                 except httpx.HTTPError as e:
                     last_err = f"{type(e).__name__}: {e}"
                 await asyncio.sleep(0.5)
+
         raise RouterStartupError(
             f"router not ready at {url} within {self.cfg.ready_timeout_s}s "
-            f"(last: {last_err})"
+            f"(last: {last_err}).\n"
+            f"If `vllm-sr status` shows 'Router: Status unknown', the router is "
+            f"likely in setup mode with no models configured. Open the dashboard "
+            f"at http://{self.cfg.apiserver_host}:8700 to configure models, then "
+            f"retry. See logs with `vllm-sr logs router`."
         )
 
     async def stop(self) -> None:
+        """Tear down the router stack if `stop_on_exit` is set.
+
+        Default behavior is to LEAVE THE STACK RUNNING — `vllm-sr serve` is
+        slow (image pulls, container starts) and benchmark runs are short.
+        The user controls the long-lived lifecycle with `vllm-sr stop`.
+
+        If the launcher subprocess is still alive somehow (timed out before
+        finishing its handoff), we SIGTERM it as a safety net.
+        """
         proc = self._proc
         self._proc = None
         try:
+            # Safety net: kill a still-running launcher (shouldn't happen normally).
             if proc is not None and proc.poll() is None:
                 proc.send_signal(signal.SIGTERM)
-                # Wait without blocking the event loop.
                 deadline = time.monotonic() + self.cfg.stop_timeout_s
                 while time.monotonic() < deadline and proc.poll() is None:
                     await asyncio.sleep(0.2)
                 if proc.poll() is None:
                     proc.kill()
                     proc.wait(timeout=5)
+
+            # Tear down the background stack only if requested.
+            if not self.cfg.external and self.cfg.stop_on_exit:
+                binary = shutil.which(self.cfg.binary) or self.cfg.binary
+                # Best-effort teardown: swallow any failure (already exiting).
+                with contextlib.suppress(Exception):
+                    subprocess.run(
+                        [binary, "stop"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=self.cfg.stop_timeout_s,
+                        check=False,
+                    )
         finally:
             if self._log_handle is not None:
                 try:

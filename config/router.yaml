@@ -24,12 +24,14 @@ apiserver_host: 127.0.0.1
 apiserver_port: 8080            # GET /ready, /health, /api/v1/*
 
 frontend_host: 127.0.0.1
-frontend_port: 8801             # POST /v1/chat/completions (Envoy ingress)
+# 8899 matches the Envoy listener that `vllm-sr serve` auto-generates.
+# If your config.yaml uses a different port, set it here.
+frontend_port: 8899             # POST /v1/chat/completions (Envoy ingress)
 
 ready_timeout_s: 120
 stop_timeout_s: 15
 
-# If set, capture combined stdout+stderr to this path. Helpful for postmortems.
+# If set, capture launcher stdout+stderr to this path. Helpful for postmortems.
 log_path: logs/router.log
 
 # What the harness sends as the `model` field to invoke routing.
@@ -38,3 +40,8 @@ auto_model_name: auto
 # If true, the harness assumes the router is already running externally and
 # will not spawn or stop it. Useful for shared dev stacks or CI.
 external: false
+
+# If true, run `vllm-sr stop` on harness exit to tear down the Docker stack.
+# Default false: leave the stack up between benchmark runs so cold-start
+# (image pulls, container creation) is paid only once.
+stop_on_exit: false

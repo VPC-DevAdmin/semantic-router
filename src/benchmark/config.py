@@ -87,14 +87,20 @@ class RouterProcessConfig(BaseModel):
     apiserver_host: str = "127.0.0.1"
     apiserver_port: int = 8080
     frontend_host: str = "127.0.0.1"
-    frontend_port: int = 8801
+    # 8899 matches the default Envoy listener that `vllm-sr serve` generates
+    # in its auto-created config.yaml. Update if your router config differs.
+    frontend_port: int = 8899
     ready_timeout_s: int = 120
     stop_timeout_s: int = 15
-    log_path: str | None = None  # if set, captures stdout+stderr there
+    log_path: str | None = None  # if set, captures launcher stdout+stderr there
     auto_model_name: str = "auto"  # what to send as `model` to invoke routing
-    # If True, expect the binary to already be running externally; do not spawn
-    # a subprocess. Useful for CI or shared dev stacks.
+    # If True, expect the router stack to already be running; don't spawn or
+    # stop it. Useful for shared dev stacks or CI.
     external: bool = False
+    # If True, run `vllm-sr stop` to tear down the Docker stack when the
+    # harness exits. Default False: leave the stack running so repeat
+    # benchmark runs don't pay the multi-second cold-start cost.
+    stop_on_exit: bool = False
 
 
 class ScoringConfig(BaseModel):

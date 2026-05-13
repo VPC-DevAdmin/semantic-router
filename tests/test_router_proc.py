@@ -1,8 +1,12 @@
 """RouterProcess lifecycle tests.
 
 We don't spawn a real `vllm-sr` here — these tests mock subprocess.Popen and
-httpx so the lifecycle logic (spawn → poll /ready → teardown) is exercised
-deterministically.
+httpx so the lifecycle logic (run launcher → wait for exit → poll /ready →
+teardown) is exercised deterministically.
+
+vllm-sr serve is a launcher: it runs synchronously, brings up a Docker stack,
+and exits 0. The actual router runs in those background containers. The
+harness must NOT treat that clean exit as a crash.
 """
 from __future__ import annotations
 
@@ -16,9 +20,14 @@ from benchmark.router_proc import RouterProcess, RouterStartupError
 
 
 class _FakeProc:
-    """Minimal subprocess.Popen stand-in."""
+    """Minimal subprocess.Popen stand-in.
 
-    def __init__(self, exit_after: int | None = None, returncode: int = 0) -> None:
+    `exit_after`: number of poll() calls before the process appears to exit.
+    None means "never exits" (simulates a hung launcher).
+    `returncode`: the exit code reported once it exits.
+    """
+
+    def __init__(self, exit_after: int | None = 1, returncode: int = 0) -> None:
         self._calls = 0
         self._exit_after = exit_after
         self.returncode: int | None = None
@@ -34,7 +43,6 @@ class _FakeProc:
 
     def send_signal(self, sig: int) -> None:
         self.signals_received.append(sig)
-        # Pretend it exits cleanly on SIGTERM.
         self.returncode = 0
 
     def kill(self) -> None:
@@ -56,7 +64,6 @@ def _patch_httpx(monkeypatch, transport: httpx.MockTransport) -> None:
 
 @pytest.mark.asyncio
 async def test_external_mode_does_not_spawn(monkeypatch) -> None:
-    """external=True: no subprocess, just health-check."""
     cfg = RouterProcessConfig(external=True, ready_timeout_s=2)
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -72,17 +79,13 @@ async def test_external_mode_does_not_spawn(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_spawn_and_ready(monkeypatch) -> None:
-    cfg = RouterProcessConfig(ready_timeout_s=2, stop_timeout_s=1)
-    fake_proc = _FakeProc()
-
-    # First call to /ready returns 503, second returns 200.
-    state = {"calls": 0}
+async def test_launcher_exits_zero_then_ready_polled(monkeypatch) -> None:
+    """The expected happy path: `vllm-sr serve` exits 0, then /ready returns 200."""
+    cfg = RouterProcessConfig(ready_timeout_s=5, stop_timeout_s=1)
+    fake_proc = _FakeProc(exit_after=1, returncode=0)
 
     def handler(request: httpx.Request) -> httpx.Response:
-        state["calls"] += 1
-        if state["calls"] == 1:
-            return httpx.Response(503)
+        assert str(request.url).endswith("/ready")
         return httpx.Response(200)
 
     _patch_httpx(monkeypatch, httpx.MockTransport(handler))
@@ -95,15 +98,28 @@ async def test_spawn_and_ready(monkeypatch) -> None:
             assert args[0][0] == "/usr/bin/vllm-sr"
             assert args[0][1] == "serve"
 
-    # Teardown sent SIGTERM.
-    import signal as _signal
-    assert _signal.SIGTERM in fake_proc.signals_received
+
+@pytest.mark.asyncio
+async def test_launcher_nonzero_exit_raises(monkeypatch) -> None:
+    """A real failure: launcher exits with code != 0."""
+    cfg = RouterProcessConfig(ready_timeout_s=2, stop_timeout_s=1)
+    fake_proc = _FakeProc(exit_after=1, returncode=1)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200)
+
+    _patch_httpx(monkeypatch, httpx.MockTransport(handler))
+
+    with patch("benchmark.router_proc.shutil.which", return_value="/usr/bin/vllm-sr"), \
+         patch("benchmark.router_proc.subprocess.Popen", return_value=fake_proc):
+        with pytest.raises(RouterStartupError, match=r"exited with code 1"):
+            async with RouterProcess(cfg):
+                pass
 
 
 @pytest.mark.asyncio
 async def test_missing_binary_raises(monkeypatch) -> None:
     cfg = RouterProcessConfig(binary="definitely-not-installed-xyz", ready_timeout_s=1)
-
     with patch("benchmark.router_proc.shutil.which", return_value=None):
         with pytest.raises(RouterStartupError, match="not found on PATH"):
             async with RouterProcess(cfg):
@@ -111,29 +127,10 @@ async def test_missing_binary_raises(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_subprocess_dies_during_startup(monkeypatch) -> None:
-    cfg = RouterProcessConfig(ready_timeout_s=2, stop_timeout_s=1)
-    # poll() returns 1 immediately, simulating crash.
-    fake_proc = _FakeProc(exit_after=1, returncode=1)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        # /ready will never come up; whether we hit it or not, the proc-died
-        # check should fire first.
-        return httpx.Response(503)
-
-    _patch_httpx(monkeypatch, httpx.MockTransport(handler))
-
-    with patch("benchmark.router_proc.shutil.which", return_value="/usr/bin/vllm-sr"), \
-         patch("benchmark.router_proc.subprocess.Popen", return_value=fake_proc):
-        with pytest.raises(RouterStartupError, match="exited during startup"):
-            async with RouterProcess(cfg):
-                pass
-
-
-@pytest.mark.asyncio
-async def test_ready_timeout(monkeypatch) -> None:
+async def test_ready_timeout_after_launcher_exits(monkeypatch) -> None:
+    """Launcher exits 0 but /ready never returns 200 → timeout error."""
     cfg = RouterProcessConfig(ready_timeout_s=1, stop_timeout_s=1)
-    fake_proc = _FakeProc()  # never exits
+    fake_proc = _FakeProc(exit_after=1, returncode=0)
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503)
@@ -145,3 +142,43 @@ async def test_ready_timeout(monkeypatch) -> None:
         with pytest.raises(RouterStartupError, match="not ready"):
             async with RouterProcess(cfg):
                 pass
+
+
+@pytest.mark.asyncio
+async def test_stop_on_exit_invokes_vllm_sr_stop(monkeypatch) -> None:
+    """When stop_on_exit=True, `vllm-sr stop` is run to tear down the stack."""
+    cfg = RouterProcessConfig(ready_timeout_s=2, stop_timeout_s=1, stop_on_exit=True)
+    fake_proc = _FakeProc(exit_after=1, returncode=0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200)
+
+    _patch_httpx(monkeypatch, httpx.MockTransport(handler))
+
+    with patch("benchmark.router_proc.shutil.which", return_value="/usr/bin/vllm-sr"), \
+         patch("benchmark.router_proc.subprocess.Popen", return_value=fake_proc), \
+         patch("benchmark.router_proc.subprocess.run") as run_mock:
+        async with RouterProcess(cfg):
+            pass
+        run_mock.assert_called_once()
+        args, kwargs = run_mock.call_args
+        assert args[0] == ["/usr/bin/vllm-sr", "stop"]
+
+
+@pytest.mark.asyncio
+async def test_stop_default_leaves_stack_running(monkeypatch) -> None:
+    """Default (stop_on_exit=False) does NOT invoke `vllm-sr stop`."""
+    cfg = RouterProcessConfig(ready_timeout_s=2, stop_timeout_s=1)
+    fake_proc = _FakeProc(exit_after=1, returncode=0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200)
+
+    _patch_httpx(monkeypatch, httpx.MockTransport(handler))
+
+    with patch("benchmark.router_proc.shutil.which", return_value="/usr/bin/vllm-sr"), \
+         patch("benchmark.router_proc.subprocess.Popen", return_value=fake_proc), \
+         patch("benchmark.router_proc.subprocess.run") as run_mock:
+        async with RouterProcess(cfg):
+            pass
+        run_mock.assert_not_called()
