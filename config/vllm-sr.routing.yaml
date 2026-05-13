@@ -77,13 +77,73 @@ routing:
         case_sensitive: false
         bm25_threshold: 0.1
 
-  # Decisions are evaluated in priority order (highest first); the first match
-  # wins. A query that doesn't match any keyword-bearing decision falls through
-  # to the default at priority 10.
+      - name: judgment_keywords
+        operator: OR
+        method: bm25
+        keywords:
+          - should I
+          - how should
+          - is it ethical
+          - is it justifiable
+          - tradeoffs
+          - weigh
+          - decide between
+          - recommend
+        case_sensitive: false
+        bm25_threshold: 0.1
+
+      - name: explainer_keywords
+        operator: OR
+        method: bm25
+        keywords:
+          - explain
+          - describe
+          - what is
+          - how does
+          - summarize
+          - translate
+          - convert
+        case_sensitive: false
+        bm25_threshold: 0.1
+
+  # Decisions evaluated in priority order; first match wins.
+  #
+  # Earlier versions of this file had two unreachable tiers:
+  #   - T5 never fired (fallthrough caught nothing because T1 default-took it)
+  #   - T2 never fired (no decision targeted it)
+  # The set below maps the user-visible 5 tiers to keyword combinations
+  # such that every tier is reachable. See tests/test_shipped_configs.py
+  # for the exhaustive walk that proves it.
   decisions:
-    - name: tier4-complex
-      description: Multi-step analytical queries route to tier 4.
+    - name: tier5-frontier
+      description: Complex reasoning AND judgment — needs the frontier tier
+      priority: 100
+      rules:
+        operator: AND
+        conditions:
+          - type: keyword
+            name: complex_reasoning_keywords
+          - type: keyword
+            name: judgment_keywords
+      modelRefs:
+        - model: tier5
+          use_reasoning: false
+
+    - name: tier4-judgment
+      description: Open-ended judgment / advice / ethics / strategy
       priority: 90
+      rules:
+        operator: AND
+        conditions:
+          - type: keyword
+            name: judgment_keywords
+      modelRefs:
+        - model: tier4
+          use_reasoning: false
+
+    - name: tier4-complex
+      description: Multi-step analytical reasoning
+      priority: 80
       rules:
         operator: AND
         conditions:
@@ -94,8 +154,8 @@ routing:
           use_reasoning: false
 
     - name: tier3-coding
-      description: Coding tasks route to tier 3.
-      priority: 80
+      description: Coding tasks
+      priority: 70
       rules:
         operator: AND
         conditions:
@@ -106,8 +166,8 @@ routing:
           use_reasoning: false
 
     - name: tier3-creative
-      description: Creative writing routes to tier 3.
-      priority: 70
+      description: Creative writing
+      priority: 60
       rules:
         operator: AND
         conditions:
@@ -117,8 +177,20 @@ routing:
         - model: tier3
           use_reasoning: false
 
+    - name: tier2-explainer
+      description: General explainers and translations — workhorse tier
+      priority: 30
+      rules:
+        operator: AND
+        conditions:
+          - type: keyword
+            name: explainer_keywords
+      modelRefs:
+        - model: tier2
+          use_reasoning: false
+
     - name: default-tier1
-      description: Fallback — trivial queries go to tier 1.
+      description: Fallback — trivial lookups go to tier 1
       priority: 10
       rules:
         operator: AND

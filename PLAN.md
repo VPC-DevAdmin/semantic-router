@@ -181,8 +181,11 @@ semantic-router/
 │   │   ├── README.md             # schema + backend.kind table
 │   │   ├── tier1.yaml ... tier5.yaml
 │   ├── router.yaml               # process-management for `vllm-sr` subprocess
-│   ├── vllm-sr.routing.yaml      # hand-maintained: listeners, signals, decisions
-│   └── vllm-sr.yaml              # GENERATED (gitignored) — merged from above two
+│   ├── vllm-sr.routing.yaml      # hand-maintained: listeners, KEYWORD signals, decisions
+│   ├── vllm-sr.yaml              # GENERATED (gitignored) — keyword-based, currently active
+│   ├── router-exemplars.yaml     # alternative: contrastive-embedding training data
+│   ├── router-backends.yaml      # alternative: flat per-tier endpoints for builder
+│   └── router-config.yaml        # GENERATED (gitignored) — exemplar-based, swap-in ready
 ├── data/
 │   └── queries.json              # 110 queries with `expected_answer` gold
 ├── src/benchmark/
@@ -193,7 +196,8 @@ semantic-router/
 │   ├── tiers.py                  # async OAI-compatible client
 │   ├── router_proc.py            # `vllm-sr serve` lifecycle (launcher pattern)
 │   ├── router_client.py          # talks to Envoy; extracts x-vsr-* headers
-│   ├── router_config.py          # `gen-router-config` — emits config/vllm-sr.yaml
+│   ├── router_config.py          # `gen-router-config` — emits config/vllm-sr.yaml (keyword)
+│   ├── build_router_config.py    # `build-router-config` — emits config/router-config.yaml (exemplar)
 │   ├── start_llm.py              # `start-llm`/`stop-llm` — backend.kind dispatcher
 │   ├── runs.py                   # run lifecycle + per-row resume + RUN_NEW resets
 │   ├── pass1.py                  # `make route` — routing decisions

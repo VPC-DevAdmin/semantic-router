@@ -1,0 +1,73 @@
+# ═════════════════════════════════════════════════════════════════════════
+# Router backends — infrastructure config
+# ═════════════════════════════════════════════════════════════════════════
+#
+# This file maps the logical tier IDs from router-exemplars.yaml to
+# actual OpenAI-compatible endpoints. Keeping this separate means the
+# audience-facing exemplars file stays focused on the routing logic,
+# and you can swap model identities without touching it.
+#
+# Edit freely. Field names below are stable across vllm-sr versions;
+# the only thing that may shift is how Anthropic-style backends are
+# declared (see notes on tier4/tier5).
+# ─────────────────────────────────────────────────────────────────────────
+
+listener:
+  address: 0.0.0.0
+  port: 8899
+  timeout: 300s
+
+default_tier: tier2  # used only if all rules somehow fail to fire
+
+backends:
+
+  tier1:
+    base_url: http://localhost:8001/v1
+    model: tier1
+    # Small open model (~1B params). Run via vLLM or llama.cpp on the
+    # Granite Rapids box. Used for trivial queries only.
+
+  tier2:
+    base_url: http://localhost:8002/v1
+    model: tier2
+    # Qwen 3 30B-A3B. MoE with ~3B active params — cheap to run on CPU,
+    # surprisingly capable. The workhorse.
+
+  tier3:
+    base_url: http://localhost:8003/v1
+    model: tier3
+    # GPT-OSS 120B. Slow on CPU; for the demo this is acceptable since
+    # we're pre-recording responses, not running interactively.
+
+  tier4:
+    base_url: https://api.anthropic.com/v1
+    model: claude-sonnet-4-5
+    # NOTE: vllm-sr's Anthropic adapter handles OpenAI→Anthropic shape
+    # translation. Verify the auth field name (`api_key_env` vs `auth.api_key`)
+    # against your installed vllm-sr version.
+    api_key_env: ANTHROPIC_API_KEY
+
+  tier5:
+    base_url: https://api.anthropic.com/v1
+    model: claude-opus-4-7
+    api_key_env: ANTHROPIC_API_KEY
+
+# ─────────────────────────────────────────────────────────────────────────
+# Observability
+# ─────────────────────────────────────────────────────────────────────────
+# Capture the signal trace and decision path on every request. These
+# headers are how the production-pass logger knows which tier got picked
+# and why; they're also one of the demo's better visual assets.
+
+observability:
+  log_signal_values: true
+  log_rule_evaluations: true
+  log_decision_path: true
+  response_headers:
+    routed_tier: x-routed-tier
+    signal_trace: x-signal-trace
+    matched_rule: x-matched-rule
+
+dashboard:
+  enabled: true
+  port: 8700
