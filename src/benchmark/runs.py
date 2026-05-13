@@ -16,8 +16,8 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from .config import hash_file
-from .db import Pass1Result, Query, Run, session_scope
+from .config import ModelsConfig, hash_file
+from .db import Pass1Result, Query, Run, TierAnswer, session_scope
 
 
 def create_run(
@@ -104,10 +104,76 @@ def seed_pending(
     return seeded
 
 
+def seed_pending_tiers(
+    db_path: Path,
+    run_id: int,
+    models: ModelsConfig,
+    *,
+    only: list[str] | None = None,
+) -> int:
+    """Seed pending `tier_answers` rows: one per (query, tier_level).
+
+    Returns the number of rows seeded. Idempotent — rows that already exist
+    for `(run_id, query_id, tier_level)` are left alone. Skips TTS-only
+    queries (text gold doesn't apply to audio output).
+
+    Tiers come from `models.yaml`. A tier with `level=N` and `model_id=X`
+    contributes one row per query with `tier_level=N` and `tier_name=X`.
+    """
+    seeded = 0
+    now = datetime.now(UTC)
+
+    # Build the canonical tier set: (level, model_id) pairs from models.yaml.
+    # If two tiers share the same level, the later one wins — matches the
+    # ModelsConfig.by_name semantics.
+    tier_pairs: dict[int, str] = {}
+    for tier in models.tiers:
+        tier_pairs[tier.level] = tier.model_id
+
+    with session_scope(db_path) as session:
+        stmt = select(Query.query_id, Query.specializations)
+        if only:
+            stmt = stmt.where(Query.query_id.in_(only))
+        rows = session.execute(stmt).all()
+        # Exclude TTS-only queries from per-tier text answer collection.
+        target_qids = [
+            qid
+            for qid, specs in rows
+            if not (specs and all(s == "tts" for s in (specs or [])))
+        ]
+
+        existing = {
+            (r[0], r[1])
+            for r in session.execute(
+                select(TierAnswer.query_id, TierAnswer.tier_level)
+                .where(TierAnswer.run_id == run_id)
+            ).all()
+        }
+
+        for qid in target_qids:
+            for level, name in tier_pairs.items():
+                if (qid, level) in existing:
+                    continue
+                session.add(
+                    TierAnswer(
+                        run_id=run_id,
+                        query_id=qid,
+                        tier_level=level,
+                        tier_name=name,
+                        status="pending",
+                        attempted_at=now,
+                    )
+                )
+                seeded += 1
+
+    return seeded
+
+
 def clean_results(db_path: Path) -> dict[str, int]:
     """Wipe runs and per-pass results. Preserves queries (with gold)."""
     with session_scope(db_path) as session:
         deleted = {
+            "tier_answers": session.query(TierAnswer).delete(),
             "pass1_results": session.query(Pass1Result).delete(),
             "runs": session.query(Run).delete(),
         }

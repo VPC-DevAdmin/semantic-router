@@ -18,8 +18,8 @@ cd semantic-router
 make setup         # venv + Python deps + DB schema + installs `vllm-sr` if missing
 make load          # 110 curated queries (with embedded gold answers) → DB
 make route         # for each query: capture which tier the router picks
-make answers       # [TODO] for each query × each tier: capture that tier's response
-make export        # [TODO] emit demo.json for downstream replay + judging
+make answers       # for each query × each tier: capture that tier's response
+make export        # emit demo.json for downstream replay + judging
 ```
 
 Other targets:
@@ -68,12 +68,11 @@ queries.json ──[make load]──> SQLite ──┬─[make route]──> tie
 
 ## Status
 
-The harness is currently being dogfooded against a real `vllm-sr` install.
-`make setup`, `make load`, and the launcher half of `make route` all work;
-the chat-completion half of `make route` is blocked on an Envoy route
-generation issue and `make answers` / `make export` are not yet
-implemented. See [PLAN.md § 13](PLAN.md#13-current-state-and-roadmap) for
-the live status.
+The harness is feature-complete and being dogfooded against a real
+`vllm-sr` install. `make setup`, `make load`, `make answers`, and
+`make export` all work; `make route` reaches the router but its chat
+completions return 404 from Envoy — an active integration issue. See
+[PLAN.md § 13](PLAN.md#13-current-state-and-roadmap) for the live status.
 
 ## Tests
 

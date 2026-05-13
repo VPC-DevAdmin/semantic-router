@@ -81,6 +81,29 @@ class Pass1Result(Base):
     attempted_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class TierAnswer(Base):
+    """One row per (run, query, tier_level) — `make answers` populates these.
+
+    Each row stores the response we got from calling tier <tier_level>'s
+    endpoint directly (NOT through the router) for the given query. The
+    export step (`make export`) reads from here to build demo.json.
+    """
+
+    __tablename__ = "tier_answers"
+
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.run_id"), primary_key=True)
+    query_id: Mapped[str] = mapped_column(ForeignKey("queries.query_id"), primary_key=True)
+    tier_level: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tier_name: Mapped[str] = mapped_column(String, nullable=False)  # model_id from models.yaml
+    response_text: Mapped[str | None] = mapped_column(Text)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String, nullable=False)  # pending|success|error
+    error_msg: Mapped[str | None] = mapped_column(Text)
+    attempted_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 def make_engine(db_path: Path = DEFAULT_DB_PATH):
     # check_same_thread=False lets the async passes share a connection pool safely
     # under our per-row commit pattern; we still serialize writes via the session.

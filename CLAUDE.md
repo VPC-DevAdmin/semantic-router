@@ -17,8 +17,8 @@ Seven user-facing make targets (see `make help`):
 make setup    # one-time: venv + deps + DB + installs vllm-sr if missing
 make load     # data/queries.json → DB (with gold from `expected_answer`)
 make route    # for each query: ask the router which tier it picks (max_tokens=1)
-make answers  # [TODO] for each query × tier: call that tier's endpoint directly
-make export   # [TODO] emit demo.json (query, routed_tier, gold + routed answers)
+make answers  # for each query × tier: call that tier's endpoint directly
+make export   # emit demo.json (query, routed_tier, gold + routed answers, all_tier_answers)
 ```
 
 Plus `resume`, `clean-results`, `router-smoke`, `router-stop`, `test`,

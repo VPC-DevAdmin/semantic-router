@@ -192,7 +192,7 @@ semantic-router/
 │   ├── router_client.py          # talks to Envoy; extracts x-vsr-* headers
 │   ├── runs.py                   # run lifecycle + per-row resume
 │   ├── pass1.py                  # `make route` — routing decisions
-│   ├── pass2.py                  # `make answers` — per-tier answer collection
+│   ├── answers.py                # `make answers` — per-tier answer collection
 │   └── export.py                 # `make export` — produces demo.json
 └── tests/                        # unit tests covering everything except live router
 ```
@@ -230,10 +230,10 @@ tier_answers     (run_id, query_id, tier_level PK, response_text,
                   prompt_tokens, completion_tokens, latency_ms, status, ...)
 ```
 
-> Note: today the schema still uses the M4 `pass2_results` table for
-> router-routed responses. As part of building `make answers` we either
-> rename it to `tier_answers` and broaden its PK to include `tier_level`,
-> or add a new table and drop the old one. See §13 (Roadmap).
+The `tier_answers` table replaced the original `pass2_results` when
+`make answers` was implemented. PK is `(run_id, query_id, tier_level)`;
+`tier_name` is the `model_id` from `models.yaml` so the export step can
+write a `tier_name → response_text` map without re-joining.
 
 **Resume rule:** workers select rows where `status IN ('pending', 'error')`
 for the active run. Per-row session commits make killing the process
@@ -305,6 +305,11 @@ changes.
 - ✅ `make load` reads 110 queries with embedded gold into the DB
 - ✅ `make route` launches `vllm-sr serve` with our config; apiserver
   `/ready` returns 200
+- ✅ `make answers` collects per-tier responses with per-row resume
+  (verified against unit tests; awaits real tier backends to be exercised)
+- ✅ `make export` emits `demo.json` even with partial data — entries
+  with no pass1 row or no tier_answers get null fields for the missing
+  pieces
 
 ### Active blocker
 
@@ -339,18 +344,20 @@ changes.
 ### Roadmap (in order)
 
 1. **Unblock `make route`.** Resolve the Envoy 404 (above).
-2. **Implement `make answers`.** New file `src/benchmark/pass2.py` rewrite
-   (or replacement) that, for each query, calls every tier endpoint
-   directly. New table `tier_answers` or repurposed `pass2_results` with
-   composite PK `(run_id, query_id, tier_level)`.
-3. **Implement `make export`.** New `src/benchmark/export.py` produces
-   `demo.json` from the DB. Shape per §7.
-4. **Add ~8–10 more T4 queries** to `data/queries.json`.
-5. **Phase B backend rollout:** stand up T1 + T2 on the CPU server,
+2. **Add ~8–10 more T4 queries** to `data/queries.json`.
+3. **Phase B backend rollout:** stand up T1 + T2 on the CPU server,
    update `config/models.yaml` and `config/vllm-sr.yaml` endpoints.
-6. **Phase C backend rollout:** wire Anthropic for T4 + T5.
-7. **First production pass** — `make route && make answers && make export`
+4. **Phase C backend rollout:** wire Anthropic for T4 + T5.
+5. **First production pass** — `make route && make answers && make export`
    produces a real `demo.json`. Hand to external judging workflow.
+
+### Done
+
+- ~~**Implement `make answers`.**~~ `src/benchmark/answers.py`; new
+  `tier_answers` table with PK `(run_id, query_id, tier_level)`.
+- ~~**Implement `make export`.**~~ `src/benchmark/export.py`; emits
+  `demo.json` per §7. Resilient to missing data — emits null fields
+  where pass1 or tier_answers haven't run.
 
 ## 14. Known open design questions
 
@@ -432,3 +439,12 @@ go at the bottom.
   `demo.json` consumed by external judging + replay UI." Dropped M5+M6
   surface area; added `make answers` (per-tier collection) and
   `make export` as the new top-level targets.
+- **Prune** — deleted `judge.py`, `review.py`, `report.py`, `pass2.py`,
+  the `Score` table, and related configs/tests; folded `install-router`
+  into `make setup`. Net −1,729 lines.
+- **answers + export landed** — new `src/benchmark/answers.py` and
+  `src/benchmark/export.py`; new `tier_answers` table with PK
+  `(run_id, query_id, tier_level)`; CLI commands `answers` and `export`
+  wired; `make answers` and `make export` no longer stubs. End-to-end
+  `make load && make export` produces a valid `demo.json` with null
+  fields for parts that haven't run yet.

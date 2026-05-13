@@ -5,8 +5,8 @@ Surface (one command per make target):
   init-db        create the SQLite schema
   load           upsert data/queries.json into the DB (gold from `expected_answer`)
   route          for each query: send through router, capture routing decision
-  answers        for each query × each tier: call the tier backend directly (TODO)
-  export         emit demo.json from the DB (TODO)
+  answers        for each query × each tier: call the tier backend directly
+  export         emit demo.json from the DB
   resume         continue an in-progress run over pending/error rows
   clean-results  wipe runs/results; preserves queries and gold
   router-smoke   one-shot routing diagnostic
@@ -19,8 +19,10 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
+from .answers import run_answers
 from .config import load_models, load_router_process
 from .db import DEFAULT_DB_PATH, init_db
+from .export import export_demo_json
 from .load import load_into_db
 from .pass1 import run_pass1
 from .router_client import RouterClient, TierLookup
@@ -31,6 +33,7 @@ from .runs import (
     latest_active_run,
     mark_finished,
     seed_pending,
+    seed_pending_tiers,
 )
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -164,6 +167,79 @@ def resume_cmd(
         return 0
 
     raise typer.Exit(code=asyncio.run(_go()))
+
+
+@app.command("answers")
+def answers_cmd(
+    db: Path = typer.Option(DEFAULT_DB_PATH),
+    models: Path = typer.Option(DEFAULT_MODELS),
+    router_config: Path = typer.Option(DEFAULT_ROUTER_CONFIG, help="Used only for run provenance."),
+    run: int | None = typer.Option(
+        None, "--run", help="Run id (default: latest active or create new)."
+    ),
+    concurrency: int = typer.Option(8, "--concurrency"),
+    max_tokens: int = typer.Option(2048, "--max-tokens"),
+    query_id: list[str] = typer.Option(
+        [], "--query-id", help="Restrict to these query IDs (repeatable)."
+    ),
+    notes: str = typer.Option("", "--notes"),
+) -> None:
+    """For each query × each tier: call that tier's endpoint directly.
+
+    Bypasses the router — we want every tier's response so the export step
+    can show what each tier would have produced. Resumable per
+    (run, query, tier).
+    """
+    if not db.exists():
+        console.print(f"[red]error[/]: db {db} does not exist; run `make setup` first")
+        raise typer.Exit(code=2)
+
+    models_cfg = load_models(models)
+    only = list(query_id) or None
+
+    if run is not None:
+        rid = run
+    else:
+        rid = latest_active_run(db)
+        if rid is None:
+            rid = create_run(
+                db,
+                router_config_path=router_config,
+                models_config_path=models,
+                notes=notes or None,
+            )
+            console.print(f"[green]answers[/] created run={rid}")
+
+    seeded = seed_pending_tiers(db, rid, models_cfg, only=only)
+    if seeded:
+        console.print(f"[green]seeded[/] {seeded} pending tier_answers row(s)")
+
+    report = asyncio.run(
+        run_answers(
+            db,
+            rid,
+            models=models_cfg,
+            concurrency=concurrency,
+            max_tokens=max_tokens,
+        )
+    )
+    console.print(f"[bold]answers[/] (run {rid})")
+    console.print(str(report))
+    if report.errors:
+        raise typer.Exit(code=1)
+
+
+@app.command("export")
+def export_cmd(
+    db: Path = typer.Option(DEFAULT_DB_PATH),
+    run: int | None = typer.Option(None, "--run"),
+    output: Path = typer.Option(Path("demo.json"), "--output", "-o"),
+) -> None:
+    """Write demo.json from the DB. Defaults to the latest active run."""
+    rid = _resolve_run(db, run)
+    summary = export_demo_json(db, rid, output)
+    console.print(f"[bold]export[/] (run {rid})")
+    console.print(str(summary))
 
 
 # ---------- Utility ----------

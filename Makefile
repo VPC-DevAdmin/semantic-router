@@ -22,8 +22,8 @@ help:
 	@echo "  setup                    venv + deps + init DB + install vllm-sr (if missing)"
 	@echo "  load                     load data/queries.json into DB (idempotent)"
 	@echo "  route                    for each query: capture the router's tier pick"
-	@echo "  answers [RUN=<id>]       [TODO] for each query × tier: capture that tier's response"
-	@echo "  export [RUN=<id>]        [TODO] write demo.json from DB"
+	@echo "  answers [RUN=<id>]       for each query × tier: capture that tier's response"
+	@echo "  export [RUN=<id>] [OUTPUT=<path>]  write demo.json (default: ./demo.json)"
 	@echo "  resume [RUN=<id>]        re-run pending/error rows; mark done if clean"
 	@echo "  clean-results            wipe runs/results; preserves queries + gold"
 	@echo "  router-smoke PROMPT='...'  diagnostic: one query through the router"
@@ -89,14 +89,12 @@ load:
 route:
 	$(BENCHMARK) route --db $(DB)
 
-# `answers` and `export` not yet wired through the CLI; see PLAN.md §13.
 answers:
-	@echo "TODO: make answers — hit each tier endpoint per query. See PLAN.md §13."
-	@exit 1
+	$(BENCHMARK) answers --db $(DB) $(if $(RUN),--run $(RUN),)
 
+OUTPUT ?= demo.json
 export:
-	@echo "TODO: make export — emit demo.json from DB. See PLAN.md §13."
-	@exit 1
+	$(BENCHMARK) export --db $(DB) --output $(OUTPUT) $(if $(RUN),--run $(RUN),)
 
 resume:
 	$(BENCHMARK) resume --db $(DB) $(if $(RUN),--run $(RUN),)
