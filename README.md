@@ -36,9 +36,12 @@ make help                                # full target list
 
 ```
 config/           # everything the operator tunes — YAML configs
-    models.yaml       # tier registry; maps router-emitted model name → tier number
+    tiers/            # single source of truth — one YAML per tier (router_alias,
+                      # endpoint, router_backend_refs, backend.kind, ...)
+    vllm-sr.routing.yaml  # hand-maintained routing template (listeners, signals, decisions)
+    vllm-sr.yaml      # GENERATED (gitignored) by `make gen-router-config`;
+                      # the router's INTERNAL config passed via --config flag
     router.yaml       # process-management config for the `vllm-sr` subprocess
-    vllm-sr.yaml      # the router's INTERNAL config (passed via --config flag)
 
 data/
     queries.json      # 110 queries with `expected_answer` (Opus-level gold)

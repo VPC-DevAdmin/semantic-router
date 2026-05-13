@@ -31,8 +31,8 @@ answer adequacy), but the audience sees one event per query.
 
 In code and config, tiers are referenced by neutral identifiers
 (`tier1` … `tier5`) so the model behind each tier can change without
-touching any code. See `config/models.yaml`; the `model_id` is the tier
-label, the `endpoint` is the actual backend.
+touching any code. See `config/tiers/tierN.yaml`; `router_alias` is the
+tier label the router emits, `endpoint` is the actual backend.
 
 ## 3. Dataset
 
@@ -283,10 +283,11 @@ on 2xx-non-cached responses:
 - `x-vsr-selected-category` → e.g. `math`
 - `x-vsr-selected-reasoning` → `on` | `off`
 
-`config/models.yaml` maps each `x-vsr-selected-model` value back to a
-numeric tier level. The shipped-configs test asserts every model name in
-`vllm-sr.yaml` has a matching `model_id` entry in `models.yaml` — drift
-between the two is the most common config bug.
+Each `config/tiers/tierN.yaml`'s `router_alias` is the value the router
+emits in `x-vsr-selected-model`; `level` is the numeric tier. The
+shipped-configs test asserts every model in the generated `vllm-sr.yaml`
+resolves to a `router_alias` in `config/tiers/` — drift between the per-tier
+files and the routing template is the most common config bug.
 
 ## 12. Backend strategy
 
@@ -376,14 +377,17 @@ not `/v1/chat/completions`. Replaced with `tools/oai_mock.py`.
 
 1. **Add ~8–10 more T4 queries** to `data/queries.json` (per §3).
 2. **Phase B — T1 + T2 rollout:**
-   - Wire the user-provided T1 runner into `make start_LLM`.
-   - Flip T1 + T2 backend lines (marked `# REAL:`) in
-     `config/vllm-sr.yaml` and `config/models.yaml`.
+   - Wire the user-provided T1 runner: edit `config/tiers/tier1.yaml`,
+     change `backend.kind: placeholder` to the real runner kind, fill in
+     `endpoint.url` and `router_backend_refs`.
+   - Point `config/tiers/tier2.yaml` at the real T2 backend (endpoint +
+     router_backend_refs).
    - Run `make start_LLM && make router-stop && make route && make answers`.
 3. **Phase C — T3 + Anthropic:**
-   - T3: external GPU endpoint goes into the `# REAL:` lines for tier3.
+   - T3: external GPU endpoint goes into `config/tiers/tier3.yaml`
+     (endpoint + router_backend_refs; `backend.kind: remote`).
    - T4/T5: decide on the vendor-model-name approach (see §12 open
-     question), then flip the tier4/tier5 `# REAL:` lines.
+     question), then update `config/tiers/tier4.yaml` and `tier5.yaml`.
 4. **First production pass** — `make route && make answers && make export`
    produces a real `demo.json`. Hand to external judging workflow.
 
@@ -396,10 +400,11 @@ not `/v1/chat/completions`. Replaced with `tools/oai_mock.py`.
   where pass1 or tier_answers haven't run.
 - ~~**Unblock `make route`.**~~ Bundled simulator doesn't speak OAI;
   replaced with `tools/oai_mock.py`. Pipeline now verified end-to-end.
-- ~~**Plumbing for real backends.**~~ Each tier block in
-  `config/vllm-sr.yaml` and `config/models.yaml` carries a `# REAL:`
-  comment marking the swap line. `make start_LLM` / `make stop_LLM`
-  wraps the T2 dual-replica docker-run procedure.
+- ~~**Plumbing for real backends.**~~ Per-tier YAMLs under `config/tiers/`
+  are the single source of truth; swapping a backend is a one-file edit
+  (endpoint + router_backend_refs + backend.kind). `make start_LLM` /
+  `make stop_LLM` wraps the T2 dual-replica docker-run procedure via the
+  `backend.kind` dispatcher in `src/benchmark/start_llm.py`.
 
 ## 14. Known open design questions
 
@@ -417,8 +422,8 @@ not `/v1/chat/completions`. Replaced with `tools/oai_mock.py`.
   `vllm-sr-network`.
 - **Tier identifiers vs. real model names.** Keep `tier1..tier5` in code
   and configs so we can rotate models behind a tier with no code edits.
-  Surface real model names only in `models.yaml`'s `endpoint` and in
-  reporting metadata.
+  Surface real model names only in each tier YAML's `endpoint` /
+  `served_model_name` fields and in reporting metadata.
 
 ## 15. Testing strategy
 
@@ -431,8 +436,8 @@ not `/v1/chat/completions`. Replaced with `tools/oai_mock.py`.
   surfaced the launcher-vs-daemon bug we already fixed.
 - **`tests/test_shipped_configs.py`** asserts every YAML/JSON file under
   `config/` and `data/` actually parses with the real loaders, plus that
-  `vllm-sr.yaml`'s model names line up with `models.yaml`'s `model_id`
-  values.
+  the generated `vllm-sr.yaml`'s model names line up with `router_alias`
+  values from `config/tiers/*.yaml`.
 
 ## 16. Maintaining this document
 
@@ -503,10 +508,12 @@ go at the bottom.
   ~120 lines) replaces the bundled sim for pipeline validation.
   `make mock-bg` / `mock-stop` manage it. Each tier block in
   `config/vllm-sr.yaml` and `config/models.yaml` got a `# REAL:`
-  comment marking the swap line so each tier can independently flip
+  comment marking the swap line so each tier could independently flip
   to its real backend with no code changes. End-to-end verified:
   `make route` 110/110, `make answers` 550/550, `make export`
-  produces complete `demo.json`.
+  produces complete `demo.json`. (Superseded by the per-tier YAML
+  refactor below; `# REAL:` markers are gone and `models.yaml` is
+  removed.)
 - **start_LLM / stop_LLM landed** — new Makefile targets wrap the
   documented vLLM dual-socket T2 procedure (NUMA-pinned r0/r1 on host
   ports 8000/8001, `--block-size 32`, 120 GB KV per replica). Stable
