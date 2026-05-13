@@ -1,0 +1,20 @@
+# Tier 3 — external GPU server.
+
+name: tier3
+level: 3
+specializations: [general, coding, math]
+timeout_s: 120
+
+router_alias: tier3
+served_model_name: tier3
+
+endpoint:
+  url: http://localhost:8811/v1               # REAL: http://<gpu-host>:<port>/v1
+  api_key_env: null                            # REAL: TIER3_API_KEY (set in .env)
+
+router_backend_refs:
+  - endpoint: host.docker.internal:8811        # REAL: <gpu-host>:<port>
+    weight: 100
+
+backend:
+  kind: remote                                 # not launched by us

@@ -5,9 +5,10 @@ the current config hashes. Per-pass result rows are seeded with
 `status='pending'` so the worker can pick them up via a simple status
 filter — that's what makes resume work without any extra coordination.
 
-Today we seed only `pass1_results`. When `make answers` lands it will add
-a per-tier table (`tier_answers` per PLAN.md §10) with its own seeding
-logic.
+`make answers` semantics (post-refactor): exactly one TierAnswer row per
+query, with `tier_level` set to the router's pick (from pass1_results).
+Queries with no successful pass1 row are skipped at seeding time and will
+be picked up on the next make answers after make route succeeds for them.
 """
 from __future__ import annotations
 
@@ -104,69 +105,100 @@ def seed_pending(
     return seeded
 
 
-def seed_pending_tiers(
+def seed_pending_answers(
     db_path: Path,
     run_id: int,
     models: ModelsConfig,
     *,
     only: list[str] | None = None,
 ) -> int:
-    """Seed pending `tier_answers` rows: one per (query, tier_level).
+    """Seed one pending `tier_answers` row per query, using the routed tier.
 
-    Returns the number of rows seeded. Idempotent — rows that already exist
-    for `(run_id, query_id, tier_level)` are left alone. Skips TTS-only
-    queries (text gold doesn't apply to audio output).
+    The routed tier is read from `pass1_results.router_selected_tier`. Queries
+    without a successful pass1 row (or with a null routed tier) are skipped;
+    they'll be picked up by a subsequent seed call after `make route` records
+    their decision. TTS-only queries are excluded.
 
-    Tiers come from `models.yaml`. A tier with `level=N` and `model_id=X`
-    contributes one row per query with `tier_level=N` and `tier_name=X`.
+    Returns the number of rows seeded. Idempotent on (run_id, query_id) at
+    the row level: if a row already exists for this query in this run, it's
+    left alone (even if the routed tier has since changed). Use RUN_NEW to
+    rebuild from scratch.
     """
     seeded = 0
     now = datetime.now(UTC)
 
-    # Build the canonical tier set: (level, model_id) pairs from models.yaml.
-    # If two tiers share the same level, the later one wins — matches the
-    # ModelsConfig.by_name semantics.
-    tier_pairs: dict[int, str] = {}
-    for tier in models.tiers:
-        tier_pairs[tier.level] = tier.model_id
+    # tier_level → router_alias (used as tier_name when seeding).
+    name_by_level: dict[int, str] = {t.level: t.router_alias for t in models.tiers}
 
     with session_scope(db_path) as session:
         stmt = select(Query.query_id, Query.specializations)
         if only:
             stmt = stmt.where(Query.query_id.in_(only))
         rows = session.execute(stmt).all()
-        # Exclude TTS-only queries from per-tier text answer collection.
-        target_qids = [
+        # Exclude TTS-only queries from text-answer collection.
+        target_qids = {
             qid
             for qid, specs in rows
             if not (specs and all(s == "tts" for s in (specs or [])))
-        ]
+        }
 
-        existing = {
-            (r[0], r[1])
+        routed_by_qid: dict[str, int] = {}
+        for qid, lvl in session.execute(
+            select(Pass1Result.query_id, Pass1Result.router_selected_tier)
+            .where(Pass1Result.run_id == run_id)
+            .where(Pass1Result.status == "success")
+        ).all():
+            if qid in target_qids and lvl is not None:
+                routed_by_qid[qid] = lvl
+
+        existing_qids = {
+            r[0]
             for r in session.execute(
-                select(TierAnswer.query_id, TierAnswer.tier_level)
-                .where(TierAnswer.run_id == run_id)
+                select(TierAnswer.query_id).where(TierAnswer.run_id == run_id)
             ).all()
         }
 
-        for qid in target_qids:
-            for level, name in tier_pairs.items():
-                if (qid, level) in existing:
-                    continue
-                session.add(
-                    TierAnswer(
-                        run_id=run_id,
-                        query_id=qid,
-                        tier_level=level,
-                        tier_name=name,
-                        status="pending",
-                        attempted_at=now,
-                    )
+        for qid, level in routed_by_qid.items():
+            if qid in existing_qids:
+                continue
+            name = name_by_level.get(level, f"tier{level}")
+            session.add(
+                TierAnswer(
+                    run_id=run_id,
+                    query_id=qid,
+                    tier_level=level,
+                    tier_name=name,
+                    status="pending",
+                    attempted_at=now,
                 )
-                seeded += 1
+            )
+            seeded += 1
 
     return seeded
+
+
+def reset_pass1(db_path: Path, run_id: int) -> int:
+    """Delete all pass1_results rows for `run_id`. Returns the count deleted.
+
+    Used by `make route RUN_NEW=true` before re-seeding.
+    """
+    with session_scope(db_path) as session:
+        deleted = (
+            session.query(Pass1Result).filter(Pass1Result.run_id == run_id).delete()
+        )
+    return deleted
+
+
+def reset_answers(db_path: Path, run_id: int) -> int:
+    """Delete all tier_answers rows for `run_id`. Returns the count deleted.
+
+    Used by `make answers RUN_NEW=true` before re-seeding.
+    """
+    with session_scope(db_path) as session:
+        deleted = (
+            session.query(TierAnswer).filter(TierAnswer.run_id == run_id).delete()
+        )
+    return deleted
 
 
 def clean_results(db_path: Path) -> dict[str, int]:

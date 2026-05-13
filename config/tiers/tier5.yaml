@@ -1,0 +1,21 @@
+# Tier 5 — Anthropic Claude Opus via OAI-compatible endpoint.
+
+name: tier5
+level: 5
+specializations: [general, coding, math, reasoning, creative_writing]
+timeout_s: 240
+
+router_alias: tier5
+# REAL: switch to the actual Anthropic model id (e.g. claude-opus-4-7).
+served_model_name: tier5
+
+endpoint:
+  url: http://localhost:8811/v1               # REAL: https://api.anthropic.com/v1
+  api_key_env: null                            # REAL: ANTHROPIC_API_KEY (set in .env)
+
+router_backend_refs:
+  - endpoint: host.docker.internal:8811        # REAL: api.anthropic.com:443
+    weight: 100
+
+backend:
+  kind: remote

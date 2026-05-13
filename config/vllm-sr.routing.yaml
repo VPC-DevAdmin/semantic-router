@@ -1,20 +1,11 @@
-# vLLM Semantic Router internal config — passed via `vllm-sr serve --config`.
+# vLLM Semantic Router — hand-maintained routing template.
 #
-# This file is the router's own configuration: what listeners it exposes,
-# what models are available as backends, and what routing rules apply.
-# Our benchmark harness reads `config/router.yaml` for process management,
-# and reads `config/models.yaml` to map router-selected model names back to
-# numeric tiers. The three files have to stay in sync on the `model_id` /
-# model name strings.
+# This file holds the parts of vllm-sr.yaml that are not derived from
+# per-tier YAMLs: listeners, signals, decisions, modelCards (model strength),
+# and global. The `providers` block is GENERATED from config/tiers/*.yaml.
 #
-# This starter config:
-#   - declares 5 tier models (tier1..tier5)
-#   - points every backend at the bundled simulator (vllm-sr-sim, host port 8810)
-#     so we can validate routing without any real LLM cost
-#   - uses simple keyword signals to differentiate routing decisions
-#
-# Once we have real backends (CPU models on a dedicated server, Anthropic API
-# for tier4/5), update `backend_refs.endpoint` per model.
+# The full vllm-sr.yaml is built by `make gen-router-config` (or
+# `benchmark gen-router-config`) and is gitignored.
 
 version: v0.3
 
@@ -24,77 +15,13 @@ listeners:
     port: 8899
     timeout: 300s
 
-providers:
-  defaults:
-    default_model: tier1
-  models:
-    - name: tier1
-      provider_model_id: tier1
-      api_format: openai
-      backend_refs:
-        - name: sim
-          endpoint: host.docker.internal:8810
-          protocol: http
-          weight: 100
-
-    - name: tier2
-      provider_model_id: tier2
-      api_format: openai
-      backend_refs:
-        - name: sim
-          endpoint: host.docker.internal:8810
-          protocol: http
-          weight: 100
-
-    - name: tier3
-      provider_model_id: tier3
-      api_format: openai
-      backend_refs:
-        - name: sim
-          endpoint: host.docker.internal:8810
-          protocol: http
-          weight: 100
-
-    - name: tier4
-      provider_model_id: tier4
-      api_format: openai
-      backend_refs:
-        - name: sim
-          endpoint: host.docker.internal:8810
-          protocol: http
-          weight: 100
-
-    - name: tier5
-      provider_model_id: tier5
-      api_format: openai
-      backend_refs:
-        - name: sim
-          endpoint: host.docker.internal:8810
-          protocol: http
-          weight: 100
+# `providers:` is GENERATED into the merged vllm-sr.yaml at build time.
+# Do not add it here.
 
 routing:
-  modelCards:
-    - name: tier1
-      modality: text
-      quality_score: 0.50
-      description: Tier 1 — tiny model, trivial queries.
-    - name: tier2
-      modality: text
-      quality_score: 0.65
-      description: Tier 2 — small model, simple coding and translation.
-    - name: tier3
-      modality: text
-      quality_score: 0.80
-      description: Tier 3 — mid-size model, substantive reasoning and code.
-    - name: tier4
-      modality: text
-      quality_score: 0.90
-      description: Tier 4 — large model, multi-step reasoning and synthesis.
-    - name: tier5
-      modality: text
-      quality_score: 0.98
-      description: Tier 5 — frontier model, novel synthesis and judgment.
+  # `modelCards:` is GENERATED from config/tiers/*.yaml (one card per tier
+  # with quality_score derived from the tier's `level`). The router uses
+  # these for model-strength reasoning when no decision rule matches.
 
   signals:
     keywords:
@@ -235,3 +162,23 @@ global:
         model_ref: ""
         model_id: ""
         use_mmbert_32k: false
+
+# Per-tier description / quality_score overrides used in the generated
+# `routing.modelCards` block. Keyed by tier name. If omitted, defaults
+# (quality_score = 0.5 + 0.1*(level-1), description = "Tier N") are used.
+modelCards_overrides:
+  tier1:
+    quality_score: 0.50
+    description: Tier 1 — tiny model, trivial queries.
+  tier2:
+    quality_score: 0.65
+    description: Tier 2 — small model, simple coding and translation.
+  tier3:
+    quality_score: 0.80
+    description: Tier 3 — mid-size model, substantive reasoning and code.
+  tier4:
+    quality_score: 0.90
+    description: Tier 4 — large model, multi-step reasoning and synthesis.
+  tier5:
+    quality_score: 0.98
+    description: Tier 5 — frontier model, novel synthesis and judgment.

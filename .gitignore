@@ -29,11 +29,18 @@ config/*.local.yaml
 # Runtime logs
 logs/
 
+# Generated router config — built from config/tiers/*.yaml +
+# config/vllm-sr.routing.yaml by `make gen-router-config`.
+config/vllm-sr.yaml
+# vllm-sr's per-config working dir, regenerated alongside vllm-sr.yaml.
+config/.vllm-sr/
+
 # vllm-sr's auto-generated artifacts in the project root.
-# Our routing config lives at config/vllm-sr.yaml and is passed via
-# `vllm-sr serve --config`; the launcher may still leave its own files behind.
 /config.yaml
 /.vllm-sr/
+
+# Generated demo artifact — re-emitted by `make export`.
+demo.json
 
 # Editor / OS
 .DS_Store

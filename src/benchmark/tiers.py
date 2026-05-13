@@ -158,8 +158,8 @@ def _resolve_api_key(api_key_env: str | None) -> str | None:
 
 def client_from_tier(tier: TierConfig) -> OAIClient:
     return OAIClient(
-        endpoint=tier.endpoint,
-        model_id=tier.model_id,
-        api_key=_resolve_api_key(tier.api_key_env),
+        endpoint=tier.endpoint.url,
+        model_id=tier.served_model_name,
+        api_key=_resolve_api_key(tier.endpoint.api_key_env),
         timeout_s=float(tier.timeout_s),
     )

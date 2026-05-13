@@ -17,6 +17,7 @@ import asyncio
 from pathlib import Path
 
 import typer
+from dotenv import load_dotenv
 from rich.console import Console
 
 from .answers import run_answers
@@ -26,21 +27,34 @@ from .export import export_demo_json
 from .load import load_into_db
 from .pass1 import run_pass1
 from .router_client import RouterClient, TierLookup
+from .router_config import (
+    DEFAULT_OUTPUT as DEFAULT_ROUTER_CONFIG_OUTPUT,
+)
+from .router_config import (
+    DEFAULT_ROUTING_TEMPLATE,
+    generate_router_config,
+)
 from .router_proc import RouterProcess
 from .runs import (
     clean_results,
     create_run,
     latest_active_run,
     mark_finished,
+    reset_answers,
+    reset_pass1,
     seed_pending,
-    seed_pending_tiers,
+    seed_pending_answers,
 )
+
+# Load .env from CWD on every CLI start. Existing env vars win (so shell /
+# CI overrides take precedence over file values).
+load_dotenv(override=False)
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 console = Console()
 
 DEFAULT_QUERIES = Path("data/queries.json")
-DEFAULT_MODELS = Path("config/models.yaml")
+DEFAULT_TIERS = Path("config/tiers")
 DEFAULT_ROUTER_CONFIG = Path("config/router.yaml")
 
 
@@ -103,17 +117,23 @@ def _ensure_run(
 def route_cmd(
     db: Path = typer.Option(DEFAULT_DB_PATH),
     router_config: Path = typer.Option(DEFAULT_ROUTER_CONFIG),
-    models: Path = typer.Option(DEFAULT_MODELS),
+    models: Path = typer.Option(DEFAULT_TIERS),
     concurrency: int = typer.Option(8, "--concurrency"),
     query_id: list[str] = typer.Option(
         [], "--query-id", help="Restrict to these query IDs (repeatable)."
     ),
     notes: str = typer.Option("", "--notes"),
+    run_new: bool = typer.Option(
+        False, "--run-new",
+        help="Delete existing pass1_results for the active run, then re-seed.",
+    ),
 ) -> None:
     """Pass 1: send each query through the router and capture the routing decision.
 
     Generation is capped at max_tokens=1 — we only care about which model the
-    router selects, not the response. Resumable.
+    router selects, not the response. Resumable; rows in status='error' are
+    retried automatically on the next invocation. With --run-new, all
+    pass1_results for the active run are dropped first.
     """
     if not db.exists():
         console.print(f"[red]error[/]: db {db} does not exist; run `make setup` first")
@@ -125,6 +145,11 @@ def route_cmd(
 
     async def _go() -> int:
         rid = _ensure_run(db, router_config, models, only, notes or None)
+        if run_new:
+            n = reset_pass1(db, rid)
+            console.print(f"[yellow]--run-new[/]: deleted {n} pass1_results row(s)")
+            from .runs import seed_pending  # noqa: F401  (already imported above)
+            seed_pending(db, rid, only=only)
         console.print(f"[green]route[/] run={rid}")
         async with RouterProcess(proc_cfg):
             client = RouterClient(proc_cfg, lookup)
@@ -139,7 +164,7 @@ def route_cmd(
 def resume_cmd(
     db: Path = typer.Option(DEFAULT_DB_PATH),
     router_config: Path = typer.Option(DEFAULT_ROUTER_CONFIG),
-    models: Path = typer.Option(DEFAULT_MODELS),
+    models: Path = typer.Option(DEFAULT_TIERS),
     run: int | None = typer.Option(None, "--run"),
     concurrency: int = typer.Option(8, "--concurrency"),
 ) -> None:
@@ -172,7 +197,7 @@ def resume_cmd(
 @app.command("answers")
 def answers_cmd(
     db: Path = typer.Option(DEFAULT_DB_PATH),
-    models: Path = typer.Option(DEFAULT_MODELS),
+    models: Path = typer.Option(DEFAULT_TIERS),
     router_config: Path = typer.Option(DEFAULT_ROUTER_CONFIG, help="Used only for run provenance."),
     run: int | None = typer.Option(
         None, "--run", help="Run id (default: latest active or create new)."
@@ -183,12 +208,20 @@ def answers_cmd(
         [], "--query-id", help="Restrict to these query IDs (repeatable)."
     ),
     notes: str = typer.Option("", "--notes"),
+    run_new: bool = typer.Option(
+        False, "--run-new",
+        help="Delete existing tier_answers for the active run, then re-seed.",
+    ),
 ) -> None:
-    """For each query × each tier: call that tier's endpoint directly.
+    """For each routed query: call the tier the router picked.
 
-    Bypasses the router — we want every tier's response so the export step
-    can show what each tier would have produced. Resumable per
-    (run, query, tier).
+    The tier comes from `pass1_results.router_selected_tier` (set by
+    `make route`). One row per query — not per-tier fan-out. Unreachable
+    endpoints mark the row as `status='error'`; the pass keeps going and
+    a subsequent `make answers` retries those rows.
+
+    Queries without a successful pass1 row are not seeded; run `make route`
+    first (or re-run after fixing whatever broke route).
     """
     if not db.exists():
         console.print(f"[red]error[/]: db {db} does not exist; run `make setup` first")
@@ -210,9 +243,18 @@ def answers_cmd(
             )
             console.print(f"[green]answers[/] created run={rid}")
 
-    seeded = seed_pending_tiers(db, rid, models_cfg, only=only)
+    if run_new:
+        n = reset_answers(db, rid)
+        console.print(f"[yellow]--run-new[/]: deleted {n} tier_answers row(s)")
+
+    seeded = seed_pending_answers(db, rid, models_cfg, only=only)
     if seeded:
         console.print(f"[green]seeded[/] {seeded} pending tier_answers row(s)")
+    else:
+        console.print(
+            "[yellow]note[/]: 0 new rows seeded — run `make route` to record "
+            "routing decisions, or use --run-new to reset."
+        )
 
     report = asyncio.run(
         run_answers(
@@ -225,8 +267,7 @@ def answers_cmd(
     )
     console.print(f"[bold]answers[/] (run {rid})")
     console.print(str(report))
-    if report.errors:
-        raise typer.Exit(code=1)
+    # Errors are now expected (retry on next run); always exit 0.
 
 
 @app.command("export")
@@ -257,11 +298,49 @@ def clean_results_cmd(
         console.print(f"  deleted {n:>5} from {table}")
 
 
+@app.command("start-llm")
+def start_llm_cmd(
+    tiers: Path = typer.Option(DEFAULT_TIERS, "--tiers"),
+) -> None:
+    """Launch local-CPU tier backends defined in config/tiers/*.yaml.
+
+    Dispatches on each tier's `backend.kind`. Tiers with `kind: remote` or
+    `kind: placeholder` are skipped.
+    """
+    from .start_llm import start_local_tiers
+    start_local_tiers(tiers)
+
+
+@app.command("stop-llm")
+def stop_llm_cmd(
+    tiers: Path = typer.Option(DEFAULT_TIERS, "--tiers"),
+) -> None:
+    """Stop local-CPU tier backends defined in config/tiers/*.yaml."""
+    from .start_llm import stop_local_tiers
+    stop_local_tiers(tiers)
+
+
+@app.command("gen-router-config")
+def gen_router_config_cmd(
+    tiers: Path = typer.Option(DEFAULT_TIERS, "--tiers"),
+    routing_template: Path = typer.Option(DEFAULT_ROUTING_TEMPLATE, "--template"),
+    output: Path = typer.Option(DEFAULT_ROUTER_CONFIG_OUTPUT, "--output", "-o"),
+) -> None:
+    """Render the merged vllm-sr.yaml from per-tier YAMLs + the routing template.
+
+    The output file is what `vllm-sr serve --config` reads. It is gitignored
+    (build artifact). Re-run this whenever you edit a per-tier YAML or the
+    routing template.
+    """
+    path = generate_router_config(tiers_dir=tiers, routing_template=routing_template, output=output)
+    console.print(f"[green]wrote[/] {path}")
+
+
 @app.command("router-smoke")
 def router_smoke_cmd(
     prompt: str = typer.Argument(..., help="Prompt to send through the router."),
     router_config: Path = typer.Option(DEFAULT_ROUTER_CONFIG),
-    models: Path = typer.Option(DEFAULT_MODELS),
+    models: Path = typer.Option(DEFAULT_TIERS),
     max_tokens: int = typer.Option(64, "--max-tokens"),
 ) -> None:
     """Boot router, send one prompt, print decision, tear down. Diagnostic."""

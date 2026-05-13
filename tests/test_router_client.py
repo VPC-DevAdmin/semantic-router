@@ -6,7 +6,7 @@ import json
 import httpx
 import pytest
 
-from benchmark.config import ModelsConfig, RouterProcessConfig, TierConfig
+from benchmark.config import ModelsConfig, RouterProcessConfig
 from benchmark.router_client import (
     HDR_SELECTED_CATEGORY,
     HDR_SELECTED_MODEL,
@@ -15,24 +15,16 @@ from benchmark.router_client import (
     TierLookup,
 )
 
+from ._helpers import make_tier
+
 
 def _models() -> ModelsConfig:
     return ModelsConfig(
         tiers=[
-            TierConfig(
-                name="t1",
-                level=1,
-                endpoint="http://x/v1",
-                model_id="phi4",
-                api_key_env=None,
-                specializations=["general"],
-            ),
-            TierConfig(
-                name="t4",
-                level=4,
-                endpoint="http://x/v1",
-                model_id="DeepSeek-V31",
-                api_key_env=None,
+            make_tier(level=1, name="t1", router_alias="phi4", served_model_name="phi4"),
+            make_tier(
+                level=4, name="t4",
+                router_alias="DeepSeek-V31", served_model_name="DeepSeek-V31",
                 specializations=["general", "coding", "math", "reasoning"],
             ),
         ]

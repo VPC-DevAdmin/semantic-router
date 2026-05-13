@@ -8,7 +8,8 @@
 #   make export       # emit demo.json from the DB                            [TODO]
 
 .PHONY: help setup load route answers export resume \
-        clean-results router-smoke router-stop test fmt lint
+        clean-results router-smoke router-stop test fmt lint \
+        mock-bg mock-stop start_LLM stop_LLM gen-router-config
 
 VENV := .venv
 PYTHON := $(VENV)/bin/python
@@ -18,16 +19,25 @@ DB := benchmark.db
 HAS_UV := $(shell command -v uv 2>/dev/null)
 
 help:
-	@echo "Targets:"
-	@echo "  setup                    venv + deps + init DB + install vllm-sr (if missing)"
-	@echo "  load                     load data/queries.json into DB (idempotent)"
-	@echo "  route                    for each query: capture the router's tier pick"
-	@echo "  answers [RUN=<id>]       for each query × tier: capture that tier's response"
+	@echo "Production pass:"
+	@echo "  setup                          venv + deps + init DB + install vllm-sr (if missing)"
+	@echo "  load                           load data/queries.json into DB (idempotent)"
+	@echo "  gen-router-config              render config/vllm-sr.yaml from config/tiers/*.yaml"
+	@echo "  route [RUN_NEW=true]           routing pass; RUN_NEW wipes pass1_results first"
+	@echo "  answers [RUN=<id>] [RUN_NEW=true]  routed-tier answers; errors retry on next run"
 	@echo "  export [RUN=<id>] [OUTPUT=<path>]  write demo.json (default: ./demo.json)"
-	@echo "  resume [RUN=<id>]        re-run pending/error rows; mark done if clean"
-	@echo "  clean-results            wipe runs/results; preserves queries + gold"
-	@echo "  router-smoke PROMPT='...'  diagnostic: one query through the router"
-	@echo "  router-stop              tear down the vllm-sr Docker stack"
+	@echo "  resume [RUN=<id>]              re-run pending/error rows; mark done if clean"
+	@echo ""
+	@echo "Backends:"
+	@echo "  mock-bg                        start the local OAI mock (port \$$MOCK_PORT, default 8811)"
+	@echo "  mock-stop                      stop the local OAI mock"
+	@echo "  start_LLM                      launch local-CPU tier backends per config/tiers/*.yaml"
+	@echo "  stop_LLM                       stop local-CPU tier backends"
+	@echo ""
+	@echo "Utility:"
+	@echo "  clean-results                  wipe runs/results; preserves queries + gold"
+	@echo "  router-smoke PROMPT='...'      diagnostic: one query through the router"
+	@echo "  router-stop                    tear down the vllm-sr Docker stack"
 	@echo "  test / fmt / lint"
 
 # ---- one-time setup ----
@@ -84,13 +94,22 @@ endif
 load:
 	$(BENCHMARK) load --db $(DB)
 
+# ---- router config (generated) ----
+
+gen-router-config:
+	$(BENCHMARK) gen-router-config
+
 # ---- production pass ----
 
-route:
-	$(BENCHMARK) route --db $(DB)
+# `make route` regenerates vllm-sr.yaml first so the router always launches
+# with the current per-tier YAMLs reflected in its config.
+# RUN_NEW=true → drop existing pass1_results for the active run and re-seed.
+route: gen-router-config
+	$(BENCHMARK) route --db $(DB) $(if $(filter true,$(RUN_NEW)),--run-new,)
 
+# RUN_NEW=true → drop existing tier_answers for the active run and re-seed.
 answers:
-	$(BENCHMARK) answers --db $(DB) $(if $(RUN),--run $(RUN),)
+	$(BENCHMARK) answers --db $(DB) $(if $(RUN),--run $(RUN),) $(if $(filter true,$(RUN_NEW)),--run-new,)
 
 OUTPUT ?= demo.json
 export:
@@ -113,6 +132,56 @@ router-smoke:
 # `make route` re-launches it with the checked-in config.
 router-stop:
 	vllm-sr stop
+
+# ---- local mock backend ----
+#
+# Stands in for real LLM tier endpoints so the pipeline (route + answers +
+# export) can be validated without spending tokens. Stdlib-only; no extra
+# deps. Returns tier-tagged canned text so we can verify which tier served
+# each row.
+
+MOCK_PORT ?= 8811
+MOCK_LOG := logs/mock.log
+MOCK_PID := logs/mock.pid
+
+mock-bg:
+	@mkdir -p logs
+	@if [ -f $(MOCK_PID) ] && kill -0 $$(cat $(MOCK_PID)) 2>/dev/null; then \
+	    echo "[mock] already running (pid $$(cat $(MOCK_PID)))"; \
+	    exit 0; \
+	fi
+	@nohup $(PYTHON) tools/oai_mock.py --port $(MOCK_PORT) > $(MOCK_LOG) 2>&1 & echo $$! > $(MOCK_PID)
+	@sleep 1
+	@if kill -0 $$(cat $(MOCK_PID)) 2>/dev/null; then \
+	    echo "[mock] listening on :$(MOCK_PORT) (pid $$(cat $(MOCK_PID))), log: $(MOCK_LOG)"; \
+	else \
+	    echo "[mock] FAILED to start; see $(MOCK_LOG)"; \
+	    rm -f $(MOCK_PID); \
+	    exit 1; \
+	fi
+
+mock-stop:
+	@if [ -f $(MOCK_PID) ] && kill -0 $$(cat $(MOCK_PID)) 2>/dev/null; then \
+	    kill $$(cat $(MOCK_PID)); \
+	    rm -f $(MOCK_PID); \
+	    echo "[mock] stopped"; \
+	else \
+	    echo "[mock] not running"; \
+	    rm -f $(MOCK_PID); \
+	fi
+
+# ---- local-CPU tier backends ----
+#
+# `start_LLM` iterates config/tiers/*.yaml and brings up every tier whose
+# `backend.kind` has a registered launcher. `stop_LLM` does the inverse.
+# All knobs (image, NUMA pinning, KV size, ports, served-model-name) live
+# in the per-tier YAML — edit those, not this Makefile.
+
+start_LLM:
+	$(BENCHMARK) start-llm
+
+stop_LLM:
+	$(BENCHMARK) stop-llm
 
 test:
 	$(VENV)/bin/pytest

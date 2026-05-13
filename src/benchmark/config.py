@@ -1,9 +1,11 @@
 """Config loaders.
 
 Configs validated here:
-  - models.yaml    : tier endpoints (OAI-compatible)
-  - router.yaml    : process-management config for the router subprocess
-  - queries.json   : curated query set with embedded gold answers
+  - config/tiers/*.yaml  : one tier per file — single source of truth for
+                           tier metadata, endpoint, identity, and backend
+                           provisioning. Replaces the old models.yaml.
+  - router.yaml          : process-management config for the router subprocess
+  - queries.json         : curated query set with embedded gold answers
 
 Queries are JSON (not YAML) because the source files come from upstream as
 JSON and the format is structured data, not human-edited config.
@@ -31,14 +33,54 @@ SPECIALIZATIONS = {
 }
 
 
+class TierEndpoint(BaseModel):
+    """How `make answers` reaches a tier (direct OAI call, bypassing router)."""
+    url: str
+    api_key_env: str | None = None
+
+
+class RouterBackendRef(BaseModel):
+    """One backend cluster entry in the generated vllm-sr.yaml `backend_refs`."""
+    endpoint: str  # e.g. "host.docker.internal:8000" — reachable from router container
+    weight: int = 100
+
+
+class BackendSpec(BaseModel):
+    """How `make start_LLM` provisions this tier. `kind` is the dispatcher key."""
+    # docker_vllm_dual_socket | remote | placeholder
+    kind: str
+    # Everything else is kind-specific. Pydantic in "permissive" mode here:
+    # we keep extra fields rather than reject, so individual backend kinds
+    # can carry their own params without each needing a new model class.
+    model_config = {"extra": "allow"}
+
+
 class TierConfig(BaseModel):
     name: str
     level: int = Field(ge=1, le=5)
-    endpoint: str
-    model_id: str
-    api_key_env: str | None = None
     specializations: list[str]
     timeout_s: int = 60
+
+    # Identity:
+    #   router_alias    = what the router emits in x-vsr-selected-model
+    #                     (matches `name` in the generated vllm-sr.yaml).
+    #   served_model_name = what the upstream serves; sent in the body's
+    #                       `model` field on direct OAI calls.
+    # For local tiers these are usually the same. For vendor APIs
+    # (Anthropic), `served_model_name` is the real vendor model id.
+    router_alias: str
+    served_model_name: str
+
+    endpoint: TierEndpoint
+    router_backend_refs: list[RouterBackendRef] = Field(default_factory=list)
+    backend: BackendSpec
+
+    # Convenience: `model_id` returns `router_alias` for the dominant legacy
+    # caller (TierLookup, which maps router header → tier). New code should
+    # use the explicit `router_alias` or `served_model_name` fields.
+    @property
+    def model_id(self) -> str:
+        return self.router_alias
 
     @field_validator("specializations")
     @classmethod
@@ -57,6 +99,12 @@ class ModelsConfig(BaseModel):
             if t.name == name:
                 return t
         raise KeyError(f"no tier named {name!r}")
+
+    def by_level(self, level: int) -> TierConfig:
+        for t in self.tiers:
+            if t.level == level:
+                return t
+        raise KeyError(f"no tier with level {level}")
 
 
 class RouterProcessConfig(BaseModel):
@@ -125,8 +173,45 @@ def _read_yaml(path: Path) -> Any:
         return yaml.safe_load(f)
 
 
+def load_tiers(tiers_dir: Path) -> ModelsConfig:
+    """Load every `*.yaml` in `tiers_dir` as one TierConfig; sort by level.
+
+    This is the single source of truth for tier configuration. Files named
+    starting with `_` are skipped (reserved for partials / templates).
+    """
+    tiers: list[TierConfig] = []
+    paths = sorted(p for p in tiers_dir.glob("*.yaml") if not p.name.startswith("_"))
+    if not paths:
+        raise FileNotFoundError(f"no tier yaml files in {tiers_dir}")
+    seen_levels: set[int] = set()
+    for path in paths:
+        try:
+            tier = TierConfig.model_validate(_read_yaml(path))
+        except Exception as e:
+            raise ValueError(f"failed to load {path}: {e}") from e
+        if tier.level in seen_levels:
+            raise ValueError(f"duplicate tier level {tier.level} in {path}")
+        seen_levels.add(tier.level)
+        tiers.append(tier)
+    tiers.sort(key=lambda t: t.level)
+    return ModelsConfig(tiers=tiers)
+
+
 def load_models(path: Path) -> ModelsConfig:
-    return ModelsConfig.model_validate(_read_yaml(path))
+    """Backward-compatible loader.
+
+    If `path` is a directory, scan it for per-tier YAMLs. If it's a file,
+    error out — the old single-file `models.yaml` is no longer supported.
+    The default path in the CLI is `config/tiers/`; callers passing the
+    old `config/models.yaml` will get a helpful error.
+    """
+    if path.is_dir():
+        return load_tiers(path)
+    raise ValueError(
+        f"{path} is not a directory; per-tier YAMLs live under config/tiers/. "
+        f"The old single-file models.yaml format was removed; see "
+        f"config/tiers/README.md for the new layout."
+    )
 
 
 def load_router_process(path: Path) -> RouterProcessConfig:
@@ -147,9 +232,23 @@ def load_queries(path: Path) -> QuerySet:
 
 
 def hash_file(path: Path) -> str:
-    """SHA-256 of the file contents, used to stamp run_id with config provenance."""
+    """SHA-256 of the file contents (or directory's sorted file contents).
+
+    Used to stamp run_id with config provenance. When `path` is a directory,
+    we hash a deterministic concatenation of `<relpath>\\0<bytes>\\0` for
+    every regular file under it, sorted by relpath. Anchors run_id provenance
+    to the entire tier-config dir, not a single file.
+    """
     h = hashlib.sha256()
-    h.update(path.read_bytes())
+    if path.is_dir():
+        for p in sorted(path.rglob("*")):
+            if p.is_file():
+                h.update(str(p.relative_to(path)).encode("utf-8"))
+                h.update(b"\x00")
+                h.update(p.read_bytes())
+                h.update(b"\x00")
+    else:
+        h.update(path.read_bytes())
     return h.hexdigest()[:16]
 
 

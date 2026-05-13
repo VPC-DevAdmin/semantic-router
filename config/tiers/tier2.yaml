@@ -1,0 +1,47 @@
+# Tier 2 — vLLM Qwen3-30B-A3B-Instruct-2507 (BF16), dual NUMA-pinned replicas.
+# Validated procedure: AMD EPYC dual-socket. See PLAN.md §12.
+
+name: tier2
+level: 2
+specializations: [general, coding]
+timeout_s: 120
+
+router_alias: tier2
+served_model_name: tier2
+
+# Direct OAI endpoint for `make answers`. r0 is the canonical for direct
+# calls; round-robin across r0+r1 happens at the router/envoy layer.
+endpoint:
+  url: http://localhost:8000/v1
+  api_key_env: null
+
+# vllm-sr generates LOGICAL_DNS envoy clusters, which only accept a single
+# endpoint per cluster. Until we stand up an LB proxy (haproxy / nginx)
+# fronting r0+r1 on a single port, the router talks only to r0. Direct
+# calls in `make answers` likewise hit r0. Throughput halves but the
+# pipeline works.
+router_backend_refs:
+  - endpoint: host.docker.internal:8000
+    weight: 100
+
+backend:
+  kind: docker_vllm_dual_socket
+  image: vllm/vllm-openai-cpu:latest-x86_64
+  # Host paths mounted into each container.
+  model_host_path: /data/ml/models/Qwen3-30B-A3B-Instruct-2507
+  hf_host_path: /data/ml/huggingface
+  # vLLM launch knobs.
+  max_model_len: 8192
+  block_size: 32
+  dtype: bfloat16
+  kv_gb_per_replica: 120
+  # One docker container per replica.
+  replicas:
+    - name: r0
+      cpus: "0-31"
+      mems: "0"
+      port: 8000
+    - name: r1
+      cpus: "32-63"
+      mems: "1"
+      port: 8001

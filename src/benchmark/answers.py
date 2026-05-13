@@ -1,11 +1,14 @@
-"""Per-tier answer collection — backs `make answers`.
+"""Routed-tier answer collection — backs `make answers`.
 
-For each pending `tier_answers` row, look up the matching tier in
-`models.yaml`, build an `OAIClient` against that tier's endpoint, and call
-chat completions. This bypasses the router entirely — the router was
-already asked (in `make route`) which tier it would pick; here we collect
-EVERY tier's response so the export step can show "what would tier X have
-said for this query."
+For each pending `tier_answers` row (one per query, with `tier_level` set
+to the router's pick from pass1_results), build an `OAIClient` against that
+tier's endpoint and call chat completions. This bypasses the router itself —
+the router already chose; here we go direct.
+
+Error policy (per user design): an unreachable or erroring upstream marks
+the row as `status='error'` with `error_msg` populated. The pass keeps
+going; nothing fails. Re-running `make answers` automatically retries
+errored rows on the next attempt.
 
 Resumable: workers select rows where `status IN ('pending', 'error')`.
 Per-row session commits make killing the process mid-run safe.
