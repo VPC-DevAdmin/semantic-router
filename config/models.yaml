@@ -19,7 +19,7 @@ tiers:
     endpoint: http://localhost:8002/v1
     model_id: qwen2.5-7b-instruct
     api_key_env: TIER2_API_KEY
-    specializations: [general, code]
+    specializations: [general, coding]
     timeout_s: 60
 
   - name: tier3-mid
@@ -27,7 +27,7 @@ tiers:
     endpoint: http://localhost:8003/v1
     model_id: mixtral-8x7b-instruct
     api_key_env: TIER3_API_KEY
-    specializations: [general, code, math]
+    specializations: [general, coding, math]
     timeout_s: 90
 
   - name: tier4-large
@@ -35,7 +35,7 @@ tiers:
     endpoint: http://localhost:8004/v1
     model_id: llama-3.1-70b-instruct
     api_key_env: TIER4_API_KEY
-    specializations: [general, code, math, reasoning]
+    specializations: [general, coding, math, reasoning]
     timeout_s: 120
 
   - name: tier5-frontier
@@ -43,7 +43,7 @@ tiers:
     endpoint: https://api.anthropic.com/v1
     model_id: claude-opus-4-7
     api_key_env: TIER5_API_KEY
-    specializations: [general, code, math, reasoning, creative]
+    specializations: [general, coding, math, reasoning, creative_writing]
     timeout_s: 180
 
   # Specialization variants. They carry their own `level` so routing-accuracy
