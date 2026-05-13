@@ -1,25 +1,36 @@
-"""Pydantic-validated YAML config loaders.
+"""Config loaders.
 
 Configs validated here:
-  - models.yaml   : tier endpoints (OAI-compatible)
-  - gold.yaml     : gold model endpoint
-  - judge.yaml    : LLM-as-judge endpoint
-  - scoring.yaml  : rubric and score scale
-  - queries.yaml  : curated query set
+  - models.yaml    : tier endpoints (OAI-compatible)
+  - judge.yaml     : LLM-as-judge endpoint
+  - scoring.yaml   : rubric and score scale
+  - router.yaml    : process-management config for the router subprocess
+  - queries.json   : curated query set with embedded gold answers
 
-Router config (router.yaml) is passed straight to the router subprocess and not
-parsed here.
+Queries are JSON (not YAML) because the source files come from upstream as
+JSON and the format is structured data, not human-edited config.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
-SPECIALIZATIONS = {"general", "code", "math", "reasoning", "creative", "vision", "tts"}
+# Specialization names as they appear in queries.json. Extend here if upstream
+# data adds a new category.
+SPECIALIZATIONS = {
+    "general",
+    "coding",
+    "math",
+    "reasoning",
+    "creative_writing",
+    "vision",
+    "tts",
+}
 
 
 class TierConfig(BaseModel):
@@ -107,6 +118,7 @@ class Attachment(BaseModel):
 class QuerySpec(BaseModel):
     id: str
     prompt: str
+    expected_answer: str | None = None  # gold answer (from upstream); optional for unscored sets
     expected_min_tier: int = Field(ge=1, le=5)
     specializations: list[str]
     domain_tags: list[str] = Field(default_factory=list)
@@ -154,8 +166,9 @@ def load_router_process(path: Path) -> RouterProcessConfig:
 
 
 def load_queries(path: Path) -> QuerySet:
-    raw = _read_yaml(path)
-    # queries.yaml is a flat list at the top level for ergonomic editing
+    """Load queries from JSON. Accepts either a top-level list or {"queries": [...]}."""
+    with path.open("r", encoding="utf-8") as f:
+        raw = json.load(f)
     if isinstance(raw, list):
         raw = {"queries": raw}
     return QuerySet.model_validate(raw)

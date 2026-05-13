@@ -13,43 +13,30 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from benchmark.db import Pass1Result, Pass2Result, Score, init_db, session_scope
+from benchmark.db import Pass1Result, Pass2Result, Score, session_scope
 from benchmark.report import compute_report, export_csv, export_json, render_console, to_dict
 from benchmark.runs import create_run, seed_pending
-from benchmark.seed import seed_from_yaml
 
-QUERIES = """
-- id: r1
-  prompt: "p1"
-  expected_min_tier: 2
-  specializations: [general]
-- id: r2
-  prompt: "p2"
-  expected_min_tier: 3
-  specializations: [code]
-- id: r3
-  prompt: "p3"
-  expected_min_tier: 4
-  specializations: [math, reasoning]
-- id: r4
-  prompt: "p4"
-  expected_min_tier: 1
-  specializations: [general]
-"""
+from ._helpers import bootstrap_db, make_models_yaml, make_router_yaml
+
+QUERIES = [
+    {"id": "r1", "prompt": "p1", "expected_min_tier": 2, "specializations": ["general"]},
+    {"id": "r2", "prompt": "p2", "expected_min_tier": 3, "specializations": ["coding"]},
+    {
+        "id": "r3", "prompt": "p3",
+        "expected_min_tier": 4, "specializations": ["math", "reasoning"],
+    },
+    {"id": "r4", "prompt": "p4", "expected_min_tier": 1, "specializations": ["general"]},
+]
 
 
 def _bootstrap(tmp_path: Path) -> tuple[Path, int]:
-    db = tmp_path / "t.db"
-    qy = tmp_path / "queries.yaml"
-    qy.write_text(QUERIES)
-    init_db(db)
-    seed_from_yaml(qy, db)
-
-    r_yaml = tmp_path / "router.yaml"
-    r_yaml.write_text("placeholder: true\n")
-    m_yaml = tmp_path / "models.yaml"
-    m_yaml.write_text("tiers: []\n")
-    rid = create_run(db, router_config_path=r_yaml, models_config_path=m_yaml)
+    db = bootstrap_db(tmp_path, QUERIES)
+    rid = create_run(
+        db,
+        router_config_path=make_router_yaml(tmp_path),
+        models_config_path=make_models_yaml(tmp_path),
+    )
     seed_pending(db, rid)
     return db, rid
 
@@ -147,7 +134,7 @@ def test_per_spec_breakdown(tmp_path: Path) -> None:
     rep = compute_report(db, rid)
     assert rep.per_spec_pass1["general"].total == 2
     assert rep.per_spec_pass1["general"].meets_min_tier == 2
-    assert rep.per_spec_pass1["code"].total == 1
+    assert rep.per_spec_pass1["coding"].total == 1
     assert rep.per_spec_pass1["math"].total == 1
     assert rep.per_spec_pass1["reasoning"].total == 1
     assert rep.per_spec_pass1["math"].meets_min_tier == 0
@@ -165,7 +152,7 @@ def test_per_spec_judge_mean(tmp_path: Path) -> None:
 
     rep = compute_report(db, rid)
     assert rep.per_spec_judge_mean["general"] == 4.0
-    assert rep.per_spec_judge_mean["code"] == 4.0
+    assert rep.per_spec_judge_mean["coding"] == 4.0
     assert rep.per_spec_judge_mean["math"] == 2.0
     assert rep.per_spec_judge_mean["reasoning"] == 2.0
 
@@ -193,7 +180,7 @@ def test_csv_export(tmp_path: Path) -> None:
         rows = list(csv.DictReader(f))
     assert any(r["specialization"] == "_all" for r in rows)
     assert any(r["specialization"] == "general" for r in rows)
-    assert any(r["specialization"] == "code" for r in rows)
+    assert any(r["specialization"] == "coding" for r in rows)
 
 
 def test_render_console_does_not_crash(tmp_path: Path) -> None:

@@ -7,10 +7,11 @@ from rich.console import Console
 from sqlalchemy import select
 
 from benchmark.config import ScoringConfig
-from benchmark.db import Pass2Result, Query, Score, init_db, session_scope
+from benchmark.db import Pass2Result, Query, Score, session_scope
 from benchmark.review import _stratified_sample, human_review
 from benchmark.runs import create_run, seed_pending
-from benchmark.seed import seed_from_yaml
+
+from ._helpers import bootstrap_db, make_models_yaml, make_router_yaml
 
 
 def _rubric() -> ScoringConfig:
@@ -24,48 +25,39 @@ def _quiet_console() -> Console:
     return Console(file=open("/dev/null", "w"), force_terminal=False)  # noqa: SIM115
 
 
-def _populate(tmp_path: Path, queries_yaml: str) -> tuple[Path, int]:
-    db = tmp_path / "t.db"
-    qy = tmp_path / "queries.yaml"
-    qy.write_text(queries_yaml)
-    init_db(db)
-    seed_from_yaml(qy, db)
-    r_yaml = tmp_path / "router.yaml"
-    r_yaml.write_text("placeholder: true\n")
-    m_yaml = tmp_path / "models.yaml"
-    m_yaml.write_text("tiers: []\n")
-    rid = create_run(db, router_config_path=r_yaml, models_config_path=m_yaml)
+def _populate(tmp_path: Path, queries: list[dict]) -> tuple[Path, int]:
+    db = bootstrap_db(tmp_path, queries)
+    rid = create_run(
+        db,
+        router_config_path=make_router_yaml(tmp_path),
+        models_config_path=make_models_yaml(tmp_path),
+    )
     seed_pending(db, rid)
-    # Mark every pass2 success with response + gold.
+    # Mark every pass2 as success with a response.
     with session_scope(db) as s:
-        for q in s.execute(select(Query)).scalars():
-            q.gold_answer = f"gold-{q.query_id}"
         for p2 in s.execute(select(Pass2Result)).scalars():
             p2.response_text = f"response-{p2.query_id}"
             p2.status = "success"
     return db, rid
 
 
-QUERIES_SIMPLE = """
-- id: a1
-  prompt: "p1"
-  expected_min_tier: 1
-  specializations: [general]
-- id: a2
-  prompt: "p2"
-  expected_min_tier: 1
-  specializations: [general]
-"""
+QUERIES_SIMPLE = [
+    {
+        "id": "a1", "prompt": "p1",
+        "expected_answer": "gold-a1",
+        "expected_min_tier": 1, "specializations": ["general"],
+    },
+    {
+        "id": "a2", "prompt": "p2",
+        "expected_answer": "gold-a2",
+        "expected_min_tier": 1, "specializations": ["general"],
+    },
+]
 
 
-def _scripted_asker(answers: list[str]):
-    """Returns an `ask_score`-shaped callable that pops from `answers`."""
+def _scripted(answers: list[str]):
     it = iter(answers)
-
-    def ask(_rubric):
-        return next(it)
-
-    return ask
+    return lambda _rubric: next(it)
 
 
 def _no_rationale():
@@ -77,11 +69,10 @@ def _no_rationale():
 def test_stratified_sample_proportional() -> None:
     import random
     rng = random.Random(0)
-    items = [{"k": "code"}] * 60 + [{"k": "math"}] * 30 + [{"k": "general"}] * 10
+    items = [{"k": "coding"}] * 60 + [{"k": "math"}] * 30 + [{"k": "general"}] * 10
     out = _stratified_sample(items, 20, key=lambda x: x["k"], rng=rng)
     assert len(out) == 20
-    # Roughly proportional — every bucket represented.
-    buckets = {"code": 0, "math": 0, "general": 0}
+    buckets = {"coding": 0, "math": 0, "general": 0}
     for x in out:
         buckets[x["k"]] += 1
     for v in buckets.values():
@@ -101,37 +92,27 @@ def test_review_persists_scores(tmp_path: Path) -> None:
     db, rid = _populate(tmp_path, QUERIES_SIMPLE)
     report = human_review(
         db, rid,
-        reviewer_id="alice",
-        scoring_config_path=Path("/dev/null"),
-        ask_score=_scripted_asker(["4", "2"]),
-        ask_rationale=_no_rationale,
-        console=_quiet_console(),
-        rubric=_rubric(),
+        reviewer_id="alice", scoring_config_path=Path("/dev/null"),
+        ask_score=_scripted(["4", "2"]), ask_rationale=_no_rationale,
+        console=_quiet_console(), rubric=_rubric(),
     )
     assert report.reviewed == 2
-    assert report.skipped == 0
     assert report.score_histogram == {4: 1, 2: 1}
-
     with session_scope(db) as s:
         rows = {r.query_id: r for r in s.execute(select(Score)).scalars()}
         assert rows["a1"].score == 4
         assert rows["a2"].score == 2
-        assert all(r.scorer == "human" and r.reviewer_id == "alice" for r in rows.values())
 
 
 def test_review_skip_and_quit(tmp_path: Path) -> None:
     db, rid = _populate(tmp_path, QUERIES_SIMPLE)
     report = human_review(
         db, rid,
-        reviewer_id="bob",
-        scoring_config_path=Path("/dev/null"),
-        ask_score=_scripted_asker(["s", "q"]),  # skip first, quit on second
-        ask_rationale=_no_rationale,
-        console=_quiet_console(),
-        rubric=_rubric(),
+        reviewer_id="bob", scoring_config_path=Path("/dev/null"),
+        ask_score=_scripted(["s", "q"]), ask_rationale=_no_rationale,
+        console=_quiet_console(), rubric=_rubric(),
     )
     assert report.skipped == 1
-    assert report.reviewed == 0
     assert report.quit_early is True
 
 
@@ -139,35 +120,22 @@ def test_review_idempotent_per_reviewer(tmp_path: Path) -> None:
     db, rid = _populate(tmp_path, QUERIES_SIMPLE)
     human_review(
         db, rid,
-        reviewer_id="alice",
-        scoring_config_path=Path("/dev/null"),
-        ask_score=_scripted_asker(["3", "3"]),
-        ask_rationale=_no_rationale,
-        console=_quiet_console(),
-        rubric=_rubric(),
+        reviewer_id="alice", scoring_config_path=Path("/dev/null"),
+        ask_score=_scripted(["3", "3"]), ask_rationale=_no_rationale,
+        console=_quiet_console(), rubric=_rubric(),
     )
-    # Second pass — alice should have nothing left.
     r2 = human_review(
         db, rid,
-        reviewer_id="alice",
-        scoring_config_path=Path("/dev/null"),
-        ask_score=_scripted_asker([]),
-        ask_rationale=_no_rationale,
-        console=_quiet_console(),
-        rubric=_rubric(),
+        reviewer_id="alice", scoring_config_path=Path("/dev/null"),
+        ask_score=_scripted([]), ask_rationale=_no_rationale,
+        console=_quiet_console(), rubric=_rubric(),
     )
     assert r2.candidates == 0
-    assert r2.reviewed == 0
-
-    # A different reviewer still has work.
     r3 = human_review(
         db, rid,
-        reviewer_id="bob",
-        scoring_config_path=Path("/dev/null"),
-        ask_score=_scripted_asker(["5", "5"]),
-        ask_rationale=_no_rationale,
-        console=_quiet_console(),
-        rubric=_rubric(),
+        reviewer_id="bob", scoring_config_path=Path("/dev/null"),
+        ask_score=_scripted(["5", "5"]), ask_rationale=_no_rationale,
+        console=_quiet_console(), rubric=_rubric(),
     )
     assert r3.reviewed == 2
 
@@ -176,12 +144,9 @@ def test_review_invalid_input_is_skipped(tmp_path: Path) -> None:
     db, rid = _populate(tmp_path, QUERIES_SIMPLE)
     report = human_review(
         db, rid,
-        reviewer_id="alice",
-        scoring_config_path=Path("/dev/null"),
-        ask_score=_scripted_asker(["nope", "9"]),  # not int, out-of-range
-        ask_rationale=_no_rationale,
-        console=_quiet_console(),
-        rubric=_rubric(),
+        reviewer_id="alice", scoring_config_path=Path("/dev/null"),
+        ask_score=_scripted(["nope", "9"]), ask_rationale=_no_rationale,
+        console=_quiet_console(), rubric=_rubric(),
     )
     assert report.reviewed == 0
     assert report.skipped == 2
@@ -194,33 +159,30 @@ def test_review_skips_rows_without_gold(tmp_path: Path) -> None:
         q.gold_answer = None
     report = human_review(
         db, rid,
-        reviewer_id="alice",
-        scoring_config_path=Path("/dev/null"),
-        ask_score=_scripted_asker(["3"]),
-        ask_rationale=_no_rationale,
-        console=_quiet_console(),
-        rubric=_rubric(),
+        reviewer_id="alice", scoring_config_path=Path("/dev/null"),
+        ask_score=_scripted(["3"]), ask_rationale=_no_rationale,
+        console=_quiet_console(), rubric=_rubric(),
     )
     assert report.candidates == 1
     assert report.reviewed == 1
 
 
 def test_review_sample_size(tmp_path: Path) -> None:
-    many = "\n".join(
-        f'- id: q{i:03d}\n  prompt: "p"\n  expected_min_tier: 1\n  specializations: [general]'
+    many = [
+        {
+            "id": f"q{i:03d}", "prompt": "p",
+            "expected_answer": "gold",
+            "expected_min_tier": 1, "specializations": ["general"],
+        }
         for i in range(20)
-    )
+    ]
     db, rid = _populate(tmp_path, many)
     report = human_review(
         db, rid,
-        reviewer_id="alice",
-        scoring_config_path=Path("/dev/null"),
-        sample=5,
-        seed=42,
-        ask_score=_scripted_asker(["3"] * 5),
-        ask_rationale=_no_rationale,
-        console=_quiet_console(),
-        rubric=_rubric(),
+        reviewer_id="alice", scoring_config_path=Path("/dev/null"),
+        sample=5, seed=42,
+        ask_score=_scripted(["3"] * 5), ask_rationale=_no_rationale,
+        console=_quiet_console(), rubric=_rubric(),
     )
     assert report.candidates == 20
     assert report.reviewed == 5

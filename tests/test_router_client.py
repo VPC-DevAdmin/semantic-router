@@ -33,7 +33,7 @@ def _models() -> ModelsConfig:
                 endpoint="http://x/v1",
                 model_id="DeepSeek-V31",
                 api_key_env=None,
-                specializations=["general", "code", "math", "reasoning"],
+                specializations=["general", "coding", "math", "reasoning"],
             ),
         ]
     )
@@ -43,7 +43,7 @@ def test_tier_lookup_case_insensitive() -> None:
     lookup = TierLookup(_models())
     assert lookup.lookup("phi4") == (1, ["general"])
     assert lookup.lookup("PHI4") == (1, ["general"])
-    assert lookup.lookup("deepseek-v31") == (4, ["general", "code", "math", "reasoning"])
+    assert lookup.lookup("deepseek-v31") == (4, ["general", "coding", "math", "reasoning"])
 
 
 def test_tier_lookup_unknown_returns_none() -> None:
@@ -99,7 +99,7 @@ async def test_extracts_decision_from_headers(monkeypatch) -> None:
     d = result.decision
     assert d.selected_model == "DeepSeek-V31"
     assert d.selected_tier == 4
-    assert d.selected_specs == ["general", "code", "math", "reasoning"]
+    assert d.selected_specs == ["general", "coding", "math", "reasoning"]
     assert d.category == "math"
     assert d.reasoning == "on"
     assert d.cache_hit is False
