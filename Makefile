@@ -7,7 +7,7 @@
 #   make answers      # for each query × tier: collect that tier's response  [TODO]
 #   make export       # emit demo.json from the DB                            [TODO]
 
-.PHONY: help setup load route answers export resume \
+.PHONY: help setup load route answers export resume misroutes \
         clean-results router-smoke router-stop test fmt lint \
         mock-bg mock-stop start_LLM stop_LLM
 
@@ -25,6 +25,7 @@ help:
 	@echo "  route [MOCK=true] [RUN_NEW=true]   rebuild router-config; routing pass"
 	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true]  routed-tier answers; errors retry on next run"
 	@echo "  export [RUN=<id>] [OUTPUT=<path>]  write demo.json (default: ./demo.json)"
+	@echo "  misroutes [RUN=<id>]           diagnostic: list queries routed BELOW their min tier"
 	@echo "  resume [RUN=<id>]              re-run pending/error rows; mark done if clean"
 	@echo ""
 	@echo "  MOCK=true   routes every tier through the local OAI mock (port \$$MOCK_PORT)."
@@ -154,6 +155,13 @@ export:
 
 resume:
 	$(BENCHMARK) resume --db $(DB) $(if $(RUN),--run $(RUN),)
+
+# Diagnostic: show every query the router under-tiered for the latest run.
+# Use this BEFORE tuning thresholds in config/router-exemplars.yaml — patterns
+# in the output (e.g. all T4-expected queries routed to T2 with category=business)
+# tell us where to nudge.
+misroutes:
+	$(BENCHMARK) misroutes --db $(DB) $(if $(RUN),--run $(RUN),)
 
 # ---- utility ----
 

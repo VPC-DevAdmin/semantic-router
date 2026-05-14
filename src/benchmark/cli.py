@@ -25,6 +25,7 @@ from .config import load_models, load_router_process
 from .db import DEFAULT_DB_PATH, init_db
 from .export import export_demo_json
 from .load import load_into_db
+from .misroutes import list_misroutes, render_misroutes
 from .pass1 import run_pass1
 from .router_client import RouterClient, TierLookup
 from .router_proc import RouterProcess
@@ -283,6 +284,24 @@ def answers_cmd(
     console.print(f"[bold]answers[/] (run {rid})")
     console.print(str(report))
     # Errors are now expected (retry on next run); always exit 0.
+
+
+@app.command("misroutes")
+def misroutes_cmd(
+    db: Path = typer.Option(DEFAULT_DB_PATH),
+    run: int | None = typer.Option(
+        None, "--run", help="Run id (default: latest run)."
+    ),
+) -> None:
+    """List queries where the router picked a tier BELOW the expected minimum.
+
+    Diagnostic for routing-accuracy tuning. The output groups misroutes by
+    expected tier, routed tier, and router category so we can see whether
+    the under-routes cluster on one axis (e.g. mostly judgment-heavy queries
+    landing in T2) before tuning thresholds in router-exemplars.yaml.
+    """
+    misroutes = list_misroutes(db, run_id=run)
+    console.print(render_misroutes(misroutes))
 
 
 @app.command("export")
