@@ -80,6 +80,10 @@ axes:
   # answer be retrieved / produced in one step?
   - id: reasoning
     description: "Does this query require multi-step reasoning?"
+    # Per-axis threshold override. v0.3 embedding scores cluster around
+    # 0.35–0.52 in our 110-query set; 0.42 catches "just-missed" matches
+    # without lowering the easy-side bar.
+    threshold_hard: 0.42
     score_bands:
       # The score is roughly cosine(query, hard_centroid) − cosine(query, easy_centroid).
       # Tune these bands if the score distribution looks miscalibrated
@@ -98,6 +102,8 @@ axes:
         # Code debugging — trace execution to find a flaw
         - "This recursive function returns wrong values for inputs near the recursion limit. Trace what's going wrong and explain the fix."
         - "Here is a SQL query that returns duplicate rows when joining three tables. Walk through why, and rewrite it to fix the issue."
+        # Algorithm implementation — designing the algorithm, not transcribing it
+        - "Design and implement a function that finds the longest palindromic subsequence in a string with O(n²) time. Walk through the DP setup and the recurrence."
         # Diagnostic / causal — chain inferences through a domain
         - "A patient presents with intermittent vertigo, hearing loss, and tinnitus. What's the differential and how would you narrow it down?"
         - "Walk through how a sudden 30% drop in labor-force participation would propagate through a modern economy over the following year."
@@ -131,6 +137,7 @@ axes:
   # mechanics, edge cases — or is general knowledge enough?
   - id: expertise
     description: "Does this query require deep domain expertise?"
+    threshold_hard: 0.42
     score_bands:
       low:    { min: -1.00, max: -0.05 }
       medium: { min: -0.05, max:  0.05 }
@@ -159,6 +166,10 @@ axes:
         - "Explain the c-command condition in binding theory and the empirical data that motivates it."
         # Finance / regulation specifics
         - "Walk through the mechanics of a Treasury-bond basis trade and the funding-cost dynamics that determine its profitability."
+        # Substantive explanation of a common-knowledge concept — mid-level depth
+        - "Explain how garbage collectors handle the tracing-vs-reference-counting trade-off, including the failure modes of each approach."
+        # Creative-writing craft — frontier-quality short fiction asks
+        - "Write a literary scene that conveys grief through specific gesture and what's left unsaid, in under 500 words, no exposition or backstory."
       easy:
         # Common definitions across diverse domains
         - "What is a renewable resource?"
@@ -181,6 +192,7 @@ axes:
   # specific recommendations — or is there a definite answer?
   - id: judgment
     description: "Does this query require open-ended judgment or value-laden tradeoffs?"
+    threshold_hard: 0.42
     score_bands:
       low:    { min: -1.00, max: -0.05 }
       medium: { min: -0.05, max:  0.05 }
@@ -209,6 +221,8 @@ axes:
         - "Should our team's brand identity prioritize legibility or distinctiveness? Walk me through the tradeoffs."
         # Financial planning (preference-sensitive)
         - "Given my financial situation, should I pay down student debt aggressively or prioritize retirement contributions?"
+        # Discursive ethical analysis — "Discuss the considerations of X"
+        - "Discuss the ethical tensions in deploying facial recognition in public spaces, balancing law-enforcement utility against civil-liberties harms."
       easy:
         # Well-defined facts — no judgment required, across diverse domains
         - "What is 15 plus 27?"
