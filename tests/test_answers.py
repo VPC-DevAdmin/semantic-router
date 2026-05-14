@@ -188,6 +188,23 @@ async def test_run_answers_resume_only_retries_errors(tmp_path: Path) -> None:
     assert r2.errors == 0
 
 
+def test_build_clients_for_mock_uses_mock_url() -> None:
+    """`_build_clients_for_mock` constructs one OAIClient per tier, all pointing
+    at the mock URL, regardless of what each tier's configured endpoint is."""
+    from benchmark.answers import _build_clients_for_mock
+
+    models = _models([1, 2, 3])
+    mock = "http://localhost:8811/v1"
+    clients = _build_clients_for_mock(models, mock)
+
+    assert set(clients.keys()) == {1, 2, 3}
+    for level, client in clients.items():
+        # OAIClient.endpoint strips trailing /. Check the start matches.
+        assert client.endpoint == mock.rstrip("/"), (
+            f"tier {level} client endpoint {client.endpoint!r} != mock {mock!r}"
+        )
+
+
 @pytest.mark.asyncio
 async def test_run_answers_unknown_tier_recorded_as_error(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)

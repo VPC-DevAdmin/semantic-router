@@ -21,11 +21,14 @@ HAS_UV := $(shell command -v uv 2>/dev/null)
 help:
 	@echo "Production pass:"
 	@echo "  setup                          venv + deps + init DB + install vllm-sr (if missing)"
-	@echo "  load                           validate exemplars; build router-config; load queries.json into DB"
-	@echo "  route [RUN_NEW=true]           rebuild router-config; routing pass; RUN_NEW wipes pass1_results"
-	@echo "  answers [RUN=<id>] [RUN_NEW=true]  routed-tier answers; errors retry on next run"
+	@echo "  load [MOCK=true]               validate exemplars; build router-config; load queries.json into DB"
+	@echo "  route [MOCK=true] [RUN_NEW=true]   rebuild router-config; routing pass"
+	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true]  routed-tier answers; errors retry on next run"
 	@echo "  export [RUN=<id>] [OUTPUT=<path>]  write demo.json (default: ./demo.json)"
 	@echo "  resume [RUN=<id>]              re-run pending/error rows; mark done if clean"
+	@echo ""
+	@echo "  MOCK=true   routes every tier through the local OAI mock (port \$$MOCK_PORT)."
+	@echo "              Used for pipeline verification before real backends are stood up."
 	@echo ""
 	@echo "Backends:"
 	@echo "  mock-bg                        start the local OAI mock (port \$$MOCK_PORT, default 8811)"
@@ -99,12 +102,23 @@ EXEMPLARS := config/router-exemplars.yaml
 BACKENDS := config/router-backends.yaml
 ROUTER_CONFIG := config/router-config.yaml
 
+# Mock URLs are derived from MOCK_PORT (defined in the mock section below).
+# Two forms because the router (inside Docker) and the harness (on the host)
+# reach the same mock at different addresses.
+MOCK_PORT ?= 8811
+MOCK_FROM_ROUTER := host.docker.internal:$(MOCK_PORT)/v1
+MOCK_FROM_HOST   := http://localhost:$(MOCK_PORT)/v1
+
+# `MOCK=true` reroutes everything through the local OAI mock — used to
+# verify the full pipeline before real backends are stood up. Applies to
+# `make load`, `make route`, and `make answers`.
 define BUILD_ROUTER_CONFIG
 $(PYTHON) -m benchmark.build_router_config \
     --exemplars $(EXEMPLARS) \
     --backends $(BACKENDS) \
     --out $(ROUTER_CONFIG) \
-    --check-against-eval data/queries.json
+    --check-against-eval data/queries.json \
+    $(if $(filter true,$(MOCK)),--mock-endpoint $(MOCK_FROM_ROUTER),)
 endef
 
 # ---- data ----
@@ -121,13 +135,18 @@ load:
 # `make route` rebuilds router-config.yaml first so the router always
 # launches with the current exemplars + backends reflected in its config.
 # RUN_NEW=true → drop existing pass1_results for the active run and re-seed.
+# MOCK=true    → router-config points every tier at the mock.
 route:
 	$(BUILD_ROUTER_CONFIG)
 	$(BENCHMARK) route --db $(DB) $(if $(filter true,$(RUN_NEW)),--run-new,)
 
 # RUN_NEW=true → drop existing tier_answers for the active run and re-seed.
+# MOCK=true    → answers calls every tier via the local mock URL.
 answers:
-	$(BENCHMARK) answers --db $(DB) $(if $(RUN),--run $(RUN),) $(if $(filter true,$(RUN_NEW)),--run-new,)
+	$(BENCHMARK) answers --db $(DB) \
+	    $(if $(RUN),--run $(RUN),) \
+	    $(if $(filter true,$(RUN_NEW)),--run-new,) \
+	    $(if $(filter true,$(MOCK)),--mock-endpoint $(MOCK_FROM_HOST),)
 
 OUTPUT ?= demo.json
 export:
@@ -156,9 +175,8 @@ router-stop:
 # Stands in for real LLM tier endpoints so the pipeline (route + answers +
 # export) can be validated without spending tokens. Stdlib-only; no extra
 # deps. Returns tier-tagged canned text so we can verify which tier served
-# each row.
+# each row. MOCK_PORT is defined near the top alongside the MOCK=true URLs.
 
-MOCK_PORT ?= 8811
 MOCK_LOG := logs/mock.log
 MOCK_PID := logs/mock.pid
 

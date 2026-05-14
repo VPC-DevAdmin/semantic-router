@@ -205,6 +205,13 @@ def answers_cmd(
         False, "--run-new",
         help="Delete existing tier_answers for the active run, then re-seed.",
     ),
+    mock_endpoint: str | None = typer.Option(
+        None, "--mock-endpoint",
+        help=(
+            "Override every tier's endpoint (e.g. http://localhost:8811/v1). "
+            "Used for pipeline verification against the local OAI mock."
+        ),
+    ),
 ) -> None:
     """For each routed query: call the tier the router picked.
 
@@ -249,6 +256,9 @@ def answers_cmd(
             "routing decisions, or use --run-new to reset."
         )
 
+    if mock_endpoint:
+        console.print(f"[yellow]MOCK[/]: routing all tier calls to {mock_endpoint}")
+
     report = asyncio.run(
         run_answers(
             db,
@@ -256,6 +266,7 @@ def answers_cmd(
             models=models_cfg,
             concurrency=concurrency,
             max_tokens=max_tokens,
+            mock_endpoint=mock_endpoint,
         )
     )
     console.print(f"[bold]answers[/] (run {rid})")

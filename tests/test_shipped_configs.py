@@ -271,6 +271,33 @@ def test_emit_decision_empty_when_is_fallthrough() -> None:
     assert d["rules"]["conditions"] == []
 
 
+def test_builder_mock_endpoint_overrides_every_backend() -> None:
+    """With --mock-endpoint set, every providers.models[].backend_refs[]
+    points at the mock, and api_format is forced to openai (no Anthropic
+    translation, since the mock speaks plain OAI)."""
+    from benchmark.build_router_config import build
+
+    mock = "host.docker.internal:8811/v1"
+    cfg = build(
+        exemplars_path=ROOT / "config" / "router-exemplars.yaml",
+        backends_path=ROOT / "config" / "router-backends.yaml",
+        eval_set_path=None,
+        mock_endpoint=mock,
+    )
+    models = cfg["providers"]["models"]
+    assert models, "no provider models emitted"
+    for m in models:
+        assert m["api_format"] == "openai", f"{m['name']}: api_format should be openai in mock mode"
+        refs = m["backend_refs"]
+        assert len(refs) == 1
+        ref = refs[0]
+        assert ref["endpoint"] == mock, f"{m['name']}: endpoint not redirected to mock"
+        # No api_key — the mock doesn't enforce auth.
+        assert "api_key_env" not in ref
+        # provider_model_id should be the tier name, not e.g. claude-opus-4-7.
+        assert m["provider_model_id"] == m["name"]
+
+
 def test_emit_decision_requires_any_high() -> None:
     """`requires_any_high: [a, b]` adds an OR over the *_hard signals."""
     from benchmark.build_router_config import _emit_decision

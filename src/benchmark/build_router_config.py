@@ -275,6 +275,28 @@ def _emit_provider_model(tier_id: str, cfg: dict) -> dict:
     }
 
 
+def _emit_provider_model_mock(tier_id: str, mock_endpoint: str) -> dict:
+    """Mock-mode override: every tier points at the local OAI mock.
+
+    `mock_endpoint` is in `host:port[/path]` form (e.g. `host.docker.internal:8811/v1`).
+    The router forwards via plain OAI — no Anthropic adapter — so the mock
+    (stdlib OAI server) can handle all five tiers identically.
+    """
+    return {
+        "name": tier_id,
+        "provider_model_id": tier_id,  # mock echoes the model name; tier_id is fine
+        "api_format": "openai",
+        "backend_refs": [
+            {
+                "name": "primary",
+                "endpoint": mock_endpoint,
+                "protocol": "http",
+                "weight": 100,
+            }
+        ],
+    }
+
+
 def _emit_model_card(tier: dict) -> dict:
     """One entry under routing.modelCards[]. Description is the audience-
     facing tier label + role from the exemplars file."""
@@ -294,8 +316,15 @@ def build(
     exemplars_path: Path,
     backends_path: Path,
     eval_set_path: Path | None,
+    *,
+    mock_endpoint: str | None = None,
 ) -> dict:
-    """Read the two input files, validate, emit a vllm-sr v0.3 config dict."""
+    """Read the two input files, validate, emit a vllm-sr v0.3 config dict.
+
+    `mock_endpoint` (e.g. `host.docker.internal:8811/v1`) overrides every
+    backend so the router forwards to the local OAI mock. Used for pipeline
+    verification before real backends come online.
+    """
     ex = yaml.safe_load(exemplars_path.read_text())
     be = yaml.safe_load(backends_path.read_text())
 
@@ -343,7 +372,9 @@ def build(
         "providers": {
             "defaults": {"default_model": be.get("default_tier", "tier2")},
             "models": [
-                _emit_provider_model(tier_id, cfg)
+                _emit_provider_model_mock(tier_id, mock_endpoint)
+                if mock_endpoint
+                else _emit_provider_model(tier_id, cfg)
                 for tier_id, cfg in be["backends"].items()
             ],
         },
@@ -368,9 +399,24 @@ def main() -> None:
         type=Path,
         help="Path to data/queries.json — refuse to build if any exemplar overlaps an eval prompt",
     )
+    p.add_argument(
+        "--mock-endpoint",
+        type=str,
+        default=None,
+        help=(
+            "Route every tier to this host:port[/path] instead of the configured "
+            "backends. From inside the router container, use e.g. "
+            "host.docker.internal:8811/v1. Pipeline-verification only."
+        ),
+    )
     args = p.parse_args()
 
-    config = build(args.exemplars, args.backends, args.check_against_eval)
+    config = build(
+        args.exemplars,
+        args.backends,
+        args.check_against_eval,
+        mock_endpoint=args.mock_endpoint,
+    )
     args.out.write_text(yaml.safe_dump(config, sort_keys=False, default_flow_style=False))
     print(f"Wrote {args.out}", file=sys.stderr)
 

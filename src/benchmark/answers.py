@@ -56,6 +56,23 @@ def _build_clients_by_level(models: ModelsConfig) -> dict[int, OAIClient]:
     return out
 
 
+def _build_clients_for_mock(models: ModelsConfig, mock_endpoint: str) -> dict[int, OAIClient]:
+    """All tiers point at one mock endpoint — used by `make answers MOCK=true`.
+
+    Preserves each tier's served_model_name + timeout_s; just overrides the URL
+    and drops API auth. The mock doesn't enforce auth.
+    """
+    out: dict[int, OAIClient] = {}
+    for tier in models.tiers:
+        out[tier.level] = OAIClient(
+            endpoint=mock_endpoint,
+            model_id=tier.served_model_name,
+            api_key=None,
+            timeout_s=float(tier.timeout_s),
+        )
+    return out
+
+
 async def run_answers(
     db_path: Path,
     run_id: int,
@@ -64,10 +81,20 @@ async def run_answers(
     concurrency: int = 8,
     max_tokens: int = 2048,
     clients_by_level: dict[int, OAIClient] | None = None,
+    mock_endpoint: str | None = None,
 ) -> AnswersReport:
-    """Process pending tier_answers rows. `clients_by_level` is injectable for tests."""
+    """Process pending tier_answers rows.
+
+    `clients_by_level` is injectable for tests. `mock_endpoint` (e.g.
+    `http://localhost:8811/v1`) overrides every tier's endpoint to point at
+    the local mock — used for pipeline verification before real backends
+    come online.
+    """
     if clients_by_level is None:
-        clients_by_level = _build_clients_by_level(models)
+        if mock_endpoint:
+            clients_by_level = _build_clients_for_mock(models, mock_endpoint)
+        else:
+            clients_by_level = _build_clients_by_level(models)
 
     report = AnswersReport()
 
