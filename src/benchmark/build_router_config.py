@@ -324,6 +324,39 @@ def _emit_decision_for_band(tier_id: str) -> dict:
     }
 
 
+def _emit_tier5_committed_judgment_lane() -> dict:
+    """Override decision: route to tier5 from inside tier4_band when the
+    query hits BOTH `needs_judgment:hard` AND `demands_commitment:hard`.
+
+    The canonical "frontier-advice" path. The exemplars-file role for T5
+    is "BOTH deeply technical AND demands judgment" — this lane captures
+    the *judgment-and-commitment* axis of that definition, complementing
+    the technical-and-expertise axis covered by route_tier5_frontier.
+
+    Empirically: if the embedder doesn't produce :hard on either input
+    (the common case with the current exemplars), this lane never fires
+    and route_tier4 wins on the band alone. Adding it costs nothing and
+    provides a structurally clean path when the signal arrives.
+    """
+    return {
+        "name": "route_tier5_committed_judgment",
+        "description": (
+            "Promote tier4_band queries to tier5 when both judgment AND "
+            "commitment hit :hard — the canonical frontier-advice lane."
+        ),
+        "priority": LANE_DECISION_PRIORITY,
+        "rules": {
+            "operator": "AND",
+            "conditions": [
+                {"type": "projection", "name": "tier4_band"},
+                {"type": "complexity", "name": "needs_judgment:hard"},
+                {"type": "complexity", "name": "demands_commitment:hard"},
+            ],
+        },
+        "modelRefs": [{"model": "tier5", "use_reasoning": False}],
+    }
+
+
 def _emit_tier5_frontier_lane() -> dict:
     """Override decision: route to tier5 from inside tier4_band when the
     query hits BOTH `needs_reasoning:hard` AND `needs_expertise:hard`.
@@ -434,6 +467,7 @@ def build(
                 # Lane decisions FIRST, so a quick read of the file shows
                 # the higher-priority overrides up top.
                 _emit_tier5_frontier_lane(),
+                _emit_tier5_committed_judgment_lane(),
                 *(_emit_decision_for_band(tier_id) for tier_id in tier_ids),
             ],
         },

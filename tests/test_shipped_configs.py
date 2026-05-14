@@ -107,7 +107,12 @@ def test_router_exemplars_build_projections_shape() -> None:
         assert sig["hard"]["candidates"], f"signal {sig['name']} missing hard candidates"
         assert sig["easy"]["candidates"], f"signal {sig['name']} missing easy candidates"
     sig_names = {s["name"] for s in complexity_signals}
-    assert sig_names == {"needs_reasoning", "needs_expertise", "needs_judgment"}
+    assert sig_names == {
+        "needs_reasoning",
+        "needs_expertise",
+        "needs_judgment",
+        "demands_commitment",
+    }
 
     # Projections: scores.request_difficulty + mappings.tier_band.
     assert "projections" in routing
@@ -206,15 +211,26 @@ def test_router_exemplars_build_projections_shape() -> None:
             f"lane {d['name']!r} must combine projection + complexity"
         )
 
-    # The frontier lane specifically: promotes tier4_band → tier5 on
-    # multi-signal :hard. If this changes shape, callers reading the
-    # generated config should know about it.
+    # The two named lanes specifically. If either changes shape, downstream
+    # callers reading the generated config should know about it.
     frontier = next((d for d in lane if d["name"] == "route_tier5_frontier"), None)
     assert frontier is not None, "expected a route_tier5_frontier lane decision"
     assert frontier["modelRefs"][0]["model"] == "tier5"
     cond_names = {c["name"] for c in frontier["rules"]["conditions"]}
     assert cond_names == {
         "tier4_band", "needs_reasoning:hard", "needs_expertise:hard"
+    }
+
+    committed = next(
+        (d for d in lane if d["name"] == "route_tier5_committed_judgment"), None
+    )
+    assert committed is not None, (
+        "expected a route_tier5_committed_judgment lane decision"
+    )
+    assert committed["modelRefs"][0]["model"] == "tier5"
+    cond_names = {c["name"] for c in committed["rules"]["conditions"]}
+    assert cond_names == {
+        "tier4_band", "needs_judgment:hard", "demands_commitment:hard"
     }
 
     # Tier alignment with config/tiers/.

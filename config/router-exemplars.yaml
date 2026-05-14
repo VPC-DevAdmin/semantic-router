@@ -123,7 +123,7 @@ complexity_signals:
   - id: needs_reasoning
     description: "Does this query require multi-step reasoning?"
     threshold: 0.55       # used for `matched_signals` reporting; doesn't gate the projection
-    weight: 0.30          # contribution to request_difficulty
+    weight: 0.20          # contribution to request_difficulty
     hard:
       candidates:
         # Math word problems / probability — chained arithmetic + setup
@@ -170,7 +170,7 @@ complexity_signals:
   - id: needs_expertise
     description: "Does this query require deep domain expertise?"
     threshold: 0.55
-    weight: 0.30
+    weight: 0.20
     hard:
       candidates:
         # Pure math / theoretical CS
@@ -221,7 +221,7 @@ complexity_signals:
   - id: needs_judgment
     description: "Does this query require open-ended judgment or value-laden tradeoffs?"
     threshold: 0.55
-    weight: 0.40
+    weight: 0.30
     hard:
       candidates:
         # Career / professional
@@ -263,3 +263,48 @@ complexity_signals:
         - "What is the square root of 144?"
         - "In what century did the Industrial Revolution begin in Britain?"
         - "Is Python a programming language?"
+
+  # ─────────────────────────────────────────────────────────────────────
+  # SIGNAL 4: Commitment vs survey
+  # ─────────────────────────────────────────────────────────────────────
+  # Does this query demand a specific direction (pick X, choose Y, yes/no)
+  # vs. a survey/explanation (what is X, how does X work, what are the
+  # tradeoffs)?
+  #
+  # Smaller models systematically default to surveys and hedging. Frontier
+  # models are better-calibrated to actually commit to a position. This
+  # axis is orthogonal to the others — a query can be trivially reasoned
+  # but demand hard commitment ("should I take this job?"), or be deeply
+  # reasoned but be a survey ("explain how transformers work").
+  - id: demands_commitment
+    description: "Does this query demand a specific direction vs. a survey?"
+    threshold: 0.55
+    weight: 0.30
+    hard:
+      candidates:
+        - "I need to pick between three architectural approaches by tomorrow. Pick one and tell me why."
+        - "We're naming a coffee shop. The options are Beanwise, North Roast, and Common Grounds. Which one and why?"
+        - "Should I take the promotion or stay in my current role? Don't list considerations — actually advise me."
+        - "Of these five candidates, who would you hire? Commit to a choice."
+        - "Recommend a single book on negotiation. Just one. Tell me why this one."
+        - "Which mistake in this design is the most serious? Pick one."
+        - "Should I start the company now or wait two years? Make a call."
+        - "Yes or no: should I let my fifteen-year-old read this book?"
+        - "Pick the strongest argument in this essay. The strongest, not a survey."
+        - "Choose: TypeScript or Go for this service. Decide and justify."
+        - "Should the team adopt microservices or stay monolithic? Take a position."
+        - "What's the single most important fix to make to this code? Just one."
+    easy:
+      candidates:
+        - "What is the capital of Australia?"
+        - "How does photosynthesis work?"
+        - "Explain how a hash table works."
+        - "What are some good books about negotiation?"
+        - "What are the tradeoffs between TypeScript and Go?"
+        - "How does the immune system respond to a viral infection?"
+        - "What are the main considerations when choosing a database for a new project?"
+        - "What is the difference between a stock and a bond?"
+        - "List the various approaches to handling state in a React application."
+        - "Summarize the major arguments for and against universal basic income."
+        - "Walk me through how diesel engines work."
+        - "What are the common architectural styles in 20th-century painting?"
