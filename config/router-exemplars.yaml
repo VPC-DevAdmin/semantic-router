@@ -2,32 +2,32 @@
 # Router training data — semantic routing demo
 # ═════════════════════════════════════════════════════════════════════════
 #
-# Routing model (projections-based — the canonical vllm-sr v0.3 pattern):
+# Canonical v0.3 architecture (per upstream config.yaml + docs):
+# routing.signals.{complexity,embeddings,structure,context,keywords} all
+# feed routing.projections.scores.request_difficulty via weighted_sum.
+# routing.projections.mappings.tier_band partitions the score into 5
+# bands. routing.decisions[] routes each band to a tier model.
 #
-#   1. Each `complexity_signal` below is a contrastive embedding signal
-#      with `hard` and `easy` candidate banks. The router computes a
-#      single confidence in [0, 1] reflecting how "hard-like" each query
-#      looks on that axis.
+# The previous design used four contrastive `complexity` signals as the
+# entire signal mix. A diagnostic confirmed they all fire `:medium` on
+# 100% of queries — they were a constant, not a signal. The discrimination
+# was being done by a single `frontier_synthesis` embedding contribution,
+# producing a bimodal score distribution that couldn't reach T2 / T4.
 #
-#   2. Those per-signal confidences are combined via weighted_sum into a
-#      single continuous `request_difficulty` score in [0, 1].
+# This file uses the canonical mix instead: ONE complexity signal,
+# TWO embeddings (one detractor + one promoter), several structure
+# signals (mechanical / regex-based gates), and a context signal.
+# Different signal types capture different evidence; combined in
+# weighted_sum, they give the score real gradient instead of bimodal
+# collapse.
 #
-#   3. `tier_cutoffs` partitions that score into 5 mutually-exclusive
-#      bands. Exactly one band fires per query → exactly one tier
-#      decision fires.
-#
-# This replaces the previous hard/easy embedding pair + AND/OR/NOT rule
-# tree, which hit a structural ceiling at ~84% routing accuracy because
-# vllm-sr's matched_signals uses single-winner semantics (only the
-# top-scoring signal counts as matched), making rules that depended on
-# multiple hard signals firing structurally impossible.
-#
-# Tuning surface — both in this file, both human-readable:
-#   • `weight:` per signal — how much each axis contributes to difficulty.
+# Tuning surface — all in this file, all human-readable:
+#   • `weight:` per signal — contribution to request_difficulty.
 #   • `tier_cutoffs:` — where to split the score into bands.
+#   • exemplar banks for embeddings and the complexity signal.
 #
 # To swap in a different training set: edit this file and restart the
-# router. Nothing else needs to change.
+# router (`make router-stop && make route`).
 # ─────────────────────────────────────────────────────────────────────────
 
 schema_version: 2
@@ -36,69 +36,23 @@ name: "five-tier-projection-router"
 # ═════════════════════════════════════════════════════════════════════════
 # Tier bands — request_difficulty → tier
 # ═════════════════════════════════════════════════════════════════════════
-# Four cutoffs produce five bands along request_difficulty ∈ [0, 1].
-#   score ≤ 0.20            → tier1 (trivial)
-#   0.20 < score ≤ 0.40     → tier2 (workhorse)
-#   0.40 < score ≤ 0.55     → tier3 (heavy technical)
-#   0.55 < score ≤ 0.80     → tier4 (high-stakes judgment)
-#   score > 0.80            → tier5 (frontier)
-#
-# Cutoff calibration (third-pass): a routing diagnostic with the previous
-# single-embedding setup showed a bimodal distribution — queries either
-# matched the frontier embedding (clustering at T3+) or didn't (clustering
-# at T1). T2 and T4 bands were empty because the embedder produces near-
-# bimodal output on max-aggregation: a query either matches at least one
-# exemplar strongly, or matches none.
-#
-# Adding `moderate_complexity` (a second embedding signal targeting
-# T2/T3-grade prompts) gives the score a second independent axis. With
-# two signals contributing:
-#   • Trivial queries: neither matches → score near 0           → tier1
-#   • T2/T3 prompts: moderate matches, frontier weak/none       → tier2/tier3
-#   • Strong-frontier prompts (both can match): both contribute → tier4
-#   • Genuinely-frontier prompts: frontier match dominates      → tier5
-#
-# Max score budget:
-#   moderate_complexity max contribution: 0.20 × ~0.7 sim ≈ 0.14
-#   frontier_synthesis  max contribution: 0.40 × ~0.7 sim ≈ 0.28
-#   complexity :hard channel (latent):    0.90 (~never fires)
-# Practical max from embeddings: ~0.42. Realistic span: 0.02–0.42.
-#
-# Cutoffs spaced to partition that span into five bands. Verify with
-# `python eval_reporter.py` after the next route pass and re-tune from
-# the confusion matrix.
-tier_cutoffs: [0.05, 0.12, 0.22, 0.32]
+# Four cutoffs produce five bands. Calibrated against the canonical
+# diverse-signal projection: max practical score is roughly 0.55-0.70
+# (sum of all positive contributions for a query that maxes every signal),
+# minimum is around -0.15 (trivial query strongly matching the detractor
+# embedding). Cutoffs are first-pass; tune from `eval_reporter.py` output
+# after the next route pass.
+tier_cutoffs: [0.05, 0.15, 0.30, 0.45]
 
-# How much partial credit a `:medium` complexity match gets relative to
-# a `:hard` match. With `weighted_sum + binary` semantics, a `:hard`
-# match contributes the full signal weight; a `:medium` match contributes
-# `medium_weight_factor × weight`.
-#
-# Set to 0.0 after a routing diagnostic showed vllm-sr's contrastive
-# complexity classifier fires `:medium` on 100% of queries across all
-# expected-tier buckets, with effectively zero discriminative power.
-# Every signal's `:medium` match was contributing a fixed offset to
-# every query's score, raising the floor uniformly and making T1/T2
-# bands unreachable. Setting this to 0.0 drops the dead-weight floor;
-# the builder omits the `:medium` inputs from the weighted_sum entirely.
-#
-# When/if vllm-sr's `:hard` classification starts firing reliably for
-# genuinely-hard queries (currently never), the `:hard` inputs (still
-# emitted at full weight) will start contributing real signal and this
-# value can stay at 0.0 — or be raised slightly if `:medium` proves
-# useful as a weak hint.
-#
-# Range [0, 1]. 0.0 = mediums contribute nothing (only :hard matters);
-# 1.0 = medium and hard count equally.
+# `:medium` complexity matches contribute `medium_weight_factor × weight`.
+# Kept at 0.0 because diagnostic confirmed vllm-sr's contrastive classifier
+# fires `:medium` on 100% of queries with zero discriminative power. The
+# builder omits `:medium` inputs from the weighted_sum when this is 0.0.
 medium_weight_factor: 0.0
 
 # ═════════════════════════════════════════════════════════════════════════
 # Tiers — what we're routing to
 # ═════════════════════════════════════════════════════════════════════════
-# Logical names. The mapping to actual model endpoints lives in
-# router-backends.yaml. That separation lets us swap model identities
-# without touching this training file.
-
 tiers:
   - id: tier1
     label: "T1 — small (~1B)"
@@ -117,252 +71,108 @@ tiers:
     role: "Frontier — needed when a query is BOTH deeply technical AND demands judgment"
 
 # ═════════════════════════════════════════════════════════════════════════
-# Complexity signals — the exemplar banks
+# Complexity signal — used ONCE (per canonical pattern)
 # ═════════════════════════════════════════════════════════════════════════
-# Each signal is a vllm-sr v0.3 `routing.signals.complexity` entry. The
-# router computes a contrastive (hard - easy) score per signal and
-# normalizes it to confidence in [0, 1].
+# Single contrastive signal with one hard and one easy bank. Replaces the
+# four signals that used to live here (needs_reasoning / _expertise /
+# _judgment / demands_commitment) — they all fired `:medium` on 100% of
+# queries with no per-query variance, so they were dead weight.
 #
-# `weight` is the signal's contribution to `request_difficulty` in the
-# weighted_sum projection. Weights here sum to 1.0 so the score stays
-# bounded in [0, 1]. Negative weights are valid (a "detractor" signal —
-# e.g. "looks-like-a-factual-lookup" would pull the score down).
-#
-# Design principles (do not violate when editing):
-#   • Exemplars are GENERIC ARCHETYPES, not drawn from the eval set.
-#   • Both sides need to be DIVERSE — a single domain on one side will
-#     bias the signal toward that domain.
-#   • Aim for ~10–14 exemplars per side. vllm-sr caps internal prototypes
-#     at 8 — more than ~14 yields diminishing return.
-#   • Easy-side exemplars should still be plausible queries (no garbage).
-
+# Design principle: the hard bank contains diverse archetypes covering
+# the "hard" axis broadly (reasoning, expertise, judgment, commitment).
+# The easy bank covers diverse trivial/factual archetypes. Both sides
+# are kept generic (no eval-set overlap).
 complexity_signals:
-
-  # ─────────────────────────────────────────────────────────────────────
-  # SIGNAL 1: Multi-step reasoning
-  # ─────────────────────────────────────────────────────────────────────
-  - id: needs_reasoning
-    description: "Does this query require multi-step reasoning?"
-    threshold: 0.55       # used for `matched_signals` reporting; doesn't gate the projection
-    weight: 0.20          # contribution to request_difficulty
-    hard:
-      candidates:
-        # Math word problems / probability — chained arithmetic + setup
-        - "Three pipes fill a tank — pipe A in 6 hours, B in 8 hours, C empties it in 12 hours. If all run together starting from empty, when is the tank full?"
-        - "In a five-card poker hand from a standard deck, what's the probability of being dealt a flush, and how would you derive it?"
-        # Proofs — multi-step formal reasoning
-        - "Demonstrate that there are infinitely many primes."
-        - "Show by induction that the sum of the first n cubes equals the square of the sum of the first n integers."
-        # Code debugging — trace execution to find a flaw
-        - "This recursive function returns wrong values for inputs near the recursion limit. Trace what's going wrong and explain the fix."
-        - "Here is a SQL query that returns duplicate rows when joining three tables. Walk through why, and rewrite it to fix the issue."
-        # Algorithm implementation — designing the algorithm, not transcribing it
-        - "Design and implement a function that finds the longest palindromic subsequence in a string with O(n²) time. Walk through the DP setup and the recurrence."
-        # Diagnostic / causal — chain inferences through a domain
-        - "A patient presents with intermittent vertigo, hearing loss, and tinnitus. What's the differential and how would you narrow it down?"
-        - "Walk through how a sudden 30% drop in labor-force participation would propagate through a modern economy over the following year."
-        # Tradeoff analysis + recommendation
-        - "When is union-find with path compression preferable to a balanced BST for connectivity queries, and what's the reasoning behind the tradeoff?"
-        # Argument analysis — find unstated premises
-        - "Identify the unstated premises in this argument, and explain whether removing each one breaks the conclusion."
-        # Constraint satisfaction
-        - "Five colleagues need to be assigned to three projects under these constraints. Find an assignment or prove none exists."
-        # Counterfactual reasoning
-        - "If antibiotics had never been discovered, trace the likely course of 20th-century population and economic development."
-    easy:
-      candidates:
-        # Trivia / single-step lookups across diverse domains
-        - "Which artist painted the Sistine Chapel ceiling?"
-        - "Define photosynthesis."
-        - "How many feet are in a mile?"
-        - "When did World War II end?"
-        - "What is the chemical symbol for sodium?"
-        - "How many time zones span the contiguous United States?"
-        - "Who wrote 'The Great Gatsby'?"
-        - "What does the acronym HTML stand for?"
-        - "How do you say 'thank you' in French?"
-        - "What currency is used in Japan?"
-        - "What is the largest organ in the human body?"
-        - "Which planet is closest to the sun?"
-
-  # ─────────────────────────────────────────────────────────────────────
-  # SIGNAL 2: Deep domain expertise
-  # ─────────────────────────────────────────────────────────────────────
-  - id: needs_expertise
-    description: "Does this query require deep domain expertise?"
+  - id: query_difficulty
+    description: "Is this query high-effort vs low-effort overall?"
     threshold: 0.55
     weight: 0.20
     hard:
       candidates:
-        # Pure math / theoretical CS
+        # Multi-step reasoning
+        - "Demonstrate that there are infinitely many primes."
+        - "Three pipes fill a tank — pipe A in 6 hours, B in 8 hours, C empties it in 12 hours. If all run together starting from empty, when is the tank full?"
+        - "Walk through how a sudden 30% drop in labor-force participation would propagate through a modern economy over the following year."
+        # Deep domain expertise
         - "Explain why the Banach-Tarski paradox doesn't contradict measure theory."
-        - "Discuss the lattice-based assumptions underlying CRYSTALS-Kyber and why they're believed to resist quantum attacks."
-        # Distributed systems / networking deep details
-        - "Walk through how Raft handles the split-vote scenario and the design choices that prevent livelock."
-        - "Explain the BGP wedgie phenomenon and what configurations make it possible."
-        # ML internals
-        - "Explain why post-training int8 quantization sometimes fails on attention layers but works on FFN layers."
-        # Programming language theory
-        - "Describe how Rust's higher-ranked trait bounds (for<'a>) interact with closure inference."
-        # Medicine / pharmacology
-        - "Discuss the clinical implications of CYP3A4 inhibition for tacrolimus dosing in transplant patients."
-        # Law — doctrinal specifics
         - "Trace the doctrinal evolution of the Commerce Clause from Wickard v. Filburn to NFIB v. Sebelius."
-        # Materials / mechanical engineering
-        - "Explain why titanium aluminide is preferred over nickel superalloys for certain high-temperature aerospace components."
-        # Music theory / humanities specifics
-        - "Discuss the rules for resolving the augmented sixth chord in late-Romantic harmony, and where they typically break down."
-        # Linguistics — formal syntax
-        - "Explain the c-command condition in binding theory and the empirical data that motivates it."
-        # Finance / regulation specifics
-        - "Walk through the mechanics of a Treasury-bond basis trade and the funding-cost dynamics that determine its profitability."
-        # Substantive explanation of a common-knowledge concept — mid-level depth
-        - "Explain how garbage collectors handle the tracing-vs-reference-counting trade-off, including the failure modes of each approach."
-        # Creative-writing craft — frontier-quality short fiction asks
-        - "Write a literary scene that conveys grief through specific gesture and what's left unsaid, in under 500 words, no exposition or backstory."
-    easy:
-      candidates:
-        # Common definitions across diverse domains
-        - "What is a renewable resource?"
-        - "What does the acronym GPS stand for?"
-        - "What causes a rainbow?"
-        - "What does the heart do?"
-        - "Who was Marie Curie?"
-        - "What does 'evaporation' mean?"
-        - "What is an atom made of?"
-        - "How does Wi-Fi work, in general terms?"
-        - "What is high blood pressure?"
-        - "What is a peninsula?"
-        - "What is the Mona Lisa famous for?"
-        - "What is interest on a savings account?"
-
-  # ─────────────────────────────────────────────────────────────────────
-  # SIGNAL 3: Open-ended judgment
-  # ─────────────────────────────────────────────────────────────────────
-  - id: needs_judgment
-    description: "Does this query require open-ended judgment or value-laden tradeoffs?"
-    threshold: 0.55
-    weight: 0.25
-    hard:
-      candidates:
-        # Career / professional
+        - "Walk through how Raft handles the split-vote scenario and the design choices that prevent livelock."
+        # Open-ended judgment
         - "I'm a senior engineer choosing between a tech lead role with people management and an IC architect role. How should I think about this?"
-        # Architecture / strategy
-        - "We're a 12-person team considering breaking our monolith into services. What are the considerations beyond the technical?"
-        # Ethics
-        - "Is it justifiable to deploy autonomous weapons systems even if they reduce overall casualties?"
-        - "Is it appropriate to use LLM-generated content in academic publications, and under what conditions?"
-        # People management
-        - "An otherwise strong report has become passive-aggressive with peers after being passed over for promotion. How do I handle this?"
-        # Life decisions
-        - "I'm weighing a high-paying job I find meaningless against staying in a low-paying job I love. How should I think this through?"
-        # Medical (preference-sensitive)
-        - "I have two surgical options with different recovery profiles and recurrence risks. How do I work through choosing?"
-        # Policy / civic
-        - "How should a city balance preserving historic neighborhoods against allowing dense new housing?"
-        - "How should I think about voting in a primary where my preferred candidate has no realistic path to nomination?"
-        # Family / personal
-        - "My elderly parent wants to age in place but can no longer manage safely alone. How do we have this conversation as a family?"
-        # Aesthetic / creative
-        - "Should our team's brand identity prioritize legibility or distinctiveness? Walk me through the tradeoffs."
-        # Financial planning (preference-sensitive)
-        - "Given my financial situation, should I pay down student debt aggressively or prioritize retirement contributions?"
-        # Discursive ethical analysis — "Discuss the considerations of X"
         - "Discuss the ethical tensions in deploying facial recognition in public spaces, balancing law-enforcement utility against civil-liberties harms."
+        # Commitment / position-taking
+        - "Construct a serious, original argument for a non-obvious philosophical position and defend it without retreat."
+        - "Of these architectural approaches, pick one and tell me why — don't survey the options."
+        # Synthesis at length
+        - "Write a literary short story of approximately 1500-2000 words sustaining a single voice and structural arc."
+        - "Critique this paper's methodology, identifying three structurally distinct problem classes."
     easy:
       candidates:
-        # Well-defined facts — no judgment required, across diverse domains
+        # Factual lookups
+        - "Which artist painted the Sistine Chapel ceiling?"
+        - "What is the chemical symbol for sodium?"
+        - "Who wrote 'The Great Gatsby'?"
+        - "What currency is used in Japan?"
+        - "What is the largest organ in the human body?"
+        # Trivial calculations / conversions
         - "What is 15 plus 27?"
-        - "What color do you get when you mix blue and yellow?"
-        - "How many weeks are in a year?"
-        - "What is the chemical formula for table salt?"
-        - "How long does it take Earth to orbit the sun?"
-        - "Is the Sahara a desert?"
-        - "What is the freezing point of water in Celsius?"
-        - "Is a tomato a fruit or a vegetable, botanically?"
-        - "Does JavaScript run in web browsers?"
+        - "How many feet are in a mile?"
         - "What is the square root of 144?"
-        - "In what century did the Industrial Revolution begin in Britain?"
-        - "Is Python a programming language?"
-
-  # ─────────────────────────────────────────────────────────────────────
-  # SIGNAL 4: Commitment vs survey
-  # ─────────────────────────────────────────────────────────────────────
-  # Does this query demand a specific direction (pick X, choose Y, yes/no)
-  # vs. a survey/explanation (what is X, how does X work, what are the
-  # tradeoffs)?
-  #
-  # Smaller models systematically default to surveys and hedging. Frontier
-  # models are better-calibrated to actually commit to a position. This
-  # axis is orthogonal to the others — a query can be trivially reasoned
-  # but demand hard commitment ("should I take this job?"), or be deeply
-  # reasoned but be a survey ("explain how transformers work").
-  - id: demands_commitment
-    description: "Does this query demand a specific direction vs. a survey?"
-    threshold: 0.55
-    weight: 0.25
-    hard:
-      candidates:
-        - "I need to pick between three architectural approaches by tomorrow. Pick one and tell me why."
-        - "We're naming a coffee shop. The options are Beanwise, North Roast, and Common Grounds. Which one and why?"
-        - "Should I take the promotion or stay in my current role? Don't list considerations — actually advise me."
-        - "Of these five candidates, who would you hire? Commit to a choice."
-        - "Recommend a single book on negotiation. Just one. Tell me why this one."
-        - "Which mistake in this design is the most serious? Pick one."
-        - "Should I start the company now or wait two years? Make a call."
-        - "Yes or no: should I let my fifteen-year-old read this book?"
-        - "Pick the strongest argument in this essay. The strongest, not a survey."
-        - "Choose: TypeScript or Go for this service. Decide and justify."
-        - "Should the team adopt microservices or stay monolithic? Take a position."
-        - "What's the single most important fix to make to this code? Just one."
-    easy:
-      candidates:
-        - "What is the capital of Australia?"
-        - "How does photosynthesis work?"
-        - "Explain how a hash table works."
-        - "What are some good books about negotiation?"
-        - "What are the tradeoffs between TypeScript and Go?"
-        - "How does the immune system respond to a viral infection?"
-        - "What are the main considerations when choosing a database for a new project?"
-        - "What is the difference between a stock and a bond?"
-        - "List the various approaches to handling state in a React application."
-        - "Summarize the major arguments for and against universal basic income."
-        - "Walk me through how diesel engines work."
-        - "What are the common architectural styles in 20th-century painting?"
+        # Simple definitions
+        - "Define photosynthesis."
+        - "What is a peninsula?"
+        - "What does the acronym HTML stand for?"
+        - "How do you say 'thank you' in French?"
 
 # ═════════════════════════════════════════════════════════════════════════
-# Embedding signals — continuous evidence sources
+# Embedding signals — continuous semantic similarity
 # ═════════════════════════════════════════════════════════════════════════
-# Unlike `complexity_signals` (contrastive hard/easy banks → discrete
-# levels :hard/:medium/none), `embedding_signals` use a single candidate
-# bank and produce a CONTINUOUS confidence value in [0, ~0.7] via cosine
-# similarity. They feed the weighted_sum projection via
-# `value_source: confidence`, giving the score real continuous resolution
-# alongside the four discrete complexity axes.
+# Two single-bank embedding signals, one promoter (positive weight) and
+# one detractor (negative weight). Each contributes via
+# `value_source: confidence` so high similarity → strong contribution,
+# low similarity → near-zero. The threshold gates whether the signal
+# matches at all; below it, the embedding contributes 0.
 #
-# This is the upstream "mixed sources" pattern — the canonical
-# vllm-project/semantic-router config.yaml combines `type: embedding`
-# (continuous, with value_source: confidence) and `type: complexity`
-# (binary qualifier, no value_source) in one weighted_sum.
-#
-# Aggregation `max` returns the highest cosine similarity to any
-# candidate in the bank — what you want for "looks like a frontier
-# prompt on at least one axis."
+# The detractor pattern is the upstream canonical way to push trivial
+# queries down: `trivial_lookup` fires strongly for short factual asks
+# and SUBTRACTS from request_difficulty, anchoring those queries at T1.
 
 embedding_signals:
 
   # ─────────────────────────────────────────────────────────────────────
-  # FRONTIER SYNTHESIS — the T5 lane in continuous form
+  # TRIVIAL LOOKUP — detractor (negative weight)
   # ─────────────────────────────────────────────────────────────────────
-  # Twelve generic archetypes of T5-grade prompts spanning craft, code,
-  # judgment, methodology, and policy. None of these are drawn from the
-  # eval set (the builder's overlap check would refuse to build if any
-  # were). Higher similarity to this bank = stronger evidence the query
-  # is genuinely frontier-grade.
+  # Short factual asks, definitions, simple conversions. When this fires,
+  # it pulls request_difficulty DOWN, anchoring trivial queries in T1.
+  - id: trivial_lookup
+    description: "Continuous similarity to short factual / lookup-shaped prompts."
+    threshold: 0.55
+    weight: -0.20
+    aggregation_method: max
+    candidates:
+      - "Which artist sculpted David?"
+      - "What is the largest country by area?"
+      - "What does the acronym CPU stand for?"
+      - "Convert 100 kilometers to miles."
+      - "Define osmosis."
+      - "What is the chemical formula for water?"
+      - "Who invented the telephone?"
+      - "How many sides does a hexagon have?"
+      - "What is the freezing point of water in Fahrenheit?"
+      - "In what year did the Berlin Wall fall?"
+      - "What is the speed of light in a vacuum?"
+      - "Translate 'hello' to Spanish."
+
+  # ─────────────────────────────────────────────────────────────────────
+  # FRONTIER SYNTHESIS — promoter (positive weight)
+  # ─────────────────────────────────────────────────────────────────────
+  # Long-form synthesis, original argument construction, multi-domain
+  # analysis with commitment to a position. Fires strongly for genuine
+  # T5-grade prompts.
   - id: frontier_synthesis
     description: "Continuous similarity to T5-grade frontier prompts."
-    threshold: 0.70             # gates the route_tier5_embedding_frontier lane. At 0.70: 10/12 T5 recall + ~13 false-positive T5 promotions. Tightening to 0.78 lost legit T5 recall without reducing false positives. This is the Pareto-optimal point we've found.
-    weight: 0.40                # primary discriminator — after the complexity :medium dead-weight was removed, this is the signal doing the actual work
+    threshold: 0.65
+    weight: 0.25
     aggregation_method: max
     candidates:
       # Long-form literary craft with structural constraints
@@ -387,40 +197,78 @@ embedding_signals:
       # Constructive ethical framework (not synthesis)
       - "Construct an original ethical framework that takes seriously both the effective-altruist and the communitarian critiques rather than synthesizing them. Test your frame against the canonical thought experiments each tradition has used."
 
-  # ─────────────────────────────────────────────────────────────────────
-  # MODERATE COMPLEXITY — the T2/T3 gradient
-  # ─────────────────────────────────────────────────────────────────────
-  # The diagnostic showed a bimodal routing distribution: trivial queries
-  # land at T1 (no frontier match), and queries clearing some frontier
-  # similarity all clumped at T3. Empty bands in between. The fix is a
-  # second embedding signal that fires on T2/T3-grade prompts so the
-  # score gets a second independent axis of variation. With two signals
-  # contributing (frontier + moderate), queries between the two modes
-  # get fractional credit from one or the other, populating the empty
-  # bands.
-  #
-  # Twelve generic archetypes of T2/T3-grade prompts: explain-how,
-  # compare-and-contrast, implement-basic, walk-through. NOT trivial
-  # (those don't match), NOT frontier (those match the other bank).
-  - id: moderate_complexity
-    description: "Continuous similarity to T2/T3-grade explanation, comparison, and implementation prompts."
-    threshold: 0.60
-    weight: 0.20
-    aggregation_method: max
-    candidates:
-      # Explain-how queries — technical concepts at moderate depth
-      - "Explain how a database B-tree index handles range queries with a worked example."
-      - "Walk me through how a TLS handshake establishes a shared key — the cryptographic flow at a protocol level."
-      - "Explain Bayes' theorem using a concrete worked example like spam classification or medical screening."
-      # Compare-and-contrast queries
-      - "Compare TCP, UDP, and SCTP — when to use each, and what trade-offs you're picking up."
-      - "What are the operational differences between microservices and modular monoliths for a mid-sized engineering team?"
-      - "Compare reference counting and tracing garbage collectors — what each gets right and where they typically fail."
-      # Implement-basic queries — concrete code with moderate scope
-      - "Implement a thread-safe LRU cache in Go with O(1) get and put operations."
-      - "Write a Python decorator that retries a function with exponential backoff on configured exception types."
-      - "Implement a Bloom filter in Python with configurable false-positive rate."
-      # Walk-through / diagnostic queries
-      - "Walk me through how to diagnose an event-driven Node.js backend with a slow memory leak under steady-state load."
-      - "Explain what 'eventual consistency' actually means at the application level, with the operational implications that matter to developers."
-      - "Walk through how a confusion matrix is computed for a multi-class classifier, including precision, recall, and F1 per class."
+# ═════════════════════════════════════════════════════════════════════════
+# Structure signals — mechanical / regex properties of the prompt
+# ═════════════════════════════════════════════════════════════════════════
+# Deterministic gates based on prompt shape. No embeddings, no training.
+# Each is binary: fires (contributes weight) or doesn't (contributes 0).
+# Schema mirrors upstream config.yaml — feature {type, source} + predicate.
+
+structure_signals:
+
+  - id: long_prompt
+    description: "Fires when the prompt has 100+ words. Suggests a substantive ask."
+    weight: 0.08
+    feature:
+      type: count
+      source:
+        type: regex
+        pattern: '\S+'
+    predicate:
+      gte: 100
+
+  - id: very_long_prompt
+    description: "Fires when the prompt has 400+ words. Suggests long-form / complex ask."
+    weight: 0.10
+    feature:
+      type: count
+      source:
+        type: regex
+        pattern: '\S+'
+    predicate:
+      gte: 400
+
+  - id: code_block_present
+    description: "Fires when the prompt contains a fenced code block (```...```)."
+    weight: 0.07
+    feature:
+      type: count
+      source:
+        type: regex
+        pattern: '```'
+    predicate:
+      gte: 2
+
+  - id: multi_question
+    description: "Fires when the prompt has 2+ question marks — multi-part ask."
+    weight: 0.05
+    feature:
+      type: count
+      source:
+        type: regex
+        pattern: '[?？]'
+    predicate:
+      gte: 2
+
+  - id: numbered_constraints
+    description: "Fires when the prompt has a numbered list (`1.`, `2.`, ...). Common in structured / multi-part prompts."
+    weight: 0.05
+    feature:
+      type: exists
+      source:
+        type: regex
+        pattern: '(?m)^\s*\d+\.\s+'
+
+# ═════════════════════════════════════════════════════════════════════════
+# Context signals — request-level facts known to the router
+# ═════════════════════════════════════════════════════════════════════════
+# Token-range gating. Long-context requests need bigger / more-capable
+# models regardless of semantic difficulty.
+
+context_signals:
+
+  - id: long_context
+    description: "Requests that need larger context windows (>2K tokens)."
+    weight: 0.10
+    min_tokens: "2K"
+    max_tokens: "200K"

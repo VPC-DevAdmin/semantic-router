@@ -165,6 +165,29 @@ def _validate_exemplars(ex: dict, eval_prompts: set[str] | None = None) -> None:
                         f"this would contaminate the demo. Example: {next(iter(overlap))!r}"
                     )
 
+    # Structure / context / keyword signals — purely declarative (no
+    # exemplar overlap risk with the eval set since they're mechanical
+    # gates, not semantic similarity).
+    for section, required_fields in (
+        ("structure_signals", ("id", "feature")),
+        ("context_signals", ("id",)),
+        ("keyword_signals", ("id", "keywords")),
+    ):
+        section_signals = ex.get(section, [])
+        if not section_signals:
+            continue
+        seen_ids: set[str] = set()
+        for sig in section_signals:
+            for field in required_fields:
+                if field not in sig:
+                    raise ValueError(
+                        f"{section}: entry missing required field {field!r}: {sig!r}"
+                    )
+            sid = sig["id"]
+            if sid in seen_ids:
+                raise ValueError(f"{section}: duplicate id {sid!r}")
+            seen_ids.add(sid)
+
 
 def _apply_backend_env_overrides(be: dict) -> None:
     """Same env-override layer used by config.apply_tier_env_overrides, but
@@ -383,6 +406,84 @@ def _emit_embedding_input(sig: dict) -> dict:
     }
 
 
+def _emit_structure_signal(sig: dict) -> dict:
+    """One entry under routing.signals.structure[].
+
+    Structure signals measure mechanical properties of the prompt itself:
+    word counts, regex matches, ordered keyword sequences, density of
+    constraint markers. They're heuristic and deterministic — cheap to
+    compute, carry information orthogonal to embeddings.
+
+    Schema (from upstream config.yaml):
+      - name (str), required
+      - feature: {type: count|exists|sequence|density, source: {...}}
+      - predicate: {gte|gt|lte|lt: <number>}  (optional for exists/sequence)
+      - description (str), optional
+    """
+    out: dict[str, Any] = {
+        "name": sig["id"],
+        "feature": sig["feature"],
+    }
+    if "predicate" in sig:
+        out["predicate"] = sig["predicate"]
+    if sig.get("description"):
+        out["description"] = sig["description"]
+    return out
+
+
+def _emit_context_signal(sig: dict) -> dict:
+    """One entry under routing.signals.context[].
+
+    Context signals gate on request-level facts the router already knows
+    — token counts, modality, etc. Example: long_context fires for
+    requests in [min_tokens, max_tokens].
+    """
+    out: dict[str, Any] = {"name": sig["id"]}
+    for field in ("min_tokens", "max_tokens", "modality"):
+        if field in sig:
+            out[field] = sig[field]
+    if sig.get("description"):
+        out["description"] = sig["description"]
+    return out
+
+
+def _emit_keyword_signal(sig: dict) -> dict:
+    """One entry under routing.signals.keywords[].
+
+    Lexical pattern matching with two methods: bm25 (token-level scoring)
+    and ngram (substring matching). Schema mirrors upstream config.yaml.
+    """
+    out: dict[str, Any] = {
+        "name": sig["id"],
+        "operator": sig.get("operator", "OR"),
+        "method": sig.get("method", "bm25"),
+        "keywords": list(sig["keywords"]),
+    }
+    out["case_sensitive"] = bool(sig.get("case_sensitive", False))
+    method = out["method"]
+    threshold_key = f"{method}_threshold"
+    if threshold_key in sig:
+        out[threshold_key] = sig[threshold_key]
+    if method == "ngram" and "ngram_arity" in sig:
+        out["ngram_arity"] = sig["ngram_arity"]
+    if sig.get("description"):
+        out["description"] = sig["description"]
+    return out
+
+
+def _emit_typed_input(sig: dict, type_name: str) -> dict:
+    """Generic weighted_sum input for a non-embedding signal type.
+
+    Used for structure/context/keyword inputs — these fire binary
+    (match=1.0 / miss=0.0) by default, no value_source needed.
+    """
+    return {
+        "type": type_name,
+        "name": sig["id"],
+        "weight": float(sig.get("weight", 0.0)),
+    }
+
+
 # Default `:medium` weight factor when the exemplars file doesn't specify
 # `medium_weight_factor:`. A `:medium` match contributes this fraction of
 # a `:hard` match's weight. Mirrors the canonical ratio in upstream
@@ -398,10 +499,13 @@ def _emit_difficulty_score(
     signals: list[dict],
     medium_weight_factor: float,
     emb_signals: list[dict] | None = None,
+    structure_signals: list[dict] | None = None,
+    context_signals: list[dict] | None = None,
+    keyword_signals: list[dict] | None = None,
 ) -> dict:
     """`routing.projections.scores.request_difficulty` — weighted_sum
-    over each complexity signal's `:medium` and `:hard` matches PLUS
-    each embedding signal's continuous confidence.
+    over the canonical signal-type mix: complexity, embeddings, structure,
+    context, keywords.
 
     Schema notes (per upstream vllm-project/semantic-router config.yaml
     and confirmed by inspecting a real eval response):
@@ -445,6 +549,14 @@ def _emit_difficulty_score(
     # confidence into the same weighted_sum (upstream mixed-source pattern).
     for sig in emb_signals or []:
         inputs.append(_emit_embedding_input(sig))
+    # Structure / context / keyword signals fire binary (match=1.0/miss=0.0).
+    # Each contributes its weight on match, zero on miss. No value_source.
+    for sig in structure_signals or []:
+        inputs.append(_emit_typed_input(sig, "structure"))
+    for sig in context_signals or []:
+        inputs.append(_emit_typed_input(sig, "context"))
+    for sig in keyword_signals or []:
+        inputs.append(_emit_typed_input(sig, "keyword"))
     return {
         "name": "request_difficulty",
         "method": "weighted_sum",
@@ -469,6 +581,42 @@ def _emit_tier_band_mapping(tier_ids: list[str], cutoffs: list[float]) -> dict:
         "method": "threshold_bands",
         "outputs": outputs,
     }
+
+
+def _emit_decisions(
+    tier_ids: list[str],
+    complexity_signals: list[dict],
+    emb_signals: list[dict],
+) -> list[dict]:
+    """Build the `routing.decisions[]` list, conditional on which signals
+    are configured.
+
+    Lane decisions reference specific signal names. If those signals
+    aren't present in the exemplars file, the lane can't fire — so we
+    omit it rather than emit dead references. This keeps the canonical
+    diverse-signal config clean: when the exemplars file uses a single
+    `query_difficulty` complexity signal (no `needs_reasoning` etc.),
+    the four-signal-era lanes don't emit.
+
+    Band decisions (one per tier) always emit.
+    """
+    complexity_ids = {s["id"] for s in complexity_signals}
+    emb_ids = {s["id"] for s in emb_signals or []}
+    decisions: list[dict] = []
+
+    # Lane decisions FIRST, so a quick read of the generated config shows
+    # the higher-priority overrides up top. Each is conditional on its
+    # referenced signals being defined.
+    if {"needs_reasoning", "needs_expertise"} <= complexity_ids:
+        decisions.append(_emit_tier5_frontier_lane())
+    if {"needs_judgment", "demands_commitment"} <= complexity_ids:
+        decisions.append(_emit_tier5_committed_judgment_lane())
+    if "frontier_synthesis" in emb_ids:
+        decisions.append(_emit_tier5_embedding_frontier_lane("frontier_synthesis"))
+
+    # Band decisions (one per tier) always emit.
+    decisions.extend(_emit_decision_for_band(tier_id) for tier_id in tier_ids)
+    return decisions
 
 
 def _emit_decision_for_band(tier_id: str) -> dict:
@@ -626,6 +774,9 @@ def build(
 
     signals = ex["complexity_signals"]
     emb_signals = ex.get("embedding_signals", [])
+    structure_signals = ex.get("structure_signals", [])
+    context_signals = ex.get("context_signals", [])
+    keyword_signals = ex.get("keyword_signals", [])
     cutoffs = list(ex["tier_cutoffs"])
     medium_weight_factor = float(
         ex.get("medium_weight_factor", DEFAULT_MEDIUM_WEIGHT_FACTOR)
@@ -663,37 +814,38 @@ def build(
                     if emb_signals
                     else {}
                 ),
+                **(
+                    {"structure": [_emit_structure_signal(s) for s in structure_signals]}
+                    if structure_signals
+                    else {}
+                ),
+                **(
+                    {"context": [_emit_context_signal(s) for s in context_signals]}
+                    if context_signals
+                    else {}
+                ),
+                **(
+                    {"keywords": [_emit_keyword_signal(s) for s in keyword_signals]}
+                    if keyword_signals
+                    else {}
+                ),
             },
             "projections": {
                 "scores": [
                     _emit_difficulty_score(
-                        signals, medium_weight_factor, emb_signals
+                        signals,
+                        medium_weight_factor,
+                        emb_signals,
+                        structure_signals=structure_signals,
+                        context_signals=context_signals,
+                        keyword_signals=keyword_signals,
                     )
                 ],
                 "mappings": [_emit_tier_band_mapping(tier_ids, cutoffs)],
             },
-            "decisions": [
-                # Lane decisions FIRST, so a quick read of the file shows
-                # the higher-priority overrides up top.
-                _emit_tier5_frontier_lane(),
-                _emit_tier5_committed_judgment_lane(),
-                # Embedding-driven frontier lane. We tried removing it —
-                # T5 recall dropped from 10/12 to 0/12 with under-routing
-                # spiking. Diagnostics showed the genuine T5 prompts in
-                # the eval set don't naturally score > 0.32 via
-                # frontier_synthesis + moderate_complexity contributions
-                # alone, so they need the lane to reach tier5. The lane
-                # also catches ~13 false-positive T5 promotions (T2/T3
-                # queries matching the frontier bank above threshold).
-                # This is the Pareto trade-off: keeping the lane buys
-                # us T5 recall at the cost of those false positives.
-                *(
-                    [_emit_tier5_embedding_frontier_lane("frontier_synthesis")]
-                    if any(s["id"] == "frontier_synthesis" for s in emb_signals)
-                    else []
-                ),
-                *(_emit_decision_for_band(tier_id) for tier_id in tier_ids),
-            ],
+            "decisions": _emit_decisions(
+                tier_ids, signals, emb_signals
+            ),
         },
         # Disable semantic cache: avoids Milvus startup dependency for the
         # demo. Enable the complexity prototype-scoring module explicitly
