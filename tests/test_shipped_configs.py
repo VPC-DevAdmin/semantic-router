@@ -50,6 +50,32 @@ def test_tier_env_overrides_ignore_blank(monkeypatch) -> None:
     assert t4.served_model_name == yaml_model
 
 
+def test_openai_https_backend_emits_provider_openai(monkeypatch, tmp_path) -> None:
+    """An HTTPS non-Anthropic backend should emit `provider: openai`
+    with Bearer auth headers, not the `protocol: http` localhost shape."""
+    monkeypatch.setenv("TIER3_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("TIER3_MODEL", "gpt-5-mini")
+    monkeypatch.setenv("TIER3_API_KEY", "sk-test")
+    from benchmark.build_router_config import build
+    cfg = build(
+        exemplars_path=ROOT / "config" / "router-exemplars.yaml",
+        backends_path=ROOT / "config" / "router-backends.yaml",
+        eval_set_path=None,
+    )
+    t3 = next(m for m in cfg["providers"]["models"] if m["name"] == "tier3")
+    assert t3["provider_model_id"] == "gpt-5-mini"
+    assert t3["api_format"] == "openai"
+    ref = t3["backend_refs"][0]
+    assert ref["base_url"] == "https://api.openai.com/v1"
+    assert ref["provider"] == "openai"
+    assert ref["auth_header"] == "Authorization"
+    assert ref["auth_prefix"] == "Bearer"
+    assert ref["api_key_env"] == "TIER3_API_KEY"
+    # Should NOT carry the localhost-style fields.
+    assert "endpoint" not in ref
+    assert "protocol" not in ref
+
+
 def test_tier_yamls_parse() -> None:
     m = load_models(ROOT / "config" / "tiers")
     assert len(m.tiers) >= 5

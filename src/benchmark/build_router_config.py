@@ -217,16 +217,28 @@ def _is_anthropic(base_url: str) -> bool:
     return "anthropic.com" in base_url.lower()
 
 
+def _is_https(base_url: str) -> bool:
+    return base_url.lower().startswith("https://")
+
+
 def _emit_backend_ref_oai(cfg: dict) -> dict:
+    """HTTP localhost OAI-compatible backend (e.g. vLLM-served local model).
+
+    Used for the `protocol: http` path. Strips any default-port info from
+    the URL because urlparse(...).port is None for URLs without an explicit
+    port — `host:None` is not what vllm-sr wants.
+    """
     u = urlparse(cfg["base_url"])
-    endpoint = f"{u.hostname}:{u.port}{u.path}".rstrip("/")
+    host = u.hostname or ""
+    port_part = f":{u.port}" if u.port else ""
+    endpoint = f"{host}{port_part}{u.path}".rstrip("/")
     ref: dict[str, Any] = {
         "name": "primary",
         "endpoint": endpoint,
         "protocol": "http",
         "weight": 100,
     }
-    if "api_key_env" in cfg:
+    if "api_key_env" in cfg and cfg["api_key_env"]:
         ref["api_key_env"] = cfg["api_key_env"]
     return ref
 
@@ -241,20 +253,55 @@ def _emit_backend_ref_anthropic(cfg: dict) -> dict:
         "provider": "anthropic",
         "weight": 100,
     }
-    if "api_key_env" in cfg:
+    if "api_key_env" in cfg and cfg["api_key_env"]:
+        ref["api_key_env"] = cfg["api_key_env"]
+    return ref
+
+
+def _emit_backend_ref_openai(cfg: dict) -> dict:
+    """HTTPS OpenAI-compatible vendor backend (api.openai.com, OpenRouter,
+    Fireworks, etc.). Mirrors the upstream canonical config.yaml shape:
+    `provider: openai`, `base_url:` (with scheme), `auth_header` +
+    `auth_prefix` for Bearer auth, key sourced via `api_key_env`.
+    """
+    base = cfg["base_url"].rstrip("/")
+    ref: dict[str, Any] = {
+        "name": "primary",
+        "base_url": base,
+        "provider": "openai",
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer",
+        "weight": 100,
+    }
+    if "api_key_env" in cfg and cfg["api_key_env"]:
         ref["api_key_env"] = cfg["api_key_env"]
     return ref
 
 
 def _emit_provider_model(tier_id: str, cfg: dict) -> dict:
-    anthropic = _is_anthropic(cfg["base_url"])
+    """Choose the right backend ref shape based on the configured base_url.
+
+    Three paths:
+      • anthropic.com → Anthropic provider (handles OAI→Anthropic shape).
+      • Any other HTTPS → generic OpenAI-compatible vendor (api.openai.com,
+        OpenRouter, etc.). Uses Bearer auth, `provider: openai`.
+      • HTTP (localhost) → the existing local-OAI shape (`protocol: http`).
+    """
+    base_url = cfg["base_url"]
+    if _is_anthropic(base_url):
+        api_format = "anthropic"
+        ref = _emit_backend_ref_anthropic(cfg)
+    elif _is_https(base_url):
+        api_format = "openai"
+        ref = _emit_backend_ref_openai(cfg)
+    else:
+        api_format = "openai"
+        ref = _emit_backend_ref_oai(cfg)
     return {
         "name": tier_id,
         "provider_model_id": cfg["model"],
-        "api_format": "anthropic" if anthropic else "openai",
-        "backend_refs": [
-            _emit_backend_ref_anthropic(cfg) if anthropic else _emit_backend_ref_oai(cfg)
-        ],
+        "api_format": api_format,
+        "backend_refs": [ref],
     }
 
 
