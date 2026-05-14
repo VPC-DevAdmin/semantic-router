@@ -43,33 +43,50 @@ name: "five-tier-projection-router"
 #   0.55 < score ≤ 0.80     → tier4 (high-stakes judgment)
 #   score > 0.80            → tier5 (frontier)
 #
-# Why T3/T4 at 0.55 (not the obvious 0.60): with the default weights
-# below and medium_weight_factor=0.6, a query that matches ALL THREE
-# complexity signals at :medium scores exactly 0.6 × 1.0 = 0.60. Using
-# `lte: 0.60` keeps those at tier3; pulling the cutoff to 0.55 puts them
-# at tier4, which empirically is where most genuinely-hard prompts belong.
-# Bands above tier4 are reached only by :hard matches.
+# Cutoff calibration (post-diagnostic re-tune): the previous setup
+# baked a ~0.54 fixed-floor offset into every query's score because
+# the contrastive complexity classifier fires `:medium` on 100% of
+# queries regardless of difficulty. With `medium_weight_factor: 0.0`
+# (see below) those `:medium` inputs are dropped from the score
+# entirely. The remaining discriminative axis is the frontier
+# embedding signal (continuous similarity ∈ [0, ~0.7]), weighted at
+# 0.40 → max useful score ~0.28 from embedding alone, with rare
+# additional contributions when complexity `:hard` actually fires.
 #
-# After the first production run, look at the score distribution across
-# the eval set and adjust these cutoffs so the bands match the desired
-# tier mix. Tunable in ONE place.
-tier_cutoffs: [0.20, 0.40, 0.55, 0.80]
+# Cutoffs tightened to match the new (compressed) score range:
+#   score ≤ 0.08            → tier1 (trivial — no frontier match at all)
+#   0.08 < score ≤ 0.18     → tier2 (weak frontier engagement)
+#   0.18 < score ≤ 0.30     → tier3 (moderate frontier engagement)
+#   0.30 < score ≤ 0.50     → tier4 (strong frontier, or some :hard)
+#   score > 0.50            → tier5 (frontier + :hard)
+#
+# Look at the routing distribution after this lands and re-tune cutoffs
+# once more from real data. The architecture is now sound; cutoffs are
+# the one calibration knob left.
+tier_cutoffs: [0.08, 0.18, 0.30, 0.50]
 
 # How much partial credit a `:medium` complexity match gets relative to
 # a `:hard` match. With `weighted_sum + binary` semantics, a `:hard`
 # match contributes the full signal weight; a `:medium` match contributes
 # `medium_weight_factor × weight`.
 #
-# Empirically the embedder produces lots of `:medium` matches and very few
-# `:hard` matches on real prompts — so this factor is the main lever for
-# how aggressively a "kind of hard" query gets promoted toward T3/T4/T5
-# without needing a strict `:hard` win. Upstream canonical config uses 0.5
-# (0.18 / 0.36); we use 0.6 here so that 3 mediums project to ~0.6 and
-# clearly clear the T3/T4 cutoff.
+# Set to 0.0 after a routing diagnostic showed vllm-sr's contrastive
+# complexity classifier fires `:medium` on 100% of queries across all
+# expected-tier buckets, with effectively zero discriminative power.
+# Every signal's `:medium` match was contributing a fixed offset to
+# every query's score, raising the floor uniformly and making T1/T2
+# bands unreachable. Setting this to 0.0 drops the dead-weight floor;
+# the builder omits the `:medium` inputs from the weighted_sum entirely.
+#
+# When/if vllm-sr's `:hard` classification starts firing reliably for
+# genuinely-hard queries (currently never), the `:hard` inputs (still
+# emitted at full weight) will start contributing real signal and this
+# value can stay at 0.0 — or be raised slightly if `:medium` proves
+# useful as a weak hint.
 #
 # Range [0, 1]. 0.0 = mediums contribute nothing (only :hard matters);
 # 1.0 = medium and hard count equally.
-medium_weight_factor: 0.6
+medium_weight_factor: 0.0
 
 # ═════════════════════════════════════════════════════════════════════════
 # Tiers — what we're routing to
@@ -341,7 +358,7 @@ embedding_signals:
   - id: frontier_synthesis
     description: "Continuous similarity to T5-grade frontier prompts."
     threshold: 0.70             # used for `matched_signals` reporting AND for the embedding-lane decision; 0.70 keeps the lane selective so it only promotes genuinely-frontier prompts
-    weight: 0.10                # contribution to request_difficulty (small additive nudge — keeps complexity signals as the primary discriminator)
+    weight: 0.40                # primary discriminator — after the complexity :medium dead-weight was removed, this is the signal doing the actual work
     aggregation_method: max
     candidates:
       # Long-form literary craft with structural constraints

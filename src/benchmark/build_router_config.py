@@ -422,13 +422,20 @@ def _emit_difficulty_score(
     credit toward the projected score.
     """
     inputs: list[dict[str, Any]] = []
+    # When medium_weight_factor is 0, skip the :medium inputs entirely
+    # rather than emit them with weight 0. Cleaner generated config, and
+    # documents the design intent: ":medium fires uniformly across queries
+    # in our setup, so its contribution is dead weight." See PLAN.md / the
+    # routing diagnostic for why this matters.
+    emit_medium = medium_weight_factor > 0.0
     for sig in signals:
         weight = float(sig.get("weight", 0.0))
-        inputs.append({
-            "type": "complexity",
-            "name": f"{sig['id']}:medium",
-            "weight": weight * medium_weight_factor,
-        })
+        if emit_medium:
+            inputs.append({
+                "type": "complexity",
+                "name": f"{sig['id']}:medium",
+                "weight": weight * medium_weight_factor,
+            })
         inputs.append({
             "type": "complexity",
             "name": f"{sig['id']}:hard",
