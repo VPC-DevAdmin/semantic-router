@@ -234,16 +234,18 @@ def _emit_complexity_signal(sig: dict) -> dict:
     return out
 
 
-# A `:medium` match contributes half a `:hard` match's weight. Mirrors the
-# canonical ratio in upstream config/config.yaml (0.18 medium / 0.36 hard).
-# A given signal matches at ONE level per query (medium and hard are
-# mutually exclusive per `matched_signals`), so per-signal contribution
-# stays ≤ weight and total request_difficulty stays bounded in [0, 1] as
-# long as the per-signal weights themselves sum to ≤ 1.0.
-MEDIUM_WEIGHT_FACTOR = 0.5
+# Default `:medium` weight factor when the exemplars file doesn't specify
+# `medium_weight_factor:`. A `:medium` match contributes this fraction of
+# a `:hard` match's weight. Mirrors the canonical ratio in upstream
+# config/config.yaml (0.18 medium / 0.36 hard = 0.5). A given signal
+# matches at ONE level per query (medium and hard are mutually exclusive
+# per `matched_signals`), so per-signal contribution stays ≤ weight and
+# total request_difficulty stays bounded in [0, 1] as long as the
+# per-signal weights themselves sum to ≤ 1.0.
+DEFAULT_MEDIUM_WEIGHT_FACTOR = 0.6
 
 
-def _emit_difficulty_score(signals: list[dict]) -> dict:
+def _emit_difficulty_score(signals: list[dict], medium_weight_factor: float) -> dict:
     """`routing.projections.scores.request_difficulty` — weighted_sum
     over each complexity signal's `:medium` and `:hard` matches.
 
@@ -271,7 +273,7 @@ def _emit_difficulty_score(signals: list[dict]) -> dict:
         inputs.append({
             "type": "complexity",
             "name": f"{sig['id']}:medium",
-            "weight": weight * MEDIUM_WEIGHT_FACTOR,
+            "weight": weight * medium_weight_factor,
         })
         inputs.append({
             "type": "complexity",
@@ -348,6 +350,13 @@ def build(
 
     signals = ex["complexity_signals"]
     cutoffs = list(ex["tier_cutoffs"])
+    medium_weight_factor = float(
+        ex.get("medium_weight_factor", DEFAULT_MEDIUM_WEIGHT_FACTOR)
+    )
+    if not 0.0 <= medium_weight_factor <= 1.0:
+        raise ValueError(
+            f"medium_weight_factor must be in [0, 1]; got {medium_weight_factor}"
+        )
 
     config: dict[str, Any] = {
         "version": "v0.3",
@@ -374,7 +383,7 @@ def build(
                 "complexity": [_emit_complexity_signal(s) for s in signals],
             },
             "projections": {
-                "scores": [_emit_difficulty_score(signals)],
+                "scores": [_emit_difficulty_score(signals, medium_weight_factor)],
                 "mappings": [_emit_tier_band_mapping(tier_ids, cutoffs)],
             },
             "decisions": [_emit_decision_for_band(tier_id) for tier_id in tier_ids],

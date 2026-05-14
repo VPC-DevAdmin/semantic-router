@@ -143,13 +143,19 @@ def test_router_exemplars_build_projections_shape() -> None:
             "the binary default is what we want"
         )
         assert isinstance(inp["weight"], int | float)
-    # Per signal: :medium weight should be exactly half the :hard weight.
+    # Per signal: :medium weight should equal :hard weight × medium_weight_factor.
+    import yaml
+    exemplars = yaml.safe_load(
+        (ROOT / "config" / "router-exemplars.yaml").read_text()
+    )
+    expected_factor = float(exemplars.get("medium_weight_factor", 0.6))
     by_name = {i["name"]: i for i in rd["inputs"]}
     for n in sig_names:
         hard_w = by_name[f"{n}:hard"]["weight"]
         med_w = by_name[f"{n}:medium"]["weight"]
-        assert abs(med_w - hard_w * 0.5) < 1e-9, (
-            f"{n}: medium weight {med_w} should be half hard weight {hard_w}"
+        assert abs(med_w - hard_w * expected_factor) < 1e-9, (
+            f"{n}: medium weight {med_w} should equal hard {hard_w} × "
+            f"medium_weight_factor {expected_factor}"
         )
     # The :hard weights alone should sum to ~1.0 — caps request_difficulty
     # at 1.0 (medium/hard are mutually exclusive per signal per query).

@@ -48,6 +48,22 @@ name: "five-tier-projection-router"
 # tier mix. Tunable in ONE place.
 tier_cutoffs: [0.20, 0.40, 0.60, 0.80]
 
+# How much partial credit a `:medium` complexity match gets relative to
+# a `:hard` match. With `weighted_sum + binary` semantics, a `:hard`
+# match contributes the full signal weight; a `:medium` match contributes
+# `medium_weight_factor × weight`.
+#
+# Empirically the embedder produces lots of `:medium` matches and very few
+# `:hard` matches on real prompts — so this factor is the main lever for
+# how aggressively a "kind of hard" query gets promoted toward T3/T4/T5
+# without needing a strict `:hard` win. Upstream canonical config uses 0.5
+# (0.18 / 0.36); we use 0.6 here so that 3 mediums project to ~0.6 and
+# clearly clear the T3/T4 cutoff.
+#
+# Range [0, 1]. 0.0 = mediums contribute nothing (only :hard matters);
+# 1.0 = medium and hard count equally.
+medium_weight_factor: 0.6
+
 # ═════════════════════════════════════════════════════════════════════════
 # Tiers — what we're routing to
 # ═════════════════════════════════════════════════════════════════════════
