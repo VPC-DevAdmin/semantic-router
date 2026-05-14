@@ -1,32 +1,33 @@
 """Diagnostic — per-signal scores for the misroute queries.
 
 Backs `make scores`. For each query the router under-routed in the latest
-run, hit vllm-sr's `/api/v1/eval` endpoint to get back the actual signal
-scores and threshold, then print the gap. Answers the question:
+run, invoke `vllm-sr eval --json --prompt <text>` to get back the actual
+signal scores and thresholds, then print the gap. Answers the question:
 "how close are the misroutes to flipping the right way?"
 
-Why this is a one-API-call-per-misroute diagnostic and not a DB column:
-vllm-sr only emits signal scores in its log stream, not in the response
-headers we capture from /v1/chat/completions. The `/api/v1/eval` endpoint
-is purpose-built for "what would the router do with this prompt" inquiries
-without actually routing the request, so it's the cleanest source.
+Why subprocess and not HTTP: vllm-sr's CLI `eval` command is documented
+and stable across versions; the underlying `/api/v1/eval` HTTP endpoint
+returned 500 on our first attempt with `{"prompt": ...}`, suggesting the
+request shape is different than guessed. The CLI is the supported entry
+point and abstracts the wire format from us.
 
-If parsing the eval response fails, the tool prints the raw JSON for the
-first misroute so we can see the actual schema and adjust. The upstream
-schema isn't fully nailed down across vllm-sr versions; this is defensive.
+If parsing the eval JSON fails, the tool dumps the raw output for the
+first misroute so we can iterate on the parser.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import httpx
-
 from .misroutes import list_misroutes
 
-DEFAULT_APISERVER = "http://localhost:8080"
+DEFAULT_APISERVER = "http://localhost:8080"  # passed via --endpoint to the CLI
+VLLM_SR_BINARY = "vllm-sr"
+EVAL_TIMEOUT_S = 30.0
 
 
 @dataclass
@@ -108,14 +109,47 @@ async def fetch_eval(
     prompt: str,
     apiserver: str = DEFAULT_APISERVER,
     *,
-    timeout: float = 30.0,
+    timeout: float = EVAL_TIMEOUT_S,
+    binary: str = VLLM_SR_BINARY,
 ) -> dict:
-    """POST a prompt to vllm-sr's eval endpoint and return the parsed JSON."""
-    url = f"{apiserver.rstrip('/')}/api/v1/eval"
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(url, json={"prompt": prompt})
-        resp.raise_for_status()
-        return resp.json()
+    """Invoke `vllm-sr eval --json --prompt <text>` and return the parsed JSON.
+
+    Uses subprocess rather than direct HTTP so we stay on the supported CLI
+    surface. Slightly slower per call (~1s startup overhead) but reliable
+    across vllm-sr versions.
+    """
+    if shutil.which(binary) is None:
+        raise RuntimeError(
+            f"{binary!r} not on PATH; install with `make setup` or set "
+            f"VLLM_SR_BINARY env var"
+        )
+
+    proc = await asyncio.create_subprocess_exec(
+        binary, "eval", "--json", "--prompt", prompt,
+        "--endpoint", apiserver,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise RuntimeError(f"{binary} eval timed out after {timeout}s") from None
+
+    if proc.returncode != 0:
+        stderr = stderr_b.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"{binary} eval exited {proc.returncode}: {stderr[:500]}"
+        )
+
+    stdout = stdout_b.decode("utf-8", errors="replace").strip()
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"{binary} eval output was not JSON: {stdout[:300]}"
+        ) from e
 
 
 def _format_signal_line(s: SignalScore, *, width: int = 24) -> str:
