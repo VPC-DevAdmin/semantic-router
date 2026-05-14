@@ -39,6 +39,7 @@ from .runs import (
     seed_pending,
     seed_pending_answers,
 )
+from .scores import DEFAULT_APISERVER, report_scores
 
 # Load .env from CWD on every CLI start. Existing env vars win (so shell /
 # CI overrides take precedence over file values).
@@ -304,6 +305,28 @@ def misroutes_cmd(
     # markup=False so query content and bracket-laden output passes through
     # without Rich trying to parse it as styling tags.
     console.print(render_misroutes(misroutes), markup=False)
+
+
+@app.command("scores")
+def scores_cmd(
+    db: Path = typer.Option(DEFAULT_DB_PATH),
+    run: int | None = typer.Option(None, "--run"),
+    apiserver: str = typer.Option(
+        DEFAULT_APISERVER,
+        "--apiserver",
+        help="vllm-sr apiserver base URL (defaults to http://localhost:8080).",
+    ),
+) -> None:
+    """For each misroute, fetch per-signal scores from /api/v1/eval and show
+    how far each signal is from its threshold.
+
+    Diagnostic for tuning: tells us whether under-routes are "just barely
+    missed" (score 0.40 vs threshold 0.42) or "wildly off" (score 0.15).
+    Requires the router stack to be up (`make route` or its containers
+    still running).
+    """
+    report = asyncio.run(report_scores(db, run_id=run, apiserver=apiserver))
+    console.print(report, markup=False)
 
 
 @app.command("export")

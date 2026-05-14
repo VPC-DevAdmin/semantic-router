@@ -7,7 +7,7 @@
 #   make answers      # for each query × tier: collect that tier's response  [TODO]
 #   make export       # emit demo.json from the DB                            [TODO]
 
-.PHONY: help setup load route answers export resume misroutes \
+.PHONY: help setup load route answers export resume misroutes scores \
         clean-results router-smoke router-stop test fmt lint \
         mock-bg mock-stop start_LLM stop_LLM
 
@@ -26,6 +26,7 @@ help:
 	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true]  routed-tier answers; errors retry on next run"
 	@echo "  export [RUN=<id>] [OUTPUT=<path>]  write demo.json (default: ./demo.json)"
 	@echo "  misroutes [RUN=<id>]           diagnostic: list queries routed BELOW their min tier"
+	@echo "  scores [RUN=<id>]              diagnostic: per-signal score + threshold gap for each misroute"
 	@echo "  resume [RUN=<id>]              re-run pending/error rows; mark done if clean"
 	@echo ""
 	@echo "  MOCK=true   routes every tier through the local OAI mock (port \$$MOCK_PORT)."
@@ -162,6 +163,13 @@ resume:
 # tell us where to nudge.
 misroutes:
 	$(BENCHMARK) misroutes --db $(DB) $(if $(RUN),--run $(RUN),)
+
+# Deeper diagnostic: for each misroute, fetch per-signal scores from
+# vllm-sr's /api/v1/eval endpoint. Requires the router stack to be up.
+# Shows whether under-routes "just barely missed" (small negative gap) or
+# "wildly missed" (large negative gap) the relevant signal threshold.
+scores:
+	$(BENCHMARK) scores --db $(DB) $(if $(RUN),--run $(RUN),)
 
 # ---- utility ----
 
