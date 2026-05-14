@@ -224,15 +224,19 @@ def reset_pass1(db_path: Path, run_id: int) -> int:
     return deleted
 
 
-def reset_answers(db_path: Path, run_id: int) -> int:
-    """Delete all tier_answers rows for `run_id`. Returns the count deleted.
+def reset_answers(db_path: Path, run_id: int, *, tier_level: int | None = None) -> int:
+    """Delete tier_answers rows for `run_id`. Returns the count deleted.
 
-    Used by `make answers RUN_NEW=true` before re-seeding.
+    Used by `make answers RUN_NEW=true` before re-seeding. With
+    `tier_level` set (e.g. `make answers TIER=1 RUN_NEW=true`), only
+    that tier's rows are deleted — leaves other tiers' state intact so
+    a partial re-run of one tier doesn't trash everything.
     """
     with session_scope(db_path) as session:
-        deleted = (
-            session.query(TierAnswer).filter(TierAnswer.run_id == run_id).delete()
-        )
+        q = session.query(TierAnswer).filter(TierAnswer.run_id == run_id)
+        if tier_level is not None:
+            q = q.filter(TierAnswer.tier_level == tier_level)
+        deleted = q.delete()
     return deleted
 
 

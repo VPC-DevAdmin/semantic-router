@@ -202,10 +202,21 @@ def answers_cmd(
     query_id: list[str] = typer.Option(
         [], "--query-id", help="Restrict to these query IDs (repeatable)."
     ),
+    tier: int | None = typer.Option(
+        None, "--tier",
+        help=(
+            "Restrict to a single tier level (1-5). Useful for exercising a "
+            "just-wired backend without re-hitting other tiers. Combined with "
+            "--run-new, only this tier's rows are deleted and re-seeded."
+        ),
+    ),
     notes: str = typer.Option("", "--notes"),
     run_new: bool = typer.Option(
         False, "--run-new",
-        help="Delete existing tier_answers for the active run, then re-seed.",
+        help=(
+            "Delete existing tier_answers for the active run, then re-seed. "
+            "With --tier, only that tier's rows are deleted."
+        ),
     ),
     mock_endpoint: str | None = typer.Option(
         None, "--mock-endpoint",
@@ -245,9 +256,17 @@ def answers_cmd(
             )
             console.print(f"[green]answers[/] created run={rid}")
 
+    if tier is not None and not any(t.level == tier for t in models_cfg.tiers):
+        console.print(
+            f"[red]error[/]: --tier {tier} not present in {models}; known levels: "
+            f"{sorted(t.level for t in models_cfg.tiers)}"
+        )
+        raise typer.Exit(code=2)
+
     if run_new:
-        n = reset_answers(db, rid)
-        console.print(f"[yellow]--run-new[/]: deleted {n} tier_answers row(s)")
+        n = reset_answers(db, rid, tier_level=tier)
+        scope = f" for tier {tier}" if tier is not None else ""
+        console.print(f"[yellow]--run-new[/]: deleted {n} tier_answers row(s){scope}")
 
     seed_result = seed_pending_answers(db, rid, models_cfg, only=only)
     if seed_result.replaced:
@@ -271,6 +290,8 @@ def answers_cmd(
 
     if mock_endpoint:
         console.print(f"[yellow]MOCK[/]: routing all tier calls to {mock_endpoint}")
+    if tier is not None:
+        console.print(f"[yellow]--tier[/]: restricting worker to tier {tier} rows")
 
     report = asyncio.run(
         run_answers(
@@ -280,6 +301,7 @@ def answers_cmd(
             concurrency=concurrency,
             max_tokens=max_tokens,
             mock_endpoint=mock_endpoint,
+            tier_level=tier,
         )
     )
     console.print(f"[bold]answers[/] (run {rid})")

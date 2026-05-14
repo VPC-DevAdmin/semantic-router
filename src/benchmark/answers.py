@@ -82,6 +82,7 @@ async def run_answers(
     max_tokens: int = 2048,
     clients_by_level: dict[int, OAIClient] | None = None,
     mock_endpoint: str | None = None,
+    tier_level: int | None = None,
 ) -> AnswersReport:
     """Process pending tier_answers rows.
 
@@ -89,6 +90,11 @@ async def run_answers(
     `http://localhost:8811/v1`) overrides every tier's endpoint to point at
     the local mock — used for pipeline verification before real backends
     come online.
+
+    `tier_level` (e.g. `1`) restricts the worker to a single tier. Other
+    tiers' pending/error rows are left untouched. Useful when you want
+    to exercise just-wired backends without re-hitting expensive vendor
+    APIs for the tiers that already succeeded.
     """
     if clients_by_level is None:
         if mock_endpoint:
@@ -101,12 +107,15 @@ async def run_answers(
     # Snapshot the pending rows. We don't hold a DB session across the
     # async fan-out; each worker opens its own short-lived session.
     with session_scope(db_path) as session:
-        rows = session.execute(
+        q = (
             select(TierAnswer, Query)
             .join(Query, TierAnswer.query_id == Query.query_id)
             .where(TierAnswer.run_id == run_id)
             .where(TierAnswer.status.in_(["pending", "error"]))
-        ).all()
+        )
+        if tier_level is not None:
+            q = q.where(TierAnswer.tier_level == tier_level)
+        rows = session.execute(q).all()
         snapshot = [
             {
                 "query_id": ta.query_id,

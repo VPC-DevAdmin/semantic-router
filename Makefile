@@ -23,7 +23,7 @@ help:
 	@echo "  setup                          venv + deps + init DB + install vllm-sr (if missing)"
 	@echo "  load [MOCK=true]               validate exemplars; build router-config; load queries.json into DB"
 	@echo "  route [MOCK=true] [RUN_NEW=true]   rebuild router-config; routing pass"
-	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true]  routed-tier answers; errors retry on next run"
+	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true] [TIER=<1-5>]  routed-tier answers; errors retry on next run"
 	@echo "  export [RUN=<id>] [OUTPUT=<path>]  write demo.json (default: ./demo.json)"
 	@echo "  misroutes [RUN=<id>]           diagnostic: list queries routed BELOW their min tier"
 	@echo "  scores [RUN=<id>]              diagnostic: per-signal score + threshold gap for each misroute"
@@ -143,10 +143,15 @@ route:
 	$(BENCHMARK) route --db $(DB) $(if $(filter true,$(RUN_NEW)),--run-new,)
 
 # RUN_NEW=true → drop existing tier_answers for the active run and re-seed.
+#                With TIER=<N>, only that tier's rows are deleted.
 # MOCK=true    → answers calls every tier via the local mock URL.
+# TIER=<N>     → restrict the worker to one tier level (1-5). Other tiers'
+#                pending/error rows are left untouched; useful for exercising
+#                a just-wired backend without re-hitting other tiers.
 answers:
 	$(BENCHMARK) answers --db $(DB) \
 	    $(if $(RUN),--run $(RUN),) \
+	    $(if $(TIER),--tier $(TIER),) \
 	    $(if $(filter true,$(RUN_NEW)),--run-new,) \
 	    $(if $(filter true,$(MOCK)),--mock-endpoint $(MOCK_FROM_HOST),)
 

@@ -229,6 +229,56 @@ async def test_run_answers_resume_only_retries_errors(tmp_path: Path) -> None:
     assert r2.errors == 0
 
 
+@pytest.mark.asyncio
+async def test_run_answers_tier_filter_only_processes_that_tier(tmp_path: Path) -> None:
+    """`tier_level=1` should skip rows whose tier isn't 1, leaving them pending."""
+    db, rid = _bootstrap(tmp_path)
+    _record_pass1(db, rid, "q1", tier_level=1)
+    _record_pass1(db, rid, "q2", tier_level=3)
+    models = _models([1, 2, 3])
+    seed_pending_answers(db, rid, models)
+
+    report = await run_answers(
+        db, rid,
+        models=models,
+        clients_by_level=_clients([1, 2, 3]),
+        tier_level=1,
+    )
+    # Only q1 (tier 1) ran; q2's tier-3 row is left pending.
+    assert report.attempted == 1
+    assert report.succeeded == 1
+    assert report.errors == 0
+
+    with session_scope(db) as s:
+        rows = s.execute(select(TierAnswer).where(TierAnswer.run_id == rid)).scalars().all()
+        by_qid = {r.query_id: r for r in rows}
+    assert by_qid["q1"].status == "success"
+    assert by_qid["q2"].status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_reset_answers_tier_filter_only_deletes_that_tier(tmp_path: Path) -> None:
+    """`reset_answers(tier_level=1)` deletes only tier-1 rows."""
+    from benchmark.runs import reset_answers
+
+    db, rid = _bootstrap(tmp_path)
+    _record_pass1(db, rid, "q1", tier_level=1)
+    _record_pass1(db, rid, "q2", tier_level=3)
+    models = _models([1, 2, 3])
+    seed_pending_answers(db, rid, models)
+    # Run them to success so we have non-pending rows to selectively reset.
+    await run_answers(db, rid, models=models, clients_by_level=_clients([1, 2, 3]))
+
+    deleted = reset_answers(db, rid, tier_level=1)
+    assert deleted == 1
+
+    with session_scope(db) as s:
+        rows = s.execute(select(TierAnswer).where(TierAnswer.run_id == rid)).scalars().all()
+        remaining = {(r.query_id, r.tier_level) for r in rows}
+    # q2's tier-3 row survives; q1's tier-1 row is gone.
+    assert remaining == {("q2", 3)}
+
+
 def test_build_clients_for_mock_uses_mock_url() -> None:
     """`_build_clients_for_mock` constructs one OAIClient per tier, all pointing
     at the mock URL, regardless of what each tier's configured endpoint is."""
