@@ -39,14 +39,21 @@ name: "five-tier-projection-router"
 # Four cutoffs produce five bands along request_difficulty ∈ [0, 1].
 #   score ≤ 0.20            → tier1 (trivial)
 #   0.20 < score ≤ 0.40     → tier2 (workhorse)
-#   0.40 < score ≤ 0.60     → tier3 (heavy technical)
-#   0.60 < score ≤ 0.80     → tier4 (high-stakes judgment)
+#   0.40 < score ≤ 0.55     → tier3 (heavy technical)
+#   0.55 < score ≤ 0.80     → tier4 (high-stakes judgment)
 #   score > 0.80            → tier5 (frontier)
+#
+# Why T3/T4 at 0.55 (not the obvious 0.60): with the default weights
+# below and medium_weight_factor=0.6, a query that matches ALL THREE
+# complexity signals at :medium scores exactly 0.6 × 1.0 = 0.60. Using
+# `lte: 0.60` keeps those at tier3; pulling the cutoff to 0.55 puts them
+# at tier4, which empirically is where most genuinely-hard prompts belong.
+# Bands above tier4 are reached only by :hard matches.
 #
 # After the first production run, look at the score distribution across
 # the eval set and adjust these cutoffs so the bands match the desired
 # tier mix. Tunable in ONE place.
-tier_cutoffs: [0.20, 0.40, 0.60, 0.80]
+tier_cutoffs: [0.20, 0.40, 0.55, 0.80]
 
 # How much partial credit a `:medium` complexity match gets relative to
 # a `:hard` match. With `weighted_sum + binary` semantics, a `:hard`

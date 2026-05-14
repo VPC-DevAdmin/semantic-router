@@ -172,11 +172,15 @@ def test_router_exemplars_build_projections_shape() -> None:
     assert tb["method"] == "threshold_bands"
     assert len(tb["outputs"]) == 5, "5 tier bands expected"
 
-    # Decisions: one per tier, each conditioning on its band.
+    # Decisions: one band-only per tier (5) + at least one lane decision.
     decisions = routing["decisions"]
-    assert len(decisions) == 5
+    band_only = [d for d in decisions if len(d["rules"]["conditions"]) == 1]
+    lane = [d for d in decisions if len(d["rules"]["conditions"]) > 1]
+    assert len(band_only) == 5, "expected one band-only decision per tier"
+    assert lane, "expected at least one lane (Boolean-qualified) decision"
+
     band_to_decision = {
-        d["rules"]["conditions"][0]["name"]: d for d in decisions
+        d["rules"]["conditions"][0]["name"]: d for d in band_only
     }
     for tier_id in ("tier1", "tier2", "tier3", "tier4", "tier5"):
         band_name = f"{tier_id}_band"
@@ -186,6 +190,32 @@ def test_router_exemplars_build_projections_shape() -> None:
         assert d["rules"]["conditions"][0]["type"] == "projection"
         # vllm-sr's schema validator requires `description` on every decision.
         assert d.get("description"), f"decision for {tier_id} missing description"
+
+    # Lane decision sanity: must include `description`, priority must beat
+    # the plain band decisions (otherwise the band-only wins on a tie),
+    # and the conditions must include a projection plus at least one
+    # complexity qualifier — otherwise it's just a renamed band decision.
+    for d in lane:
+        assert d.get("description"), f"lane decision {d['name']!r} missing description"
+        assert d["priority"] > band_only[0]["priority"], (
+            f"lane {d['name']!r} priority {d['priority']} must beat band priority "
+            f"{band_only[0]['priority']} to override the plain band decision"
+        )
+        types_in_lane = {c["type"] for c in d["rules"]["conditions"]}
+        assert "projection" in types_in_lane and "complexity" in types_in_lane, (
+            f"lane {d['name']!r} must combine projection + complexity"
+        )
+
+    # The frontier lane specifically: promotes tier4_band → tier5 on
+    # multi-signal :hard. If this changes shape, callers reading the
+    # generated config should know about it.
+    frontier = next((d for d in lane if d["name"] == "route_tier5_frontier"), None)
+    assert frontier is not None, "expected a route_tier5_frontier lane decision"
+    assert frontier["modelRefs"][0]["model"] == "tier5"
+    cond_names = {c["name"] for c in frontier["rules"]["conditions"]}
+    assert cond_names == {
+        "tier4_band", "needs_reasoning:hard", "needs_expertise:hard"
+    }
 
     # Tier alignment with config/tiers/.
     router_tier_names = {m["name"] for m in cfg["providers"]["models"]}

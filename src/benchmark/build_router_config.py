@@ -68,9 +68,13 @@ except ImportError:
 # confidence regardless.
 DEFAULT_SIGNAL_THRESHOLD = 0.55
 
-# Same priority for every decision: bands are mutually exclusive so only
-# one fires regardless of priority.
+# Bands are mutually exclusive so band-only decisions can all share one
+# priority. Lane decisions (Boolean qualifiers on top of a band match)
+# need a HIGHER priority so they outrank the plain band decision they
+# override — e.g. a tier5_lane decision conditioning on tier4_band must
+# beat the plain route_tier4 when both match.
 DEFAULT_DECISION_PRIORITY = 50
+LANE_DECISION_PRIORITY = 100
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -320,6 +324,46 @@ def _emit_decision_for_band(tier_id: str) -> dict:
     }
 
 
+def _emit_tier5_frontier_lane() -> dict:
+    """Override decision: route to tier5 from inside tier4_band when the
+    query hits BOTH `needs_reasoning:hard` AND `needs_expertise:hard`.
+
+    Why this exists — and why it's a `lane` rather than tighter cutoffs:
+    the score+bands axis is the right shape for the continuous T1-T4
+    distinction, but distinguishing T4 from T5 is a *lane* distinction
+    (canonical T5 per the exemplars file: "needed when a query is BOTH
+    deeply technical AND demands judgment"). Boolean composition on top
+    of the band, with higher priority than route_tier4, expresses that
+    cleanly without trying to extract a fifth tier of resolution from
+    the same continuous score.
+
+    Per the projections design doc:
+      "decisions such as premium_legal or reasoning_deep combine raw
+       domain matches with projection outputs" — same pattern here.
+
+    Empirically: if the embedder doesn't produce :hard for the input,
+    this lane never fires — no harm done, route_tier4 (band-only) wins.
+    """
+    return {
+        "name": "route_tier5_frontier",
+        "description": (
+            "Promote tier4_band queries to tier5 when they look deeply "
+            "technical AND demanding (needs_reasoning AND needs_expertise "
+            "both at :hard) — the canonical frontier-synthesis lane."
+        ),
+        "priority": LANE_DECISION_PRIORITY,
+        "rules": {
+            "operator": "AND",
+            "conditions": [
+                {"type": "projection", "name": "tier4_band"},
+                {"type": "complexity", "name": "needs_reasoning:hard"},
+                {"type": "complexity", "name": "needs_expertise:hard"},
+            ],
+        },
+        "modelRefs": [{"model": "tier5", "use_reasoning": False}],
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────
 # Build
 # ─────────────────────────────────────────────────────────────────────────
@@ -386,7 +430,12 @@ def build(
                 "scores": [_emit_difficulty_score(signals, medium_weight_factor)],
                 "mappings": [_emit_tier_band_mapping(tier_ids, cutoffs)],
             },
-            "decisions": [_emit_decision_for_band(tier_id) for tier_id in tier_ids],
+            "decisions": [
+                # Lane decisions FIRST, so a quick read of the file shows
+                # the higher-priority overrides up top.
+                _emit_tier5_frontier_lane(),
+                *(_emit_decision_for_band(tier_id) for tier_id in tier_ids),
+            ],
         },
         # Disable semantic cache: avoids Milvus startup dependency for the
         # demo. Enable the complexity prototype-scoring module explicitly
