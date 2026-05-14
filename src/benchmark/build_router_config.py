@@ -276,6 +276,7 @@ def _emit_decision_for_band(tier_id: str) -> dict:
     """One `routing.decisions[]` entry — fires when its band is active."""
     return {
         "name": f"route_{tier_id}",
+        "description": f"Route to {tier_id} when request_difficulty lands in {tier_id}_band.",
         "priority": DEFAULT_DECISION_PRIORITY,
         "rules": {
             "operator": "AND",

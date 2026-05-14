@@ -149,6 +149,8 @@ def test_router_exemplars_build_projections_shape() -> None:
         d = band_to_decision[band_name]
         assert d["modelRefs"][0]["model"] == tier_id
         assert d["rules"]["conditions"][0]["type"] == "projection"
+        # vllm-sr's schema validator requires `description` on every decision.
+        assert d.get("description"), f"decision for {tier_id} missing description"
 
     # Tier alignment with config/tiers/.
     router_tier_names = {m["name"] for m in cfg["providers"]["models"]}
