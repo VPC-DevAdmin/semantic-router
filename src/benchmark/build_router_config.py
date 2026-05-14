@@ -677,17 +677,21 @@ def build(
                 # the higher-priority overrides up top.
                 _emit_tier5_frontier_lane(),
                 _emit_tier5_committed_judgment_lane(),
-                # Embedding-driven frontier lane intentionally OMITTED.
-                # Diagnostics showed it was firing for ~20 non-T5-expected
-                # queries that matched frontier_synthesis at sim ≥ 0.78
-                # but didn't deserve T5 (T2 queries jumping +3 tiers,
-                # etc.). With the moderate_complexity signal carrying
-                # gradient for T2/T3 queries and `frontier_synthesis`
-                # weight at 0.40, genuine T5 prompts reach tier5_band
-                # naturally via the score — no lane needed. Re-enable
-                # by re-including _emit_tier5_embedding_frontier_lane()
-                # here if a future diagnostic shows T5 queries getting
-                # under-routed without the lane.
+                # Embedding-driven frontier lane. We tried removing it —
+                # T5 recall dropped from 10/12 to 0/12 with under-routing
+                # spiking. Diagnostics showed the genuine T5 prompts in
+                # the eval set don't naturally score > 0.32 via
+                # frontier_synthesis + moderate_complexity contributions
+                # alone, so they need the lane to reach tier5. The lane
+                # also catches ~13 false-positive T5 promotions (T2/T3
+                # queries matching the frontier bank above threshold).
+                # This is the Pareto trade-off: keeping the lane buys
+                # us T5 recall at the cost of those false positives.
+                *(
+                    [_emit_tier5_embedding_frontier_lane("frontier_synthesis")]
+                    if any(s["id"] == "frontier_synthesis" for s in emb_signals)
+                    else []
+                ),
                 *(_emit_decision_for_band(tier_id) for tier_id in tier_ids),
             ],
         },
