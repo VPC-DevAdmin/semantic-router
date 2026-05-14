@@ -133,7 +133,15 @@ def test_router_exemplars_build_projections_shape() -> None:
         assert inp["name"].endswith((":hard", ":medium")), (
             f"complexity input {inp['name']!r} missing ':hard'/':medium' suffix"
         )
-        assert inp.get("value_source") == "confidence"
+        # IMPORTANT: do NOT set `value_source` on complexity inputs. Omitting
+        # it gets the binary default (match=1.0 / miss=0.0). Setting it to
+        # `confidence` returns the contrastive margin (~0.0-0.05), which
+        # collapses the projected score to ~0 and lands everything in
+        # tier1_band.
+        assert "value_source" not in inp, (
+            f"complexity input {inp['name']!r} should not set value_source — "
+            "the binary default is what we want"
+        )
         assert isinstance(inp["weight"], int | float)
     # Per signal: :medium weight should be exactly half the :hard weight.
     by_name = {i["name"]: i for i in rd["inputs"]}

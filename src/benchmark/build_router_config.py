@@ -247,19 +247,23 @@ def _emit_difficulty_score(signals: list[dict]) -> dict:
     """`routing.projections.scores.request_difficulty` — weighted_sum
     over each complexity signal's `:medium` and `:hard` matches.
 
-    Schema notes (per upstream vllm-project/semantic-router config.yaml):
+    Schema notes (per upstream vllm-project/semantic-router config.yaml
+    and confirmed by inspecting a real eval response):
       • Complexity inputs reference `<signal_id>:hard` or `<signal_id>:medium`,
         not bare `<signal_id>`. The bare form binds to nothing → silent 0.
-      • `value_source: confidence` uses the matched signal's confidence,
-        or 0 when the signal did not match at that level.
+      • We OMIT `value_source` here. Upstream omits it too, and the docs
+        state the default is binary (match=1.0 / miss=0.0). Setting
+        `value_source: confidence` instead returns the CONTRASTIVE MARGIN
+        (text_hard_score - text_easy_score), typically 0.0-0.05 — far too
+        small to clear the band cutoffs. Caused 100% of queries to land
+        in tier1_band in our first projections roll-out.
       • For a given query, a signal matches at exactly ONE level
         (observed empirically: `matched_signals.complexity` and
         `unmatched_signals.complexity` are disjoint per level).
 
     We include both `:medium` (half weight) and `:hard` (full weight) so
-    queries that are "kind of hard but not extreme" still pull the
-    projected score up — exactly the behavior that 100% of misroutes to
-    T1 revealed missing when only `:hard` was wired up.
+    queries that match the hard bank but only weakly still get partial
+    credit toward the projected score.
     """
     inputs: list[dict[str, Any]] = []
     for sig in signals:
@@ -268,13 +272,11 @@ def _emit_difficulty_score(signals: list[dict]) -> dict:
             "type": "complexity",
             "name": f"{sig['id']}:medium",
             "weight": weight * MEDIUM_WEIGHT_FACTOR,
-            "value_source": "confidence",
         })
         inputs.append({
             "type": "complexity",
             "name": f"{sig['id']}:hard",
             "weight": weight,
-            "value_source": "confidence",
         })
     return {
         "name": "request_difficulty",
