@@ -1,5 +1,6 @@
-# Tier 1 — small local CPU model.
-# Runner: TBD. Placeholder until the user-provided runner is wired.
+# Tier 1 — Qwen3-1.7B on CPU via AMD ZenDNN/Zentorch vLLM.
+# Single NUMA socket, single replica. Validated procedure for the
+# Granite Rapids dev box.
 
 name: tier1
 level: 1
@@ -9,15 +10,35 @@ timeout_s: 30
 # What the router emits in `x-vsr-selected-model` (used for tier lookup).
 router_alias: tier1
 # What gets sent in the body's `model` field on direct OAI calls.
+# vLLM is launched with `--served-model-name tier1` so this matches.
 served_model_name: tier1
 
-# Direct OAI endpoint for `make answers`.
+# Direct OAI endpoint for `make answers`. Matches the container's
+# host-side port mapping below (host:container = 8001:8000).
 endpoint:
-  url: http://localhost:8811/v1
+  url: http://localhost:8001/v1
   api_key_env: null
 
-# Provisioning. `placeholder` means start_LLM does nothing for this tier.
-# When the T1 runner is provided, change `kind` to e.g. `docker_simple`
-# and fill in the relevant fields (see config/tiers/README.md).
 backend:
-  kind: placeholder
+  kind: docker_vllm_zendnn_single
+  image: amdih/zendnn_zentorch:vllm_v0.17.0_zentorch_v5.2.0_ubuntu22.04_2026_ww11
+
+  # Host paths mounted into the container.
+  model_host_path: /data/ml/models/Qwen3-1.7B
+
+  # NUMA / CPU pinning. Single socket → mems=0; 32 cores → cpus=0-31.
+  cpus: "0-31"
+  mems: "0"
+
+  # Bridge networking with explicit port mapping (host:container).
+  # The container always serves on port 8000 internally; we expose it
+  # on `host_port` so it doesn't collide with other tiers' containers.
+  host_port: 8001
+
+  # vLLM launch knobs — match the validated docker run.
+  max_model_len: 16384
+  max_num_seqs: 8
+  dtype: bfloat16
+  enable_prefix_caching: true
+  reasoning_parser: qwen3
+  kv_gb: 64

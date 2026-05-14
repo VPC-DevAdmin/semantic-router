@@ -5,9 +5,11 @@
 on `backend.kind`, and runs the appropriate docker commands.
 
 Supported kinds (extend as new runners are wired):
-  - `docker_vllm_dual_socket` : two NUMA-pinned vLLM replicas (e.g. T2 Qwen).
-  - `remote`                   : someone else manages this endpoint; no-op.
-  - `placeholder`              : not yet provisioned; no-op (with note).
+  - `docker_vllm_dual_socket`    : two NUMA-pinned vLLM replicas (e.g. T2 Qwen).
+  - `docker_vllm_zendnn_single`  : one AMD ZenDNN/Zentorch vLLM replica
+                                   on a single NUMA socket (e.g. T1 Qwen3-1.7B).
+  - `remote`                     : someone else manages this endpoint; no-op.
+  - `placeholder`                : not yet provisioned; no-op (with note).
 
 Container names follow `vllm-{tier_name}-{replica_name}` so stop is a
 straightforward filter. Stable names mean `start_LLM` is idempotent —
@@ -150,13 +152,120 @@ def _stop_docker_vllm_dual_socket(tier: TierConfig) -> None:
         _stop_one(name)
 
 
+def _cpuset_count(cpus_str: str) -> int:
+    """Count CPUs in a docker cpuset string like '0-31' or '0,2,4-7'."""
+    n = 0
+    for part in cpus_str.split(","):
+        part = part.strip()
+        if "-" in part:
+            a, b = (int(x) for x in part.split("-"))
+            n += b - a + 1
+        elif part:
+            n += 1
+    return max(n, 1)
+
+
+def _start_docker_vllm_zendnn_single(tier: TierConfig) -> None:
+    """Launch one AMD ZenDNN/Zentorch vLLM CPU container on a single NUMA socket.
+
+    Differs from dual_socket in three ways:
+      • Single container, single replica.
+      • AMD-specific ZenDNN tunings (ZENDNNL_MATMUL_ALGO, TORCHINDUCTOR_*).
+      • Bridge networking with explicit `-p host:container` port mapping,
+        rather than `--network host`. This lets multiple ZenDNN-style
+        tiers coexist without colliding on container-internal port 8000.
+    """
+    extra = tier.backend.model_dump()
+    image = extra.get("image")
+    model_host_path = extra.get("model_host_path")
+    cpus = str(extra.get("cpus", "0-31"))
+    mems = str(extra.get("mems", "0"))
+    host_port = int(extra.get("host_port", 8001))
+    max_model_len = int(extra.get("max_model_len", 16384))
+    max_num_seqs = int(extra.get("max_num_seqs", 8))
+    dtype = str(extra.get("dtype", "bfloat16"))
+    enable_prefix_caching = bool(extra.get("enable_prefix_caching", True))
+    reasoning_parser = extra.get("reasoning_parser")  # optional, may be None
+    kv_gb = int(extra.get("kv_gb", 64))
+
+    if not image or not model_host_path:
+        console.print(
+            f"[red]error[/]: tier {tier.name} backend missing required fields "
+            f"(image, model_host_path)"
+        )
+        sys.exit(2)
+
+    model_dir = Path(model_host_path)
+    if not model_dir.is_dir():
+        console.print(
+            f"[red]error[/]: tier {tier.name} model dir not found: {model_dir}\n"
+            f"  download with:\n"
+            f"    hf download <repo> --local-dir {model_dir}"
+        )
+        sys.exit(2)
+
+    omp_threads = _cpuset_count(cpus)
+
+    # Stop any previously-running replica (idempotent).
+    name = _container_name(tier.name, "r0")
+    _stop_one(name)
+
+    cmd = [
+        "docker", "run", "-d", "--rm",
+        "--name", name,
+        "--cpuset-cpus", cpus,
+        "--cpuset-mems", mems,
+        "--shm-size", "4g",
+        "--security-opt", "seccomp=unconfined",
+        "--cap-add", "SYS_NICE",
+        "-p", f"{host_port}:8000",
+        "-v", f"{model_host_path}:/models/served:ro",
+        # ZenDNN / Zentorch tunings — verbatim from the validated docker run.
+        "-e", f"VLLM_CPU_KVCACHE_SPACE={kv_gb}",
+        "-e", f"VLLM_CPU_OMP_THREADS_BIND={cpus}",
+        "-e", f"OMP_NUM_THREADS={omp_threads}",
+        "-e", "OMP_PROC_BIND=close",
+        "-e", "OMP_PLACES=cores",
+        "-e", "TORCHINDUCTOR_FREEZING=1",
+        "-e", "VLLM_USE_AOT_COMPILE=0",
+        "-e", "TORCHINDUCTOR_AUTOGRAD_CACHE=0",
+        "-e", "ZENDNNL_MATMUL_ALGO=1",
+        image,
+        "vllm", "serve", "/models/served",
+        "--served-model-name", tier.served_model_name,
+        "--dtype", dtype,
+        "--max-model-len", str(max_model_len),
+        "--max-num-seqs", str(max_num_seqs),
+    ]
+    if enable_prefix_caching:
+        cmd.append("--enable-prefix-caching")
+    if reasoning_parser:
+        cmd.extend(["--reasoning-parser", str(reasoning_parser)])
+    cmd.extend(["--host", "0.0.0.0", "--port", "8000"])
+
+    _run(cmd)
+    console.print(
+        f"[green]tier {tier.name}[/]: launched ZenDNN single-socket replica on "
+        f"host port {host_port}; vllm cold load ~30-90s. Readiness probe: "
+        f"curl -sf http://127.0.0.1:{host_port}/v1/models"
+    )
+
+
+def _stop_docker_vllm_zendnn_single(tier: TierConfig) -> None:
+    name = _container_name(tier.name, "r0")
+    console.print(f"[dim]stopping {name}[/]")
+    _stop_one(name)
+
+
 # ---- entry points ----
 
 _STARTERS: dict[str, callable] = {
     "docker_vllm_dual_socket": _start_docker_vllm_dual_socket,
+    "docker_vllm_zendnn_single": _start_docker_vllm_zendnn_single,
 }
 _STOPPERS: dict[str, callable] = {
     "docker_vllm_dual_socket": _stop_docker_vllm_dual_socket,
+    "docker_vllm_zendnn_single": _stop_docker_vllm_zendnn_single,
 }
 
 
