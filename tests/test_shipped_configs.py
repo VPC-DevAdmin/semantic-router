@@ -378,19 +378,20 @@ def test_router_exemplars_build_projections_shape() -> None:
         "tier4_band", "needs_judgment:hard", "demands_commitment:hard"
     }
 
-    # Embedding-driven frontier lane: emitted only when a
-    # `frontier_synthesis` embedding signal exists in the exemplars file.
-    # The shipped config has one, so this lane must be present.
+    # Embedding-driven frontier lane is INTENTIONALLY omitted from the
+    # shipped config — diagnostics showed it over-promoted ~20 non-T5
+    # queries that happened to match frontier_synthesis. The build code
+    # still has _emit_tier5_embedding_frontier_lane() available for
+    # re-enabling if a future routing diagnostic shows T5 under-routing.
     emb_frontier = next(
         (d for d in lane if d["name"] == "route_tier5_embedding_frontier"), None
     )
-    assert emb_frontier is not None, (
-        "expected a route_tier5_embedding_frontier lane decision (the "
-        "exemplars file ships a frontier_synthesis embedding signal)"
+    assert emb_frontier is None, (
+        "route_tier5_embedding_frontier lane should be OMITTED in the "
+        "shipped config — it was over-promoting non-T5 queries. Re-enable "
+        "in build_router_config.py only after diagnostics show it's "
+        "needed for T5 recall."
     )
-    assert emb_frontier["modelRefs"][0]["model"] == "tier5"
-    types = {c["type"] for c in emb_frontier["rules"]["conditions"]}
-    assert types == {"projection", "embedding"}
 
     # Tier alignment with config/tiers/.
     router_tier_names = {m["name"] for m in cfg["providers"]["models"]}

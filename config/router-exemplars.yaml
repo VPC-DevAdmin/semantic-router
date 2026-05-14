@@ -67,7 +67,7 @@ name: "five-tier-projection-router"
 # Cutoffs spaced to partition that span into five bands. Verify with
 # `python eval_reporter.py` after the next route pass and re-tune from
 # the confusion matrix.
-tier_cutoffs: [0.05, 0.12, 0.22, 0.45]
+tier_cutoffs: [0.05, 0.12, 0.22, 0.35]
 
 # How much partial credit a `:medium` complexity match gets relative to
 # a `:hard` match. With `weighted_sum + binary` semantics, a `:hard`

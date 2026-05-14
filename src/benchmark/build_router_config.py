@@ -677,15 +677,17 @@ def build(
                 # the higher-priority overrides up top.
                 _emit_tier5_frontier_lane(),
                 _emit_tier5_committed_judgment_lane(),
-                # Embedding-driven frontier lane — only emit if there's a
-                # frontier_synthesis embedding signal to drive it. The
-                # builder is conservative: it doesn't synthesize a lane
-                # for an embedding signal that wasn't configured.
-                *(
-                    [_emit_tier5_embedding_frontier_lane("frontier_synthesis")]
-                    if any(s["id"] == "frontier_synthesis" for s in emb_signals)
-                    else []
-                ),
+                # Embedding-driven frontier lane intentionally OMITTED.
+                # Diagnostics showed it was firing for ~20 non-T5-expected
+                # queries that matched frontier_synthesis at sim ≥ 0.78
+                # but didn't deserve T5 (T2 queries jumping +3 tiers,
+                # etc.). With the moderate_complexity signal carrying
+                # gradient for T2/T3 queries and `frontier_synthesis`
+                # weight at 0.40, genuine T5 prompts reach tier5_band
+                # naturally via the score — no lane needed. Re-enable
+                # by re-including _emit_tier5_embedding_frontier_lane()
+                # here if a future diagnostic shows T5 queries getting
+                # under-routed without the lane.
                 *(_emit_decision_for_band(tier_id) for tier_id in tier_ids),
             ],
         },
