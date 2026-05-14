@@ -10,9 +10,10 @@ router_alias: tier2
 served_model_name: tier2
 
 # Direct OAI endpoint for `make answers`. r0 is the canonical for direct
-# calls; the router learns its own endpoint via config/router-backends.yaml.
+# calls; the router learns its own endpoint via config/router-backends.yaml
+# (which also points at 8002). The endpoint here MUST match r0's host port.
 endpoint:
-  url: http://localhost:8000/v1
+  url: http://localhost:8002/v1
   api_key_env: null
 
 backend:
@@ -26,13 +27,23 @@ backend:
   block_size: 32
   dtype: bfloat16
   kv_gb_per_replica: 120
-  # One docker container per replica.
+  # One docker container per replica. dual_socket uses `--network host`,
+  # so each replica's `port:` is bound directly on the host.
+  # Port layout across local tiers:
+  #   T1     → 8001   (Qwen3-1.7B, single-socket ZenDNN)
+  #   T2 r0  → 8002   (router talks here; matches router-backends.yaml)
+  #   T2 r1  → 8003   (extra replica for throughput; not addressed by the
+  #                    router today — no LB in front, single-call benchmark.
+  #                    Keeps the dual-socket procedure intact for when an
+  #                    LB is added. Collides with router-backends.yaml's
+  #                    placeholder for tier3; T3 is a remote endpoint in
+  #                    Phase C, so the collision is harmless.)
   replicas:
     - name: r0
       cpus: "0-31"
       mems: "0"
-      port: 8000
+      port: 8002
     - name: r1
       cpus: "32-63"
       mems: "1"
-      port: 8001
+      port: 8003
