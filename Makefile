@@ -9,7 +9,7 @@
 
 .PHONY: help setup load route answers export resume \
         clean-results router-smoke router-stop test fmt lint \
-        mock-bg mock-stop start_LLM stop_LLM gen-router-config build-router-config
+        mock-bg mock-stop start_LLM stop_LLM
 
 VENV := .venv
 PYTHON := $(VENV)/bin/python
@@ -22,9 +22,7 @@ help:
 	@echo "Production pass:"
 	@echo "  setup                          venv + deps + init DB + install vllm-sr (if missing)"
 	@echo "  load                           validate exemplars; build router-config; load queries.json into DB"
-	@echo "  gen-router-config              render config/vllm-sr.yaml (keyword routing, currently active)"
-	@echo "  build-router-config            build config/router-config.yaml (exemplar routing, alternative)"
-	@echo "  route [RUN_NEW=true]           routing pass; RUN_NEW wipes pass1_results first"
+	@echo "  route [RUN_NEW=true]           rebuild router-config; routing pass; RUN_NEW wipes pass1_results"
 	@echo "  answers [RUN=<id>] [RUN_NEW=true]  routed-tier answers; errors retry on next run"
 	@echo "  export [RUN=<id>] [OUTPUT=<path>]  write demo.json (default: ./demo.json)"
 	@echo "  resume [RUN=<id>]              re-run pending/error rows; mark done if clean"
@@ -90,45 +88,41 @@ else
 endif
 	$(BENCHMARK) init-db --db $(DB)
 
-# ---- data ----
-
-# `make load` re-validates training data and (re)builds the router config
-# artifact alongside the queries.json → DB load. If exemplars overlap any
-# eval-set prompt, build-router-config fails fast and load is aborted.
-load: build-router-config
-	$(BENCHMARK) load --db $(DB)
-
-# ---- router config (generated) ----
-
-gen-router-config:
-	$(BENCHMARK) gen-router-config
-
-# Validates config/router-exemplars.yaml + config/router-backends.yaml and
-# emits config/router-config.yaml — the exemplar-based router config kept
-# alongside the keyword-based config/vllm-sr.yaml that gen-router-config
-# produces. The exemplars file is the source of truth for the routing
-# logic we WANT (contrastive embedding); gen-router-config keeps the
-# keyword-based fallback that's currently active.
+# ---- router config (exemplar-based) ----
 #
-# To switch the live router to exemplar routing, point
-# `config/router.yaml`'s `--config` line at `config/router-config.yaml`
-# instead of `config/vllm-sr.yaml`.
+# Both `load` and `route` build config/router-config.yaml from
+# config/router-exemplars.yaml + config/router-backends.yaml. The build
+# step also validates that no exemplar prompt overlaps the eval set in
+# data/queries.json — if it does, the build fails fast and the parent
+# target is aborted.
 EXEMPLARS := config/router-exemplars.yaml
 BACKENDS := config/router-backends.yaml
 ROUTER_CONFIG := config/router-config.yaml
-build-router-config:
-	$(PYTHON) -m benchmark.build_router_config \
-	    --exemplars $(EXEMPLARS) \
-	    --backends $(BACKENDS) \
-	    --out $(ROUTER_CONFIG) \
-	    --check-against-eval data/queries.json
+
+define BUILD_ROUTER_CONFIG
+$(PYTHON) -m benchmark.build_router_config \
+    --exemplars $(EXEMPLARS) \
+    --backends $(BACKENDS) \
+    --out $(ROUTER_CONFIG) \
+    --check-against-eval data/queries.json
+endef
+
+# ---- data ----
+
+# `make load` validates exemplars and (re)builds router-config.yaml as
+# part of the queries.json → DB load. Overlap between exemplars and the
+# eval set aborts the load.
+load:
+	$(BUILD_ROUTER_CONFIG)
+	$(BENCHMARK) load --db $(DB)
 
 # ---- production pass ----
 
-# `make route` regenerates vllm-sr.yaml first so the router always launches
-# with the current per-tier YAMLs reflected in its config.
+# `make route` rebuilds router-config.yaml first so the router always
+# launches with the current exemplars + backends reflected in its config.
 # RUN_NEW=true → drop existing pass1_results for the active run and re-seed.
-route: gen-router-config
+route:
+	$(BUILD_ROUTER_CONFIG)
 	$(BENCHMARK) route --db $(DB) $(if $(filter true,$(RUN_NEW)),--run-new,)
 
 # RUN_NEW=true → drop existing tier_answers for the active run and re-seed.

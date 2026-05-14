@@ -27,13 +27,6 @@ from .export import export_demo_json
 from .load import load_into_db
 from .pass1 import run_pass1
 from .router_client import RouterClient, TierLookup
-from .router_config import (
-    DEFAULT_OUTPUT as DEFAULT_ROUTER_CONFIG_OUTPUT,
-)
-from .router_config import (
-    DEFAULT_ROUTING_TEMPLATE,
-    generate_router_config,
-)
 from .router_proc import RouterProcess
 from .runs import (
     clean_results,
@@ -318,22 +311,6 @@ def stop_llm_cmd(
     """Stop local-CPU tier backends defined in config/tiers/*.yaml."""
     from .start_llm import stop_local_tiers
     stop_local_tiers(tiers)
-
-
-@app.command("gen-router-config")
-def gen_router_config_cmd(
-    tiers: Path = typer.Option(DEFAULT_TIERS, "--tiers"),
-    routing_template: Path = typer.Option(DEFAULT_ROUTING_TEMPLATE, "--template"),
-    output: Path = typer.Option(DEFAULT_ROUTER_CONFIG_OUTPUT, "--output", "-o"),
-) -> None:
-    """Render the merged vllm-sr.yaml from per-tier YAMLs + the routing template.
-
-    The output file is what `vllm-sr serve --config` reads. It is gitignored
-    (build artifact). Re-run this whenever you edit a per-tier YAML or the
-    routing template.
-    """
-    path = generate_router_config(tiers_dir=tiers, routing_template=routing_template, output=output)
-    console.print(f"[green]wrote[/] {path}")
 
 
 @app.command("router-smoke")

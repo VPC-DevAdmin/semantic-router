@@ -39,12 +39,6 @@ class TierEndpoint(BaseModel):
     api_key_env: str | None = None
 
 
-class RouterBackendRef(BaseModel):
-    """One backend cluster entry in the generated vllm-sr.yaml `backend_refs`."""
-    endpoint: str  # e.g. "host.docker.internal:8000" — reachable from router container
-    weight: int = 100
-
-
 class BackendSpec(BaseModel):
     """How `make start_LLM` provisions this tier. `kind` is the dispatcher key."""
     # docker_vllm_dual_socket | remote | placeholder
@@ -62,8 +56,7 @@ class TierConfig(BaseModel):
     timeout_s: int = 60
 
     # Identity:
-    #   router_alias    = what the router emits in x-vsr-selected-model
-    #                     (matches `name` in the generated vllm-sr.yaml).
+    #   router_alias    = what the router emits in x-vsr-selected-model.
     #   served_model_name = what the upstream serves; sent in the body's
     #                       `model` field on direct OAI calls.
     # For local tiers these are usually the same. For vendor APIs
@@ -72,7 +65,6 @@ class TierConfig(BaseModel):
     served_model_name: str
 
     endpoint: TierEndpoint
-    router_backend_refs: list[RouterBackendRef] = Field(default_factory=list)
     backend: BackendSpec
 
     # Convenience: `model_id` returns `router_alias` for the dominant legacy

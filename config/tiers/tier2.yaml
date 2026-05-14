@@ -10,19 +10,10 @@ router_alias: tier2
 served_model_name: tier2
 
 # Direct OAI endpoint for `make answers`. r0 is the canonical for direct
-# calls; round-robin across r0+r1 happens at the router/envoy layer.
+# calls; the router learns its own endpoint via config/router-backends.yaml.
 endpoint:
   url: http://localhost:8000/v1
   api_key_env: null
-
-# vllm-sr generates LOGICAL_DNS envoy clusters, which only accept a single
-# endpoint per cluster. Until we stand up an LB proxy (haproxy / nginx)
-# fronting r0+r1 on a single port, the router talks only to r0. Direct
-# calls in `make answers` likewise hit r0. Throughput halves but the
-# pipeline works.
-router_backend_refs:
-  - endpoint: host.docker.internal:8000
-    weight: 100
 
 backend:
   kind: docker_vllm_dual_socket

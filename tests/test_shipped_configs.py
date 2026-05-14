@@ -42,24 +42,6 @@ def test_queries_json_parses() -> None:
     assert all(qq.expected_answer for qq in q.queries), "every shipped query should have gold"
 
 
-def test_vllm_sr_routing_template_parses() -> None:
-    """The hand-maintained routing template (listeners/signals/decisions/global)
-    must be valid YAML with the expected top-level structure. Provider models
-    are generated from config/tiers/*.yaml at `make gen-router-config` time;
-    we don't assert on them here."""
-    import yaml
-
-    path = ROOT / "config" / "vllm-sr.routing.yaml"
-    if not path.exists():
-        # Generator not yet wired; skip this check. The generator task will
-        # create this file.
-        return
-    with path.open() as f:
-        cfg = yaml.safe_load(f)
-    for key in ("version", "listeners", "routing", "global"):
-        assert key in cfg, f"routing template missing top-level key {key!r}"
-
-
 def test_router_exemplars_build_cleanly() -> None:
     """Verify config/router-exemplars.yaml + config/router-backends.yaml build
     without contaminating the eval set. `make load` runs this same build;
@@ -95,55 +77,6 @@ def test_router_exemplars_build_cleanly() -> None:
         f"matching router_alias in config/tiers/; TierLookup will record "
         f"them as unknown_tier"
     )
-
-
-def _walk_keyword_rules(rules: list[dict], match: dict[str, bool]) -> str:
-    """Simulate vllm-sr keyword-rule evaluation for one query.
-
-    `match` maps signal-name → bool (did the query match this keyword set?).
-    Returns the model the rules would route to.
-    """
-    for r in sorted(rules, key=lambda r: -r["priority"]):
-        conds = r["rules"]["conditions"]
-        if not conds:
-            return r["modelRefs"][0]["model"]
-        # operator: AND — all conditions must match
-        if all(match.get(c["name"], False) for c in conds):
-            return r["modelRefs"][0]["model"]
-    raise AssertionError("no rule matched (no default-tier1 fallback?)")
-
-
-def test_keyword_routing_reaches_every_tier() -> None:
-    """The keyword-based decisions in config/vllm-sr.routing.yaml must have
-    at least one combination of signal matches that routes to EACH of
-    tier1..tier5. T5 and T2 were unreachable in an earlier version; this
-    test catches that regression. Adjust expected combinations if the rule
-    set is intentionally simplified.
-    """
-    import yaml
-
-    path = ROOT / "config" / "vllm-sr.routing.yaml"
-    if not path.exists():
-        return  # template not yet wired; skip
-    with path.open() as f:
-        cfg = yaml.safe_load(f)
-
-    rules = cfg["routing"]["decisions"]
-    signals = [
-        s["name"]
-        for s in cfg["routing"]["signals"].get("keywords", [])
-    ]
-
-    # For each subset of signals that might match together, see what tier
-    # we land on. Then assert every tier label appears for some subset.
-    reached: set[str] = set()
-    n = len(signals)
-    for mask in range(1 << n):
-        match = {s: bool(mask & (1 << i)) for i, s in enumerate(signals)}
-        reached.add(_walk_keyword_rules(rules, match))
-
-    expected = {"tier1", "tier2", "tier3", "tier4", "tier5"}
-    assert reached == expected, f"unreachable tiers: {expected - reached}"
 
 
 def test_exemplar_routing_reaches_every_tier() -> None:

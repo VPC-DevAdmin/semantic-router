@@ -7,21 +7,17 @@ Each `tierN.yaml` file in this directory defines one tier end-to-end:
   vs. what the upstream serves. Same string for local tiers; differs for
   vendor APIs (e.g. `tier4` vs. `claude-sonnet-4-7`).
 - **endpoint** (`url`, `api_key_env`) — direct OAI endpoint for `make answers`.
-- **router_backend_refs** — Envoy backend cluster endpoints; multiple refs
-  load-balance at the router layer.
 - **backend** — how `make start_LLM` provisions this tier (or doesn't).
 
 These YAMLs drive:
 - `make answers` — direct OAI calls (uses `endpoint`, `served_model_name`).
 - `make route` — tier lookup from router headers (uses `router_alias`).
 - `make start_LLM` / `make stop_LLM` — local docker launch (uses `backend`).
-- `make gen-router-config` — emits `config/vllm-sr.yaml` with the right
-  `providers.models` block (uses `router_alias`, `served_model_name`,
-  `router_backend_refs`).
 
-To swap a tier's backend (local docker → remote URL, or vice versa), edit
-**only this directory**. Run `make gen-router-config` and restart the
-router stack to take effect.
+The router itself reaches each tier via `config/router-backends.yaml`,
+not via these files. To swap a tier's direct-call endpoint, edit
+**this directory**; to swap a tier's router-side endpoint, edit
+`config/router-backends.yaml` and restart the router stack.
 
 ## `backend.kind` dispatch
 

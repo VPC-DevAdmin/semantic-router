@@ -7,7 +7,6 @@ from pathlib import Path
 from benchmark.config import (
     BackendSpec,
     ModelsConfig,
-    RouterBackendRef,
     TierConfig,
     TierEndpoint,
 )
@@ -62,7 +61,6 @@ def make_tier(
             url=url or f"http://localhost:880{level}/v1",
             api_key_env=api_key_env,
         ),
-        router_backend_refs=[RouterBackendRef(endpoint=f"host.docker.internal:880{level}")],
         backend=BackendSpec(kind=backend_kind),
     )
 

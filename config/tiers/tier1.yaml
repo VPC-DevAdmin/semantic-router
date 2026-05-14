@@ -9,19 +9,12 @@ timeout_s: 30
 # What the router emits in `x-vsr-selected-model` (used for tier lookup).
 router_alias: tier1
 # What gets sent in the body's `model` field on direct OAI calls.
-# Matches `provider_model_id` in the generated vllm-sr.yaml.
 served_model_name: tier1
 
 # Direct OAI endpoint for `make answers`.
 endpoint:
   url: http://localhost:8811/v1
   api_key_env: null
-
-# Envoy backend clusters (used by gen-router-config). Multiple refs round-robin.
-# Each address must be reachable from inside the router docker network.
-router_backend_refs:
-  - endpoint: host.docker.internal:8811
-    weight: 100
 
 # Provisioning. `placeholder` means start_LLM does nothing for this tier.
 # When the T1 runner is provided, change `kind` to e.g. `docker_simple`

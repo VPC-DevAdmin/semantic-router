@@ -18,7 +18,7 @@ binary: vllm-sr
 # instead of its auto-generated setup-mode default.
 serve_args:
   - --config
-  - config/vllm-sr.yaml
+  - config/router-config.yaml
   - --minimal
 
 # Environment variables merged into the subprocess env. Use these for HF_TOKEN

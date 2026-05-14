@@ -181,11 +181,9 @@ semantic-router/
 │   │   ├── README.md             # schema + backend.kind table
 │   │   ├── tier1.yaml ... tier5.yaml
 │   ├── router.yaml               # process-management for `vllm-sr` subprocess
-│   ├── vllm-sr.routing.yaml      # hand-maintained: listeners, KEYWORD signals, decisions
-│   ├── vllm-sr.yaml              # GENERATED (gitignored) — keyword-based, currently active
-│   ├── router-exemplars.yaml     # alternative: contrastive-embedding training data
-│   ├── router-backends.yaml      # alternative: flat per-tier endpoints for builder
-│   └── router-config.yaml        # GENERATED (gitignored) — exemplar-based, swap-in ready
+│   ├── router-exemplars.yaml     # contrastive-embedding training data — source of truth
+│   ├── router-backends.yaml      # flat per-tier endpoints for the exemplar builder
+│   └── router-config.yaml        # GENERATED (gitignored) — what `vllm-sr serve --config` reads
 ├── data/
 │   └── queries.json              # 110 queries with `expected_answer` gold
 ├── src/benchmark/
@@ -196,8 +194,7 @@ semantic-router/
 │   ├── tiers.py                  # async OAI-compatible client
 │   ├── router_proc.py            # `vllm-sr serve` lifecycle (launcher pattern)
 │   ├── router_client.py          # talks to Envoy; extracts x-vsr-* headers
-│   ├── router_config.py          # `gen-router-config` — emits config/vllm-sr.yaml (keyword)
-│   ├── build_router_config.py    # `build-router-config` — emits config/router-config.yaml (exemplar)
+│   ├── build_router_config.py    # builds config/router-config.yaml from exemplars + backends
 │   ├── start_llm.py              # `start-llm`/`stop-llm` — backend.kind dispatcher
 │   ├── runs.py                   # run lifecycle + per-row resume + RUN_NEW resets
 │   ├── pass1.py                  # `make route` — routing decisions
@@ -213,9 +210,8 @@ semantic-router/
 | Target | What it does |
 |---|---|
 | `make setup` | venv + deps + DB + installs `vllm-sr` if missing |
-| `make load` | `data/queries.json` → DB (queries + gold) |
-| `make gen-router-config` | Render `config/vllm-sr.yaml` from per-tier YAMLs + routing template |
-| `make route` | gen-router-config, then send each query through router with `max_tokens=1`, capture `x-vsr-selected-model` |
+| `make load` | validate exemplars; build `config/router-config.yaml`; `data/queries.json` → DB |
+| `make route` | rebuild router-config; send each query through router with `max_tokens=1`, capture `x-vsr-selected-model` |
 | `make answers` | For each routed query: call the tier the router picked. **One call per query**, errors don't fail the pass — they get retried on the next invocation |
 | `make export` | Read DB → write `demo.json` |
 | `make start_LLM` / `make stop_LLM` | Bring up / tear down local-CPU tier backends from `config/tiers/*.yaml` |
@@ -268,7 +264,7 @@ those background containers, managed by the host `vllm-sr` CLI.
 
 The harness handles this in [`router_proc.py`](src/benchmark/router_proc.py):
 
-1. Run `vllm-sr serve --config config/vllm-sr.yaml --minimal` synchronously.
+1. Run `vllm-sr serve --config config/router-config.yaml --minimal` synchronously.
 2. Wait for the launcher subprocess to exit. Exit 0 = launch succeeded.
 3. Poll `/ready` on the router's apiserver (`:8080`) until it returns 200.
 4. Hand control to the benchmark passes.
@@ -276,9 +272,10 @@ The harness handles this in [`router_proc.py`](src/benchmark/router_proc.py):
    fast). Set `stop_on_exit: true` in `config/router.yaml` to tear down,
    or run `make router-stop` manually.
 
-`config/vllm-sr.yaml` is the router's internal config — 5 tier models with
-backends, plus keyword-signal routing decisions. It's the file that
-`--config` points at.
+`config/router-config.yaml` is the router's internal config, generated
+from `config/router-exemplars.yaml` + `config/router-backends.yaml` as
+part of `make load` and `make route`. It uses contrastive-embedding
+exemplars for routing decisions. It's the file that `--config` points at.
 
 The routing decision lands in three response headers added by the router
 on 2xx-non-cached responses:
@@ -289,25 +286,28 @@ on 2xx-non-cached responses:
 
 Each `config/tiers/tierN.yaml`'s `router_alias` is the value the router
 emits in `x-vsr-selected-model`; `level` is the numeric tier. The
-shipped-configs test asserts every model in the generated `vllm-sr.yaml`
-resolves to a `router_alias` in `config/tiers/` — drift between the per-tier
-files and the routing template is the most common config bug.
+shipped-configs test asserts every tier the exemplar-built
+`router-config.yaml` declares resolves to a `router_alias` in
+`config/tiers/` — drift between the per-tier files and
+`config/router-backends.yaml` is the most common config bug.
 
 ## 12. Backend strategy
 
-Each tier is described by a single YAML in `config/tiers/`. That YAML drives
-every backend-aware part of the harness:
+Each tier is described by a single YAML in `config/tiers/`. That YAML
+drives the direct-call paths and provisioning:
 
 - `make answers` reads `endpoint.url` + `served_model_name` to call directly.
 - `make route` reads `router_alias` to translate the router's
   `x-vsr-selected-model` header back into a tier level.
-- `make gen-router-config` reads `router_backend_refs` + `router_alias` +
-  `served_model_name` to write the `providers.models` block of the merged
-  `config/vllm-sr.yaml`.
 - `make start_LLM` reads `backend.kind` and dispatches to a per-kind
   launcher (`docker_vllm_dual_socket`, `remote`, `placeholder`).
 
-Swapping a tier from local to remote (or vice versa) is a single-file edit.
+The router itself reaches each tier via `config/router-backends.yaml`,
+which is kept in sync by hand with `config/tiers/*.yaml`.
+
+Swapping a tier's direct-call endpoint is a single-file edit in
+`config/tiers/`; swapping the router-side endpoint takes a matching edit
+in `config/router-backends.yaml`.
 
 Phases of backend deployment, ordered by maturity:
 
@@ -326,15 +326,16 @@ with `make mock-bg`.
 - T2: vLLM Qwen3-30B-A3B-Instruct-2507 (BF16), dual NUMA-pinned replicas
   on host ports 8000 / 8001. Launch with `make start_LLM`. Note: vllm-sr
   generates LOGICAL_DNS envoy clusters which only accept one endpoint
-  each, so `router_backend_refs` in tier2.yaml has a single ref to r0.
-  Adding an LB proxy in front of r0+r1 (haproxy / nginx on a single port)
-  unlocks full dual-replica throughput; deferred.
+  each, so the `tier2` entry in `config/router-backends.yaml` points at
+  r0 only. Adding an LB proxy in front of r0+r1 (haproxy / nginx on a
+  single port) unlocks full dual-replica throughput; deferred.
 
 **Phase C — T3 GPU + Anthropic.**
-T3 on external GPU server (`tier3.yaml`'s `endpoint.url` and the matching
-`router_backend_refs` entry get the GPU host:port). T4/T5 on Anthropic
-via the OAI-compat endpoint. `ANTHROPIC_API_KEY` lives in `.env`
-(gitignored), referenced by `endpoint.api_key_env` in tier4/tier5 YAMLs.
+T3 on external GPU server (`tier3.yaml`'s `endpoint.url` for direct calls
+and the matching `tier3` entry in `config/router-backends.yaml` for the
+router get the GPU host:port). T4/T5 on Anthropic via the OAI-compat
+endpoint. `ANTHROPIC_API_KEY` lives in `.env` (gitignored), referenced
+by `endpoint.api_key_env` in tier4/tier5 YAMLs.
 
 **Open question for Phase C — vendor model-name handling.** Anthropic's
 OAI endpoint expects the real model id (e.g. `claude-opus-4-7`), not our
@@ -350,12 +351,12 @@ vllm-sr forwards the body's `model` field verbatim (or rewrites it to
 
 - ✅ `make setup` installs vllm-sr, venv, DB schema
 - ✅ `make load` reads 110 queries with embedded gold into the DB
-- ✅ `make gen-router-config` renders `config/vllm-sr.yaml` from per-tier
-  YAMLs + `config/vllm-sr.routing.yaml` template.
-- ✅ `make route` — gen-router-config + run pass; verified 110/110 succeed
-  against the mock. Routing-accuracy is a separate data-quality story
-  (57/110 meets min, 82/110 matches spec on the current keyword rules).
-  `RUN_NEW=true` wipes pass1_results first.
+- ✅ `make load` / `make route` build `config/router-config.yaml` from
+  `config/router-exemplars.yaml` + `config/router-backends.yaml` and
+  validate that exemplars don't overlap the eval set.
+- ✅ `make route` — build router-config + run pass; verified 110/110
+  succeed against the mock. Routing-accuracy is a separate data-quality
+  story tracked elsewhere. `RUN_NEW=true` wipes pass1_results first.
 - ✅ `make answers` — **one call per query** (routed tier from
   `pass1_results`), error-tolerant: failures stay as `status='error'` and
   retry on the next run. Verified 110/110 against the mock with the new
@@ -383,13 +384,15 @@ not `/v1/chat/completions`. Replaced with `tools/oai_mock.py`.
 2. **Phase B — T1 + T2 rollout:**
    - Wire the user-provided T1 runner: edit `config/tiers/tier1.yaml`,
      change `backend.kind: placeholder` to the real runner kind, fill in
-     `endpoint.url` and `router_backend_refs`.
-   - Point `config/tiers/tier2.yaml` at the real T2 backend (endpoint +
-     router_backend_refs).
+     `endpoint.url`. Mirror the host:port on the matching `tier1` entry
+     in `config/router-backends.yaml`.
+   - Point `config/tiers/tier2.yaml` at the real T2 backend; mirror in
+     `config/router-backends.yaml`.
    - Run `make start_LLM && make router-stop && make route && make answers`.
 3. **Phase C — T3 + Anthropic:**
    - T3: external GPU endpoint goes into `config/tiers/tier3.yaml`
-     (endpoint + router_backend_refs; `backend.kind: remote`).
+     (endpoint; `backend.kind: remote`). Mirror in
+     `config/router-backends.yaml`.
    - T4/T5: decide on the vendor-model-name approach (see §12 open
      question), then update `config/tiers/tier4.yaml` and `tier5.yaml`.
 4. **First production pass** — `make route && make answers && make export`
@@ -413,7 +416,7 @@ not `/v1/chat/completions`. Replaced with `tools/oai_mock.py`.
 ## 14. Known open design questions
 
 - **Envoy route generation in `vllm-sr serve`.** What field in
-  `config/vllm-sr.yaml`'s `listeners` block drives the auto-generated
+  `config/router-config.yaml`'s `listeners` block drives the auto-generated
   Envoy `route_config.virtual_hosts[].routes`? The minimal upstream
   example we modeled ours on may have omitted required fields. Confirm by
   inspecting `.vllm-sr/envoy.yaml` and the upstream's 1,254-line reference
@@ -440,8 +443,8 @@ not `/v1/chat/completions`. Replaced with `tools/oai_mock.py`.
   surfaced the launcher-vs-daemon bug we already fixed.
 - **`tests/test_shipped_configs.py`** asserts every YAML/JSON file under
   `config/` and `data/` actually parses with the real loaders, plus that
-  the generated `vllm-sr.yaml`'s model names line up with `router_alias`
-  values from `config/tiers/*.yaml`.
+  the exemplar-built `router-config.yaml`'s tier names line up with
+  `router_alias` values from `config/tiers/*.yaml`.
 
 ## 16. Maintaining this document
 

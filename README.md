@@ -36,11 +36,14 @@ make help                                # full target list
 
 ```
 config/           # everything the operator tunes — YAML configs
-    tiers/            # single source of truth — one YAML per tier (router_alias,
-                      # endpoint, router_backend_refs, backend.kind, ...)
-    vllm-sr.routing.yaml  # hand-maintained routing template (listeners, signals, decisions)
-    vllm-sr.yaml      # GENERATED (gitignored) by `make gen-router-config`;
-                      # the router's INTERNAL config passed via --config flag
+    tiers/            # single source of truth for direct-call tier identity
+                      # (router_alias, endpoint, backend.kind, ...)
+    router-exemplars.yaml  # contrastive-embedding training data — the
+                           # source of truth for the router's decision logic
+    router-backends.yaml   # router-side per-tier endpoints (flat schema)
+    router-config.yaml     # GENERATED (gitignored) from the two files above
+                           # by `make load` / `make route`; the router's
+                           # INTERNAL config passed via --config flag
     router.yaml       # process-management config for the `vllm-sr` subprocess
 
 data/

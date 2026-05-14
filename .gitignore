@@ -29,16 +29,11 @@ config/*.local.yaml
 # Runtime logs
 logs/
 
-# Generated router config (keyword-based) — built from config/tiers/*.yaml +
-# config/vllm-sr.routing.yaml by `make gen-router-config`.
-config/vllm-sr.yaml
-# vllm-sr's per-config working dir, regenerated alongside vllm-sr.yaml.
-config/.vllm-sr/
-
-# Generated router config (exemplar-based) — built from
-# config/router-exemplars.yaml + config/router-backends.yaml by
-# `make build-router-config`.
+# Generated router config — built from config/router-exemplars.yaml +
+# config/router-backends.yaml by `make load` / `make route`.
 config/router-config.yaml
+# vllm-sr's per-config working dir, regenerated alongside router-config.yaml.
+config/.vllm-sr/
 
 # vllm-sr's auto-generated artifacts in the project root.
 /config.yaml

@@ -12,9 +12,5 @@ endpoint:
   url: http://localhost:8811/v1               # REAL: http://<gpu-host>:<port>/v1
   api_key_env: null                            # REAL: TIER3_API_KEY (set in .env)
 
-router_backend_refs:
-  - endpoint: host.docker.internal:8811        # REAL: <gpu-host>:<port>
-    weight: 100
-
 backend:
   kind: remote                                 # not launched by us
