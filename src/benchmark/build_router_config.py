@@ -236,11 +236,19 @@ def _emit_complexity_signal(sig: dict) -> dict:
 
 def _emit_difficulty_score(signals: list[dict]) -> dict:
     """`routing.projections.scores.request_difficulty` — weighted_sum of
-    each complexity signal's confidence."""
+    each complexity signal's HARD-side confidence.
+
+    Per the upstream canonical config (config/config.yaml in
+    vllm-project/semantic-router), complexity-input references in a
+    weighted_sum take the form `<signal_id>:hard` (or `:medium`), not
+    just `<signal_id>`. With value_source=confidence, the runtime uses
+    the matched signal's confidence or 0 when it didn't match — so we
+    pull the HARD side, which represents "this query is hard".
+    """
     inputs = [
         {
             "type": "complexity",
-            "name": sig["id"],
+            "name": f"{sig['id']}:hard",
             "weight": float(sig.get("weight", 0.0)),
             "value_source": "confidence",
         }

@@ -116,11 +116,18 @@ def test_router_exemplars_build_projections_shape() -> None:
     rd = scores[0]
     assert rd["name"] == "request_difficulty"
     assert rd["method"] == "weighted_sum"
-    # Each signal contributes via an input.
+    # Each signal contributes via an input — referenced by its HARD side.
+    # Per upstream canonical config, complexity-input names take the form
+    # `<signal_id>:hard`; using just `<signal_id>` produces a missing-input
+    # silent zero and the projected score collapses to 0.
     input_names = {i["name"] for i in rd["inputs"]}
-    assert input_names == sig_names
+    assert input_names == {f"{n}:hard" for n in sig_names}
     for inp in rd["inputs"]:
         assert inp["type"] == "complexity"
+        assert inp["name"].endswith(":hard"), (
+            f"complexity input {inp['name']!r} missing ':hard' suffix"
+        )
+        assert inp.get("value_source") == "confidence"
         assert isinstance(inp["weight"], int | float)
     # Weights should sum to ~1.0 — keeps request_difficulty in [0, 1].
     weight_sum = sum(i["weight"] for i in rd["inputs"])
