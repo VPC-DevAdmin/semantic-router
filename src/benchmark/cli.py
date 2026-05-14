@@ -247,14 +247,25 @@ def answers_cmd(
         n = reset_answers(db, rid)
         console.print(f"[yellow]--run-new[/]: deleted {n} tier_answers row(s)")
 
-    seeded = seed_pending_answers(db, rid, models_cfg, only=only)
-    if seeded:
-        console.print(f"[green]seeded[/] {seeded} pending tier_answers row(s)")
-    else:
+    seed_result = seed_pending_answers(db, rid, models_cfg, only=only)
+    if seed_result.replaced:
         console.print(
-            "[yellow]note[/]: 0 new rows seeded — run `make route` to record "
-            "routing decisions, or use --run-new to reset."
+            f"[yellow]re-seeded[/] {seed_result.replaced} stale row(s) "
+            f"whose tier didn't match the latest pass1 decision"
         )
+    if seed_result.seeded:
+        console.print(f"[green]seeded[/] {seed_result.seeded} new pending row(s)")
+    if not (seed_result.seeded or seed_result.replaced):
+        if seed_result.kept:
+            console.print(
+                f"[dim]note[/]: {seed_result.kept} row(s) already at the correct "
+                f"tier — re-running the worker on any pending/error rows."
+            )
+        else:
+            console.print(
+                "[yellow]note[/]: nothing to do — run `make route` first to "
+                "record routing decisions."
+            )
 
     if mock_endpoint:
         console.print(f"[yellow]MOCK[/]: routing all tier calls to {mock_endpoint}")

@@ -12,6 +12,7 @@ be picked up on the next make answers after make route succeeds for them.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -105,13 +106,34 @@ def seed_pending(
     return seeded
 
 
+@dataclass
+class AnswerSeedResult:
+    """Outcome of `seed_pending_answers`."""
+
+    seeded: int = 0       # new tier_answers rows inserted
+    replaced: int = 0     # stale rows deleted and re-seeded (tier mismatch with pass1)
+    kept: int = 0         # rows left alone (already at the correct tier)
+
+    def __int__(self) -> int:
+        # Backward-compat: callers that expected just an int count still work.
+        return self.seeded + self.replaced
+
+    def __str__(self) -> str:
+        parts = [f"seeded={self.seeded}"]
+        if self.replaced:
+            parts.append(f"replaced={self.replaced} (stale routing)")
+        if self.kept:
+            parts.append(f"kept={self.kept}")
+        return ", ".join(parts)
+
+
 def seed_pending_answers(
     db_path: Path,
     run_id: int,
     models: ModelsConfig,
     *,
     only: list[str] | None = None,
-) -> int:
+) -> AnswerSeedResult:
     """Seed one pending `tier_answers` row per query, using the routed tier.
 
     The routed tier is read from `pass1_results.router_selected_tier`. Queries
@@ -119,12 +141,17 @@ def seed_pending_answers(
     they'll be picked up by a subsequent seed call after `make route` records
     their decision. TTS-only queries are excluded.
 
-    Returns the number of rows seeded. Idempotent on (run_id, query_id) at
-    the row level: if a row already exists for this query in this run, it's
-    left alone (even if the routed tier has since changed). Use RUN_NEW to
-    rebuild from scratch.
+    Behaviour against existing rows:
+      - Row exists at the same tier_level as current pass1 → kept (worker will
+        retry if status is 'pending'/'error', leave if 'success').
+      - Row exists at a DIFFERENT tier_level → stale: delete it and seed a
+        fresh pending row at the correct level. This keeps tier_answers in
+        sync with the latest routing decisions after a `make route` re-run.
+      - No row exists → seed a new pending row.
+
+    Returns an `AnswerSeedResult` with the per-bucket counts.
     """
-    seeded = 0
+    result = AnswerSeedResult()
     now = datetime.now(UTC)
 
     # tier_level → router_alias (used as tier_name when seeding).
@@ -151,16 +178,25 @@ def seed_pending_answers(
             if qid in target_qids and lvl is not None:
                 routed_by_qid[qid] = lvl
 
-        existing_qids = {
-            r[0]
-            for r in session.execute(
-                select(TierAnswer.query_id).where(TierAnswer.run_id == run_id)
-            ).all()
-        }
+        # Existing tier_answer rows for this run, indexed by query_id.
+        existing_by_qid: dict[str, TierAnswer] = {}
+        for ta in session.execute(
+            select(TierAnswer).where(TierAnswer.run_id == run_id)
+        ).scalars():
+            existing_by_qid[ta.query_id] = ta
 
         for qid, level in routed_by_qid.items():
-            if qid in existing_qids:
+            existing = existing_by_qid.get(qid)
+            if existing is not None and existing.tier_level == level:
+                # Already at the right tier; the answers worker handles it.
+                result.kept += 1
                 continue
+            if existing is not None:
+                # Stale: pass1 has since picked a different tier for this query.
+                session.delete(existing)
+                result.replaced += 1
+            else:
+                result.seeded += 1
             name = name_by_level.get(level, f"tier{level}")
             session.add(
                 TierAnswer(
@@ -172,9 +208,8 @@ def seed_pending_answers(
                     attempted_at=now,
                 )
             )
-            seeded += 1
 
-    return seeded
+    return result
 
 
 def reset_pass1(db_path: Path, run_id: int) -> int:

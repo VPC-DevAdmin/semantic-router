@@ -94,9 +94,11 @@ def test_seed_one_row_per_routed_query(tmp_path: Path) -> None:
     _record_pass1(db, rid, "q1", tier_level=1)
     _record_pass1(db, rid, "q2", tier_level=3)
     models = _models([1, 2, 3])
-    seeded = seed_pending_answers(db, rid, models)
+    result = seed_pending_answers(db, rid, models)
     # 2 routed queries → 2 rows. qtts is excluded (TTS-only) and has no pass1 row.
-    assert seeded == 2
+    assert result.seeded == 2
+    assert result.replaced == 0
+    assert result.kept == 0
     with session_scope(db) as s:
         rows = s.execute(select(TierAnswer).where(TierAnswer.run_id == rid)).scalars().all()
         assert {(r.query_id, r.tier_level) for r in rows} == {("q1", 1), ("q2", 3)}
@@ -108,23 +110,62 @@ def test_seed_skips_unrouted_queries(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)
     _record_pass1(db, rid, "q1", tier_level=1)
     # q2 has no pass1 row → not seeded.
-    seeded = seed_pending_answers(db, rid, _models([1, 2, 3]))
-    assert seeded == 1
+    assert seed_pending_answers(db, rid, _models([1, 2, 3])).seeded == 1
 
 
-def test_seed_idempotent(tmp_path: Path) -> None:
+def test_seed_idempotent_when_tier_unchanged(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)
     _record_pass1(db, rid, "q1", tier_level=1)
     models = _models([1, 2])
-    assert seed_pending_answers(db, rid, models) == 1
-    assert seed_pending_answers(db, rid, models) == 0
+    r1 = seed_pending_answers(db, rid, models)
+    assert r1.seeded == 1
+    r2 = seed_pending_answers(db, rid, models)
+    # Re-seeded, nothing changed: row was at tier 1, still at tier 1.
+    assert r2.seeded == 0
+    assert r2.replaced == 0
+    assert r2.kept == 1
 
 
 def test_seed_skips_tts_only(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)
     _record_pass1(db, rid, "qtts", tier_level=2)
-    seeded = seed_pending_answers(db, rid, _models([1, 2, 3]))
-    assert seeded == 0
+    assert seed_pending_answers(db, rid, _models([1, 2, 3])).seeded == 0
+
+
+def test_seed_replaces_stale_tier(tmp_path: Path) -> None:
+    """After `make route` re-runs and picks a different tier for a query,
+    the next `make answers` should detect the mismatch and re-seed."""
+    db, rid = _bootstrap(tmp_path)
+    models = _models([1, 2, 3])
+
+    # First round: router picked tier 1.
+    _record_pass1(db, rid, "q1", tier_level=1)
+    r1 = seed_pending_answers(db, rid, models)
+    assert r1.seeded == 1
+
+    # Router re-runs and now picks tier 3 for the same query. Update the
+    # pass1 row to reflect that.
+    with session_scope(db) as s:
+        p1 = s.execute(
+            select(Pass1Result).where(Pass1Result.query_id == "q1")
+        ).scalar_one()
+        p1.router_selected_tier = 3
+
+    # Next seed call should DELETE the stale tier_answer (tier_level=1) and
+    # insert a fresh pending one at tier_level=3.
+    r2 = seed_pending_answers(db, rid, models)
+    assert r2.replaced == 1
+    assert r2.seeded == 0
+    assert r2.kept == 0
+
+    with session_scope(db) as s:
+        rows = s.execute(
+            select(TierAnswer).where(TierAnswer.query_id == "q1")
+        ).scalars().all()
+        # Exactly one row, at the new tier.
+        assert len(rows) == 1
+        assert rows[0].tier_level == 3
+        assert rows[0].status == "pending"
 
 
 # ---- run_answers ----
