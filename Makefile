@@ -180,20 +180,23 @@ router-stop:
 MOCK_LOG := logs/mock.log
 MOCK_PID := logs/mock.pid
 
+# All in one shell — `exit 0` in the "already running" branch only exits the
+# subshell of that line, so the previous split-recipe version always tried to
+# start a second mock and reported a spurious FAILED.
 mock-bg:
 	@mkdir -p logs
 	@if [ -f $(MOCK_PID) ] && kill -0 $$(cat $(MOCK_PID)) 2>/dev/null; then \
 	    echo "[mock] already running (pid $$(cat $(MOCK_PID)))"; \
-	    exit 0; \
-	fi
-	@nohup $(PYTHON) tools/oai_mock.py --port $(MOCK_PORT) > $(MOCK_LOG) 2>&1 & echo $$! > $(MOCK_PID)
-	@sleep 1
-	@if kill -0 $$(cat $(MOCK_PID)) 2>/dev/null; then \
-	    echo "[mock] listening on :$(MOCK_PORT) (pid $$(cat $(MOCK_PID))), log: $(MOCK_LOG)"; \
 	else \
-	    echo "[mock] FAILED to start; see $(MOCK_LOG)"; \
-	    rm -f $(MOCK_PID); \
-	    exit 1; \
+	    nohup $(PYTHON) tools/oai_mock.py --port $(MOCK_PORT) > $(MOCK_LOG) 2>&1 & echo $$! > $(MOCK_PID); \
+	    sleep 1; \
+	    if kill -0 $$(cat $(MOCK_PID)) 2>/dev/null; then \
+	        echo "[mock] listening on :$(MOCK_PORT) (pid $$(cat $(MOCK_PID))), log: $(MOCK_LOG)"; \
+	    else \
+	        echo "[mock] FAILED to start; see $(MOCK_LOG)"; \
+	        rm -f $(MOCK_PID); \
+	        exit 1; \
+	    fi; \
 	fi
 
 mock-stop:
