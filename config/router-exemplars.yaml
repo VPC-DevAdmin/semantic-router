@@ -123,7 +123,7 @@ complexity_signals:
   - id: needs_reasoning
     description: "Does this query require multi-step reasoning?"
     threshold: 0.55       # used for `matched_signals` reporting; doesn't gate the projection
-    weight: 0.15          # contribution to request_difficulty
+    weight: 0.20          # contribution to request_difficulty
     hard:
       candidates:
         # Math word problems / probability — chained arithmetic + setup
@@ -170,7 +170,7 @@ complexity_signals:
   - id: needs_expertise
     description: "Does this query require deep domain expertise?"
     threshold: 0.55
-    weight: 0.15
+    weight: 0.20
     hard:
       candidates:
         # Pure math / theoretical CS
@@ -221,7 +221,7 @@ complexity_signals:
   - id: needs_judgment
     description: "Does this query require open-ended judgment or value-laden tradeoffs?"
     threshold: 0.55
-    weight: 0.20
+    weight: 0.25
     hard:
       candidates:
         # Career / professional
@@ -279,7 +279,7 @@ complexity_signals:
   - id: demands_commitment
     description: "Does this query demand a specific direction vs. a survey?"
     threshold: 0.55
-    weight: 0.20
+    weight: 0.25
     hard:
       candidates:
         - "I need to pick between three architectural approaches by tomorrow. Pick one and tell me why."
@@ -340,8 +340,8 @@ embedding_signals:
   # is genuinely frontier-grade.
   - id: frontier_synthesis
     description: "Continuous similarity to T5-grade frontier prompts."
-    threshold: 0.55             # used for `matched_signals` reporting AND for the lane decision
-    weight: 0.30                # contribution to request_difficulty
+    threshold: 0.70             # used for `matched_signals` reporting AND for the embedding-lane decision; 0.70 keeps the lane selective so it only promotes genuinely-frontier prompts
+    weight: 0.10                # contribution to request_difficulty (small additive nudge — keeps complexity signals as the primary discriminator)
     aggregation_method: max
     candidates:
       # Long-form literary craft with structural constraints
