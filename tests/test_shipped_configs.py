@@ -65,9 +65,13 @@ def test_router_exemplars_build_v03_shape() -> None:
     )
 
     # Top level.
-    for key in ("version", "listeners", "providers", "routing"):
+    for key in ("version", "listeners", "providers", "routing", "global"):
         assert key in cfg, f"built router config missing top-level key {key!r}"
     assert cfg["version"] == "v0.3"
+
+    # Semantic cache must be explicitly disabled — without this the router
+    # fatal-crashes when Milvus isn't fast enough to respond at startup.
+    assert cfg["global"]["stores"]["semantic_cache"]["enabled"] is False
 
     # No leftover invented keys.
     for stale in ("signals", "decision_rules", "signals_builtin"):

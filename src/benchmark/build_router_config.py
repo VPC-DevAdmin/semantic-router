@@ -385,6 +385,16 @@ def build(
             },
             "decisions": decisions,
         },
+        # Without this block, vllm-sr falls back to default global config
+        # which enables semantic cache → tries to connect to Milvus at
+        # startup → fatal-crashes if Milvus isn't ready within ~30s. We
+        # don't want a semantic cache for the demo anyway (each query
+        # should hit fresh routing logic), so disable it explicitly.
+        "global": {
+            "stores": {
+                "semantic_cache": {"enabled": False},
+            },
+        },
     }
     return config
 
