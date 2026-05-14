@@ -42,7 +42,7 @@ name: "five-tier-projection-router"
 # minimum is around -0.15 (trivial query strongly matching the detractor
 # embedding). Cutoffs are first-pass; tune from `eval_reporter.py` output
 # after the next route pass.
-tier_cutoffs: [0.05, 0.15, 0.30, 0.45]
+tier_cutoffs: [0.03, 0.10, 0.22, 0.40]
 
 # `:medium` complexity matches contribute `medium_weight_factor × weight`.
 # Kept at 0.0 because diagnostic confirmed vllm-sr's contrastive classifier
@@ -162,6 +162,38 @@ embedding_signals:
       - "In what year did the Berlin Wall fall?"
       - "What is the speed of light in a vacuum?"
       - "Translate 'hello' to Spanish."
+
+  # ─────────────────────────────────────────────────────────────────────
+  # MODERATE COMPLEXITY — middle-tier promoter
+  # ─────────────────────────────────────────────────────────────────────
+  # The structure signals only fire for verbose / multi-part prompts
+  # (100+ words, code blocks, numbered lists). Most T2/T3/T4 prompts are
+  # short and technical — explain-how, compare-and-contrast, basic
+  # implementations — and trigger none of those structural markers.
+  # This embedding bank captures those semantically: queries matching it
+  # are "moderately complex" regardless of length.
+  - id: moderate_complexity
+    description: "Continuous similarity to T2/T3-grade explanation, comparison, and basic-implementation prompts."
+    threshold: 0.60
+    weight: 0.20
+    aggregation_method: max
+    candidates:
+      # Explain-how — technical concepts at moderate depth
+      - "Explain how a database B-tree index handles range queries with a worked example."
+      - "Walk me through how a TLS handshake establishes a shared key — the cryptographic flow at a protocol level."
+      - "Explain Bayes' theorem using a concrete worked example like spam classification or medical screening."
+      # Compare-and-contrast
+      - "Compare TCP, UDP, and SCTP — when to use each, and what trade-offs you're picking up."
+      - "What are the operational differences between microservices and modular monoliths for a mid-sized engineering team?"
+      - "Compare reference counting and tracing garbage collectors — what each gets right and where they typically fail."
+      # Implement-basic — concrete code with moderate scope
+      - "Implement a thread-safe LRU cache in Go with O(1) get and put operations."
+      - "Write a Python decorator that retries a function with exponential backoff on configured exception types."
+      - "Implement a Bloom filter in Python with configurable false-positive rate."
+      # Walk-through / diagnostic
+      - "Walk me through how to diagnose an event-driven Node.js backend with a slow memory leak under steady-state load."
+      - "Explain what 'eventual consistency' actually means at the application level, with the operational implications that matter to developers."
+      - "Walk through how a confusion matrix is computed for a multi-class classifier, including precision, recall, and F1 per class."
 
   # ─────────────────────────────────────────────────────────────────────
   # FRONTIER SYNTHESIS — promoter (positive weight)
