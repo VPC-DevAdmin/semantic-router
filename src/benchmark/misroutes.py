@@ -82,13 +82,14 @@ def render_misroutes(misroutes: list[Misroute], *, max_prompt_chars: int = 100) 
     lines.append(f"{len(misroutes)} misroute(s):\n")
 
     for m in misroutes:
+        # Use angle brackets — square brackets get eaten by Rich markup parsing.
         specs = ",".join(m.specializations) if m.specializations else "-"
         cat = m.category or "?"
         reasoning = m.reasoning_mode or "?"
         header = (
             f"  {m.query_id}  expected≥{m.expected_min_tier}  "
             f"routed→{m.routed_tier or '?'}  "
-            f"specs=[{specs}]  category={cat}  reasoning={reasoning}"
+            f"specs=<{specs}>  category={cat}  reasoning={reasoning}"
         )
         prompt = textwrap.shorten(m.prompt.replace("\n", " "), max_prompt_chars)
         lines.append(header)

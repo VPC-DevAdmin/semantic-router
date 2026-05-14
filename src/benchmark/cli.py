@@ -301,7 +301,9 @@ def misroutes_cmd(
     landing in T2) before tuning thresholds in router-exemplars.yaml.
     """
     misroutes = list_misroutes(db, run_id=run)
-    console.print(render_misroutes(misroutes))
+    # markup=False so query content and bracket-laden output passes through
+    # without Rich trying to parse it as styling tags.
+    console.print(render_misroutes(misroutes), markup=False)
 
 
 @app.command("export")
