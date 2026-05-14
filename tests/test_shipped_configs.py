@@ -116,24 +116,38 @@ def test_router_exemplars_build_projections_shape() -> None:
     rd = scores[0]
     assert rd["name"] == "request_difficulty"
     assert rd["method"] == "weighted_sum"
-    # Each signal contributes via an input — referenced by its HARD side.
+    # Each signal contributes TWO inputs: `<id>:medium` (half weight) and
+    # `<id>:hard` (full weight). Without :medium, queries that match only
+    # at the medium level contribute 0 — which collapsed request_difficulty
+    # to 0 for most of the eval set in the first projections roll-out.
     # Per upstream canonical config, complexity-input names take the form
-    # `<signal_id>:hard`; using just `<signal_id>` produces a missing-input
-    # silent zero and the projected score collapses to 0.
+    # `<signal_id>:hard` or `<signal_id>:medium`; bare `<signal_id>` does
+    # not bind.
     input_names = {i["name"] for i in rd["inputs"]}
-    assert input_names == {f"{n}:hard" for n in sig_names}
+    expected_names = (
+        {f"{n}:hard" for n in sig_names} | {f"{n}:medium" for n in sig_names}
+    )
+    assert input_names == expected_names
     for inp in rd["inputs"]:
         assert inp["type"] == "complexity"
-        assert inp["name"].endswith(":hard"), (
-            f"complexity input {inp['name']!r} missing ':hard' suffix"
+        assert inp["name"].endswith((":hard", ":medium")), (
+            f"complexity input {inp['name']!r} missing ':hard'/':medium' suffix"
         )
         assert inp.get("value_source") == "confidence"
         assert isinstance(inp["weight"], int | float)
-    # Weights should sum to ~1.0 — keeps request_difficulty in [0, 1].
-    weight_sum = sum(i["weight"] for i in rd["inputs"])
-    assert abs(weight_sum - 1.0) < 1e-6, (
-        f"signal weights sum to {weight_sum} — should be ~1.0 to keep "
-        f"request_difficulty in [0, 1]"
+    # Per signal: :medium weight should be exactly half the :hard weight.
+    by_name = {i["name"]: i for i in rd["inputs"]}
+    for n in sig_names:
+        hard_w = by_name[f"{n}:hard"]["weight"]
+        med_w = by_name[f"{n}:medium"]["weight"]
+        assert abs(med_w - hard_w * 0.5) < 1e-9, (
+            f"{n}: medium weight {med_w} should be half hard weight {hard_w}"
+        )
+    # The :hard weights alone should sum to ~1.0 — caps request_difficulty
+    # at 1.0 (medium/hard are mutually exclusive per signal per query).
+    hard_weight_sum = sum(by_name[f"{n}:hard"]["weight"] for n in sig_names)
+    assert abs(hard_weight_sum - 1.0) < 1e-6, (
+        f":hard weights sum to {hard_weight_sum} — should be ~1.0"
     )
 
     mappings = routing["projections"]["mappings"]

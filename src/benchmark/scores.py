@@ -1,29 +1,34 @@
-"""Diagnostic — per-signal scores for the misroute queries.
+"""Diagnostic — per-query routing trace for the misroute queries.
 
 Backs `make scores`. For each query the router under-routed in the latest
 run, invoke `vllm-sr eval --json --prompt <text>` to get back the actual
-signal scores, then show the per-signal confidences and (when available)
-the projected `request_difficulty` and matched `tier_band`.
+routing decision trace, then surface the most diagnostic facts:
+
+  • What complexity level each signal matched at (none / medium / hard).
+  • Which band the projected `request_difficulty` landed in.
+  • Which decision fired.
 
 Why subprocess and not HTTP: vllm-sr's CLI `eval` command is documented
 and stable across versions; the underlying `/api/v1/eval` HTTP endpoint
-returned 500 on our first attempt with `{"prompt": ...}`, suggesting the
-request shape is different than guessed. The CLI is the supported entry
-point and abstracts the wire format from us.
+returned 500 on our first attempt with `{"prompt": ...}`. The CLI is the
+supported entry point and abstracts the wire format from us.
 
-Schema notes (v0.3 projections design):
-  • `signal_values` contains `embedding:<signal_name>` keys for each
-    complexity signal (e.g. `embedding:needs_reasoning`). The signal's
-    own threshold is configured in router-exemplars.yaml.
-  • Under projections, the routing decision is driven by which BAND the
-    `request_difficulty` score lands in — not by which signal "wins".
-    matched_signals is therefore less informative than it used to be.
-  • If the eval response carries the projected score and/or matched
-    band, we surface them. If not, we still show the underlying signal
-    confidences so an operator can reason about the score.
+Schema notes (vllm-sr v0.3 projections design, observed shape):
+  decision_result:
+    decision_name: route_tier1
+    matched_signals:
+      complexity: [needs_reasoning:medium, needs_expertise:medium, ...]
+      projection: [tier1_band]
+    unmatched_signals:
+      complexity: [needs_reasoning, ...]    # bare name = matched at none
+      projection: [tier2_band, tier3_band, tier4_band, tier5_band]
 
-If parsing the eval JSON fails, the tool dumps the raw output for the
-first misroute so we can iterate on the parser.
+A signal that appears in `matched_signals.complexity` as `<id>:<level>`
+matched at that level. A signal that appears in `unmatched_signals.complexity`
+as bare `<id>` did not match at any level on this query.
+
+If parsing fails, the tool dumps the raw response for the first misroute
+so we can iterate on the parser.
 """
 from __future__ import annotations
 
@@ -40,106 +45,88 @@ DEFAULT_APISERVER = "http://localhost:8080"  # passed via --endpoint to the CLI
 VLLM_SR_BINARY = "vllm-sr"
 EVAL_TIMEOUT_S = 30.0
 
-# Single per-signal threshold — matches `threshold:` in router-exemplars.yaml.
-# Under the projections design every complexity signal shares this; the
-# decision is driven by the projected band, not by per-signal gating.
-SIGNAL_THRESHOLD = 0.55
+# Levels a complexity signal can match at, in ascending order of strength.
+COMPLEXITY_LEVELS = ("none", "easy", "medium", "hard")
 
 
 @dataclass
-class SignalScore:
-    name: str                  # e.g. "needs_reasoning"
-    score: float               # confidence in [0, 1] from vllm-sr
-    threshold: float           # config threshold for this signal
+class ComplexityMatch:
+    """A complexity signal's match outcome on one query."""
+    name: str          # e.g. "needs_reasoning"
+    level: str         # one of COMPLEXITY_LEVELS
 
     @property
-    def gap(self) -> float:
-        """Positive when score is above our threshold, negative when below."""
-        return self.score - self.threshold
-
-    @property
-    def above_threshold(self) -> bool:
-        return self.score >= self.threshold
+    def is_match(self) -> bool:
+        return self.level not in ("none", "easy")
 
 
 @dataclass
 class EvalSnapshot:
     """Everything we extracted from one vllm-sr eval response."""
-    signals: list[SignalScore]
-    request_difficulty: float | None      # projected score, if surfaced
-    tier_band: str | None                  # matched band name, if surfaced
+    matches: list[ComplexityMatch]    # one per complexity signal seen
+    decision: str | None              # e.g. "route_tier1"
+    matched_band: str | None          # e.g. "tier1_band"
 
 
 def parse_eval_response(data: Any) -> EvalSnapshot:
-    """Extract per-signal scores and (best-effort) projection outputs.
+    """Pull the routing trace out of a vllm-sr eval response.
 
-    `signal_values` carries the underlying complexity signal confidences:
-      {
-        "embedding:needs_reasoning": 0.43,
-        "embedding:needs_reasoning:best": ...,    # sub-keys — skipped
-        "embedding:needs_reasoning:support": ...,
-        "embedding:needs_reasoning:prototype_count": 8,
-        "embedding:needs_expertise": 0.52,
-        "embedding:needs_judgment": 0.61,
-        ...
-      }
-    The projected `request_difficulty` and matched `tier_band` may appear
-    under various keys depending on vllm-sr version; we look for them
-    defensively and tolerate absence.
+    The decision_result block carries the trace we want:
+      • matched_signals.complexity[]   — entries like "<id>:<level>"
+      • unmatched_signals.complexity[] — bare "<id>" = matched at none
+      • matched_signals.projection[]   — one band name (the winner)
+      • decision_name                  — e.g. "route_tier3"
     """
-    empty = EvalSnapshot(signals=[], request_difficulty=None, tier_band=None)
+    empty = EvalSnapshot(matches=[], decision=None, matched_band=None)
     if not isinstance(data, dict):
         return empty
 
-    signal_values = data.get("signal_values")
-    if not isinstance(signal_values, dict):
+    decision_result = data.get("decision_result")
+    if not isinstance(decision_result, dict):
         return empty
 
-    # Build "main score per signal" map. Skip sub-keys (`:best`, `:support`,
-    # `:prototype_count`) which appear alongside the main score.
-    scores: dict[str, float] = {}
-    for key, val in signal_values.items():
-        if not (isinstance(key, str) and key.startswith("embedding:")):
-            continue
-        if not isinstance(val, int | float):
-            continue
-        suffix = key[len("embedding:"):]
-        if ":" in suffix:
-            continue
-        scores[suffix] = float(val)
+    decision = decision_result.get("decision_name")
+    if not isinstance(decision, str):
+        decision = None
 
-    signals = [
-        SignalScore(name=name, score=score, threshold=SIGNAL_THRESHOLD)
-        for name, score in scores.items()
-    ]
+    matched_signals = decision_result.get("matched_signals") or {}
+    unmatched_signals = decision_result.get("unmatched_signals") or {}
 
-    # Best-effort projection extraction. Try a handful of plausible keys —
-    # if the schema differs in this vllm-sr build, leave None and the
-    # caller renders signals alone.
-    rd = _coerce_float(signal_values.get("projection:request_difficulty"))
-    if rd is None:
-        rd = _coerce_float(signal_values.get("request_difficulty"))
-    if rd is None:
-        proj = data.get("projections") if isinstance(data.get("projections"), dict) else None
-        if proj:
-            rd = _coerce_float(proj.get("request_difficulty"))
+    matches: dict[str, str] = {}
 
-    tier_band: str | None = None
-    band_raw = signal_values.get("mapping:tier_band")
-    if isinstance(band_raw, str):
-        tier_band = band_raw
-    elif isinstance(data.get("mappings"), dict):
-        mb = data["mappings"].get("tier_band")
-        if isinstance(mb, str):
-            tier_band = mb
+    # Matched complexity signals carry their level after a colon.
+    for entry in _as_str_list(matched_signals.get("complexity")):
+        name, _, level = entry.partition(":")
+        if name and level in COMPLEXITY_LEVELS:
+            matches[name] = level
+        elif name and not level:
+            # Defensive: bare name in matched_signals is unusual but
+            # treat as "matched at some unspecified positive level".
+            matches.setdefault(name, "medium")
 
-    return EvalSnapshot(signals=signals, request_difficulty=rd, tier_band=tier_band)
+    # Bare names in unmatched_signals = did not match at any level here.
+    for entry in _as_str_list(unmatched_signals.get("complexity")):
+        name, _, level = entry.partition(":")
+        if name and not level:
+            matches.setdefault(name, "none")
+
+    # Projection: the matched band is the winner.
+    matched_band: str | None = None
+    proj_matched = _as_str_list(matched_signals.get("projection"))
+    if proj_matched:
+        matched_band = proj_matched[0]
+
+    return EvalSnapshot(
+        matches=[ComplexityMatch(name=n, level=lvl) for n, lvl in matches.items()],
+        decision=decision,
+        matched_band=matched_band,
+    )
 
 
-def _coerce_float(v: Any) -> float | None:
-    if isinstance(v, int | float):
-        return float(v)
-    return None
+def _as_str_list(v: Any) -> list[str]:
+    if not isinstance(v, list):
+        return []
+    return [s for s in v if isinstance(s, str)]
 
 
 async def fetch_eval(
@@ -149,12 +136,7 @@ async def fetch_eval(
     timeout: float = EVAL_TIMEOUT_S,
     binary: str = VLLM_SR_BINARY,
 ) -> dict:
-    """Invoke `vllm-sr eval --json --prompt <text>` and return the parsed JSON.
-
-    Uses subprocess rather than direct HTTP so we stay on the supported CLI
-    surface. Slightly slower per call (~1s startup overhead) but reliable
-    across vllm-sr versions.
-    """
+    """Invoke `vllm-sr eval --json --prompt <text>` and return the parsed JSON."""
     if shutil.which(binary) is None:
         raise RuntimeError(
             f"{binary!r} not on PATH; install with `make setup` or set "
@@ -189,34 +171,35 @@ async def fetch_eval(
         ) from e
 
 
-def _format_signal_line(s: SignalScore, *, width: int = 20) -> str:
-    sign = "+" if s.gap >= 0 else "-"
-    above_marker = "✓" if s.above_threshold else "·"
-    return (
-        f"    {above_marker} {s.name:<{width}}  score={s.score:.3f}  "
-        f"threshold={s.threshold:.3f}  gap={sign}{abs(s.gap):.3f}"
-    ).rstrip()
+# Visual marker per level — quick scan for "did any signal go hard?"
+_LEVEL_MARK = {"none": "·", "easy": "·", "medium": "○", "hard": "●"}
+
+
+def _format_match_line(m: ComplexityMatch, *, width: int = 20) -> str:
+    mark = _LEVEL_MARK.get(m.level, "?")
+    return f"    {mark} {m.name:<{width}}  {m.level}"
 
 
 def _diagnose(snap: EvalSnapshot, expected_tier: int) -> str:
-    """One-line summary of why this query landed below expected_tier."""
-    if snap.request_difficulty is not None and snap.tier_band:
+    """One-line summary of why this query landed where it did."""
+    if snap.matched_band:
+        n_hard = sum(1 for m in snap.matches if m.level == "hard")
+        n_med = sum(1 for m in snap.matches if m.level == "medium")
+        n_none = sum(1 for m in snap.matches if m.level in ("none", "easy"))
         return (
-            f"DIAGNOSIS: request_difficulty={snap.request_difficulty:.3f} → "
-            f"{snap.tier_band}; expected ≥tier{expected_tier}."
+            f"DIAGNOSIS: {n_hard} hard / {n_med} medium / {n_none} none → "
+            f"{snap.matched_band}; expected ≥tier{expected_tier}."
         )
-    above = [s for s in snap.signals if s.above_threshold]
-    if not snap.signals:
+    if not snap.matches:
         return ""
-    if not above:
+    n_hard = sum(1 for m in snap.matches if m.level == "hard")
+    if n_hard == 0:
         return (
-            "DIAGNOSIS: no complexity signal above threshold — "
-            "exemplar gap on the hard side, not a cutoff issue."
+            "DIAGNOSIS: no signal matched at :hard — either the hard-side "
+            "exemplars don't cover this query shape, or the signal threshold "
+            "is set too high to clear."
         )
-    return (
-        f"DIAGNOSIS: {len(above)}/{len(snap.signals)} signal(s) above threshold; "
-        f"projected difficulty was still below the cutoff for tier{expected_tier}."
-    )
+    return ""
 
 
 def render_query_scores(
@@ -235,20 +218,21 @@ def render_query_scores(
         f"  {query_id}  expected≥{expected_tier}  routed→{routed_tier or '?'}",
         f'    "{short_prompt}"',
     ]
-    if not snap.signals and snap.request_difficulty is None:
-        lines.append("    (no signal scores parsed; see raw output)")
+
+    if not snap.matches and not snap.matched_band:
+        lines.append("    (no routing trace parsed; see raw output)")
         return "\n".join(lines)
 
-    if snap.request_difficulty is not None:
-        band = snap.tier_band or "?"
-        lines.append(
-            f"    request_difficulty={snap.request_difficulty:.3f}   band={band}"
-        )
+    if snap.matched_band or snap.decision:
+        band = snap.matched_band or "?"
+        decision = snap.decision or "?"
+        lines.append(f"    band={band}   decision={decision}")
 
-    # Order: closest to flipping (smallest negative gap) first.
-    signals_sorted = sorted(snap.signals, key=lambda s: -s.gap)
-    for s in signals_sorted:
-        lines.append(_format_signal_line(s))
+    # Order: strongest match first so the hard signals stand out.
+    level_rank = {"hard": 0, "medium": 1, "easy": 2, "none": 3}
+    matches_sorted = sorted(snap.matches, key=lambda m: (level_rank.get(m.level, 99), m.name))
+    for m in matches_sorted:
+        lines.append(_format_match_line(m))
 
     diag = _diagnose(snap, expected_tier)
     if diag:
@@ -267,7 +251,7 @@ async def report_scores(
     if not misroutes:
         return "No misroutes — nothing to score."
 
-    lines = [f"Per-signal scores for {len(misroutes)} misroute(s):\n"]
+    lines = [f"Per-query routing trace for {len(misroutes)} misroute(s):\n"]
 
     raw_dump_printed = False
     for m in misroutes:
@@ -288,7 +272,7 @@ async def report_scores(
 
         # If the first response yielded nothing parseable, dump it raw so we
         # can see the actual schema and adapt the parser.
-        if not snap.signals and snap.request_difficulty is None and not raw_dump_printed:
+        if not snap.matches and not snap.matched_band and not raw_dump_printed:
             lines.append("Raw response for first misroute (schema discovery):")
             lines.append(json.dumps(data, indent=2)[:2000])
             lines.append("")

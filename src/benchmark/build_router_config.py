@@ -234,26 +234,48 @@ def _emit_complexity_signal(sig: dict) -> dict:
     return out
 
 
-def _emit_difficulty_score(signals: list[dict]) -> dict:
-    """`routing.projections.scores.request_difficulty` — weighted_sum of
-    each complexity signal's HARD-side confidence.
+# A `:medium` match contributes half a `:hard` match's weight. Mirrors the
+# canonical ratio in upstream config/config.yaml (0.18 medium / 0.36 hard).
+# A given signal matches at ONE level per query (medium and hard are
+# mutually exclusive per `matched_signals`), so per-signal contribution
+# stays ≤ weight and total request_difficulty stays bounded in [0, 1] as
+# long as the per-signal weights themselves sum to ≤ 1.0.
+MEDIUM_WEIGHT_FACTOR = 0.5
 
-    Per the upstream canonical config (config/config.yaml in
-    vllm-project/semantic-router), complexity-input references in a
-    weighted_sum take the form `<signal_id>:hard` (or `:medium`), not
-    just `<signal_id>`. With value_source=confidence, the runtime uses
-    the matched signal's confidence or 0 when it didn't match — so we
-    pull the HARD side, which represents "this query is hard".
+
+def _emit_difficulty_score(signals: list[dict]) -> dict:
+    """`routing.projections.scores.request_difficulty` — weighted_sum
+    over each complexity signal's `:medium` and `:hard` matches.
+
+    Schema notes (per upstream vllm-project/semantic-router config.yaml):
+      • Complexity inputs reference `<signal_id>:hard` or `<signal_id>:medium`,
+        not bare `<signal_id>`. The bare form binds to nothing → silent 0.
+      • `value_source: confidence` uses the matched signal's confidence,
+        or 0 when the signal did not match at that level.
+      • For a given query, a signal matches at exactly ONE level
+        (observed empirically: `matched_signals.complexity` and
+        `unmatched_signals.complexity` are disjoint per level).
+
+    We include both `:medium` (half weight) and `:hard` (full weight) so
+    queries that are "kind of hard but not extreme" still pull the
+    projected score up — exactly the behavior that 100% of misroutes to
+    T1 revealed missing when only `:hard` was wired up.
     """
-    inputs = [
-        {
+    inputs: list[dict[str, Any]] = []
+    for sig in signals:
+        weight = float(sig.get("weight", 0.0))
+        inputs.append({
+            "type": "complexity",
+            "name": f"{sig['id']}:medium",
+            "weight": weight * MEDIUM_WEIGHT_FACTOR,
+            "value_source": "confidence",
+        })
+        inputs.append({
             "type": "complexity",
             "name": f"{sig['id']}:hard",
-            "weight": float(sig.get("weight", 0.0)),
+            "weight": weight,
             "value_source": "confidence",
-        }
-        for sig in signals
-    ]
+        })
     return {
         "name": "request_difficulty",
         "method": "weighted_sum",

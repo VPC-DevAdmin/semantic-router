@@ -1,105 +1,102 @@
-"""Tests for the per-signal scores diagnostic.
+"""Tests for the per-query routing-trace diagnostic.
 
-Uses the v0.3 projections-design eval response shape — three complexity
-signals (`needs_reasoning`, `needs_expertise`, `needs_judgment`) each with
-a `threshold: 0.55`, optionally plus the projected `request_difficulty`
-score and matched `tier_band`. See the parser docstring in
-`src/benchmark/scores.py` for the full schema.
+Uses the observed real-world vllm-sr v0.3 eval-response shape. The
+parser pulls the routing decision trace out of `decision_result`:
+`matched_signals.complexity[]` carries entries like `<signal>:<level>`,
+`unmatched_signals.complexity[]` carries bare `<signal>` for signals
+that didn't match at any level on this query, and
+`matched_signals.projection[]` carries the winning band name.
 """
 from __future__ import annotations
 
 from benchmark.scores import (
-    SIGNAL_THRESHOLD,
+    ComplexityMatch,
     EvalSnapshot,
-    SignalScore,
     parse_eval_response,
 )
 
-# A trimmed eval response for "What is inflation?" under the projections design.
+# A trimmed real eval response captured from `vllm-sr eval --json` on a
+# hard-but-not-frontier query: matched at :medium across all three signals,
+# projection landed in tier1_band.
 SAMPLE_RESPONSE: dict = {
-    "original_text": "What is inflation?",
+    "original_text": "Here's a Go function that implements a cache ...",
     "decision_result": {
-        "decision_name": "route_tier2",
-    },
-    "signal_values": {
-        # Main + sub-keys for each signal — parser keeps only the main.
-        "embedding:needs_reasoning": 0.436,
-        "embedding:needs_reasoning:best": 0.436,
-        "embedding:needs_reasoning:support": 0.435,
-        "embedding:needs_reasoning:prototype_count": 8,
-        "embedding:needs_expertise": 0.576,
-        "embedding:needs_expertise:best": 0.581,
-        "embedding:needs_expertise:support": 0.564,
-        "embedding:needs_expertise:prototype_count": 8,
-        "embedding:needs_judgment": 0.476,
-        "embedding:needs_judgment:best": 0.479,
-        "embedding:needs_judgment:support": 0.470,
-        "embedding:needs_judgment:prototype_count": 8,
-        # Projected outputs (may or may not be present in real responses).
-        "projection:request_difficulty": 0.494,
-        "mapping:tier_band": "tier3_band",
+        "decision_name": "route_tier1",
+        "used_signals": {"projection": ["tier1_band"]},
+        "matched_signals": {
+            "complexity": [
+                "needs_reasoning:medium",
+                "needs_expertise:medium",
+                "needs_judgment:medium",
+            ],
+            "projection": ["tier1_band"],
+        },
+        "unmatched_signals": {
+            "complexity": [
+                "needs_reasoning",
+                "needs_expertise",
+                "needs_judgment",
+            ],
+            "projection": ["tier2_band", "tier3_band", "tier4_band", "tier5_band"],
+        },
     },
 }
 
 
-def test_signal_score_gap_and_above_threshold() -> None:
-    s = SignalScore(name="needs_reasoning", score=0.60, threshold=0.55)
-    assert abs(s.gap - 0.05) < 1e-6
-    assert s.above_threshold is True
-
-    s2 = SignalScore(name="needs_judgment", score=0.40, threshold=0.55)
-    assert s2.gap < 0
-    assert s2.above_threshold is False
-
-
-def test_parse_eval_response_extracts_main_scores_only() -> None:
-    """Sub-keys (`:best`, `:support`, `:prototype_count`) are not signals."""
+def test_parse_eval_response_extracts_complexity_levels() -> None:
     snap = parse_eval_response(SAMPLE_RESPONSE)
-    names = {s.name for s in snap.signals}
-    assert names == {"needs_reasoning", "needs_expertise", "needs_judgment"}
+    by_name = {m.name: m.level for m in snap.matches}
+    assert by_name == {
+        "needs_reasoning": "medium",
+        "needs_expertise": "medium",
+        "needs_judgment": "medium",
+    }
 
 
-def test_parse_eval_response_assigns_single_threshold() -> None:
-    """Under projections, every complexity signal shares one threshold."""
+def test_parse_eval_response_extracts_decision_and_band() -> None:
     snap = parse_eval_response(SAMPLE_RESPONSE)
-    for s in snap.signals:
-        assert s.threshold == SIGNAL_THRESHOLD
+    assert snap.decision == "route_tier1"
+    assert snap.matched_band == "tier1_band"
 
 
-def test_parse_eval_response_surfaces_projection_outputs() -> None:
-    """When the response includes the projected score and matched band,
-    the parser must surface them so the report can show what actually
-    drove the routing decision."""
-    snap = parse_eval_response(SAMPLE_RESPONSE)
-    assert snap.request_difficulty is not None
-    assert abs(snap.request_difficulty - 0.494) < 1e-6
-    assert snap.tier_band == "tier3_band"
-
-
-def test_parse_eval_response_tolerates_missing_projection_outputs() -> None:
-    """Older vllm-sr builds may not echo back the projection outputs.
-    The parser must still return signal scores in that case."""
+def test_parse_eval_response_marks_unmatched_as_none() -> None:
+    """A signal listed bare in unmatched_signals.complexity matched at no level."""
     data = {
-        "signal_values": {
-            "embedding:needs_reasoning": 0.30,
-            "embedding:needs_expertise": 0.40,
-            "embedding:needs_judgment": 0.50,
+        "decision_result": {
+            "decision_name": "route_tier1",
+            "matched_signals": {
+                "complexity": ["needs_reasoning:hard"],
+                "projection": ["tier1_band"],
+            },
+            "unmatched_signals": {
+                "complexity": ["needs_expertise", "needs_judgment"],
+            },
         },
     }
     snap = parse_eval_response(data)
-    assert len(snap.signals) == 3
-    assert snap.request_difficulty is None
-    assert snap.tier_band is None
+    by_name = {m.name: m.level for m in snap.matches}
+    assert by_name == {
+        "needs_reasoning": "hard",
+        "needs_expertise": "none",
+        "needs_judgment": "none",
+    }
 
 
-def test_parse_eval_response_handles_missing_signal_values() -> None:
-    snap = parse_eval_response({"decision_result": {}})
-    assert snap == EvalSnapshot(signals=[], request_difficulty=None, tier_band=None)
+def test_complexity_match_is_match_property() -> None:
+    assert ComplexityMatch("x", "hard").is_match is True
+    assert ComplexityMatch("x", "medium").is_match is True
+    assert ComplexityMatch("x", "easy").is_match is False
+    assert ComplexityMatch("x", "none").is_match is False
+
+
+def test_parse_eval_response_handles_missing_decision_result() -> None:
+    snap = parse_eval_response({})
+    assert snap == EvalSnapshot(matches=[], decision=None, matched_band=None)
 
 
 def test_parse_eval_response_handles_non_dict() -> None:
     for bad in ("oops", None, []):
         snap = parse_eval_response(bad)
-        assert snap.signals == []
-        assert snap.request_difficulty is None
-        assert snap.tier_band is None
+        assert snap.matches == []
+        assert snap.decision is None
+        assert snap.matched_band is None
