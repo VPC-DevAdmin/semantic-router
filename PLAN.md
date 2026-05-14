@@ -412,15 +412,22 @@ not `/v1/chat/completions`. Replaced with `tools/oai_mock.py`.
   (endpoint + router_backend_refs + backend.kind). `make start_LLM` /
   `make stop_LLM` wraps the T2 dual-replica docker-run procedure via the
   `backend.kind` dispatcher in `src/benchmark/start_llm.py`.
+- ~~**Router config emits real v0.3 schema.**~~ `build_router_config.py`
+  rewritten to produce `routing.signals.embeddings[]` (two per axis:
+  `<axis>_hard` and `<axis>_easy`) and `routing.decisions[]` with v0.3
+  AND/OR/NOT composition, plus `providers.models[].backend_refs[]` for
+  both OAI-compatible and Anthropic backends. Band-based exemplars file
+  is unchanged (it's the audience-facing artifact); the builder does the
+  band → Boolean translation. All 27 band combinations still reach all
+  5 tiers per the routing test.
 
 ## 14. Known open design questions
 
-- **Envoy route generation in `vllm-sr serve`.** What field in
-  `config/router-config.yaml`'s `listeners` block drives the auto-generated
-  Envoy `route_config.virtual_hosts[].routes`? The minimal upstream
-  example we modeled ours on may have omitted required fields. Confirm by
-  inspecting `.vllm-sr/envoy.yaml` and the upstream's 1,254-line reference
-  config.
+- **Embedding thresholds.** The builder emits `threshold: 0.5` for every
+  embedding signal by default. v0.3 embeddings give a raw similarity score;
+  0.5 is a reasonable starting point but will need tuning once we see what
+  the 110-query set actually matches. Override per-axis via
+  `threshold_hard` / `threshold_easy` in `router-exemplars.yaml`.
 - **Docker networking from router to backend on Linux.**
   `host.docker.internal:8810` works on Docker Desktop but may need
   `--add-host=host.docker.internal:host-gateway` on Linux. If not, the
