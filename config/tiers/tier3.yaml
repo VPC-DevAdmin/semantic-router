@@ -2,7 +2,7 @@
 
 name: tier3
 level: 3
-specializations: [general, coding, math]
+specializations: [general, coding, math, creative_writing]
 timeout_s: 120
 
 router_alias: tier3

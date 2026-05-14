@@ -2,7 +2,7 @@
 
 name: tier4
 level: 4
-specializations: [general, coding, math, reasoning]
+specializations: [general, coding, math, reasoning, creative_writing]
 timeout_s: 180
 
 router_alias: tier4
