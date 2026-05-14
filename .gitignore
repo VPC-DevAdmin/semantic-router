@@ -25,6 +25,8 @@ benchmark.db-shm
 config/*.local.yaml
 .env
 .env.*
+# Template file is the committed reference for what .env should contain.
+!.env.example
 
 # Runtime logs
 logs/

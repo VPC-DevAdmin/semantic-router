@@ -16,6 +16,40 @@ from benchmark.config import (
 ROOT = Path(__file__).parent.parent
 
 
+def test_tier_env_overrides_win_over_yaml(monkeypatch) -> None:
+    """`.env`-style overrides should beat YAML defaults for every tier."""
+    monkeypatch.setenv("TIER4_URL", "https://test.example.com/v1")
+    monkeypatch.setenv("TIER4_MODEL", "claude-test-model-id")
+    monkeypatch.setenv("TIER4_API_KEY", "test-key-value")
+    m = load_models(ROOT / "config" / "tiers")
+    t4 = m.by_level(4)
+    assert t4.endpoint.url == "https://test.example.com/v1"
+    assert t4.served_model_name == "claude-test-model-id"
+    # api_key_env should be set to the env-var NAME, not the value itself.
+    # Downstream readers do os.environ[api_key_env] to get the real key.
+    assert t4.endpoint.api_key_env == "TIER4_API_KEY"
+
+
+def test_tier_env_overrides_ignore_blank(monkeypatch) -> None:
+    """Empty `TIER{N}_*` env vars should NOT override the YAML defaults.
+
+    Otherwise shipping `TIER3_URL=` in `.env.example` would silently
+    blank out tier3.yaml's url.
+    """
+    # Capture the YAML default before any override is applied.
+    baseline = load_models(ROOT / "config" / "tiers").by_level(4)
+    yaml_url = baseline.endpoint.url
+    yaml_model = baseline.served_model_name
+
+    monkeypatch.setenv("TIER4_URL", "")
+    monkeypatch.setenv("TIER4_MODEL", "   ")  # whitespace-only also ignored
+    monkeypatch.setenv("TIER4_API_KEY", "")
+    m = load_models(ROOT / "config" / "tiers")
+    t4 = m.by_level(4)
+    assert t4.endpoint.url == yaml_url
+    assert t4.served_model_name == yaml_model
+
+
 def test_tier_yamls_parse() -> None:
     m = load_models(ROOT / "config" / "tiers")
     assert len(m.tiers) >= 5

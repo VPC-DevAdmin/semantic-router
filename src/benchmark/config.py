@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -165,11 +166,58 @@ def _read_yaml(path: Path) -> Any:
         return yaml.safe_load(f)
 
 
+def apply_tier_env_overrides(tier: TierConfig) -> TierConfig:
+    """Override endpoint URL / model id / API key from `TIER{N}_*` env vars.
+
+    Lets `.env` be the single user-facing place to flip per-tier endpoint
+    settings without editing YAMLs. Three env vars per tier level N:
+
+      TIER{N}_URL      → tier.endpoint.url
+      TIER{N}_MODEL    → tier.served_model_name
+      TIER{N}_API_KEY  → tier.endpoint.api_key_env = "TIER{N}_API_KEY"
+                         (the actual key value stays in the env var; this
+                          field just records its NAME for downstream readers
+                          to look up via os.environ.)
+
+    Empty or unset env vars are ignored (the YAML default wins). This means
+    .env.example can ship with empty placeholders that don't accidentally
+    override the YAML defaults.
+
+    Mutates and returns the same TierConfig (pydantic models are mutable
+    by default).
+    """
+    n = tier.level
+    url_var = f"TIER{n}_URL"
+    model_var = f"TIER{n}_MODEL"
+    key_var = f"TIER{n}_API_KEY"
+
+    url = os.environ.get(url_var, "").strip()
+    if url:
+        tier.endpoint.url = url
+
+    model = os.environ.get(model_var, "").strip()
+    if model:
+        tier.served_model_name = model
+
+    # For the key: only set api_key_env if the env var has a non-empty value.
+    # That way a blank TIER3_API_KEY= in .env doesn't override a YAML that
+    # explicitly references a different env var.
+    key = os.environ.get(key_var, "").strip()
+    if key:
+        tier.endpoint.api_key_env = key_var
+
+    return tier
+
+
 def load_tiers(tiers_dir: Path) -> ModelsConfig:
     """Load every `*.yaml` in `tiers_dir` as one TierConfig; sort by level.
 
     This is the single source of truth for tier configuration. Files named
     starting with `_` are skipped (reserved for partials / templates).
+
+    After loading each tier, `TIER{N}_URL`/`TIER{N}_MODEL`/`TIER{N}_API_KEY`
+    env vars (if set and non-empty) override the corresponding YAML fields
+    — so .env is the single place to flip endpoint config across tiers.
     """
     tiers: list[TierConfig] = []
     paths = sorted(p for p in tiers_dir.glob("*.yaml") if not p.name.startswith("_"))
@@ -184,6 +232,7 @@ def load_tiers(tiers_dir: Path) -> ModelsConfig:
         if tier.level in seen_levels:
             raise ValueError(f"duplicate tier level {tier.level} in {path}")
         seen_levels.add(tier.level)
+        apply_tier_env_overrides(tier)
         tiers.append(tier)
     tiers.sort(key=lambda t: t.level)
     return ModelsConfig(tiers=tiers)

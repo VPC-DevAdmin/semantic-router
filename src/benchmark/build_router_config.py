@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -163,6 +164,36 @@ def _validate_exemplars(ex: dict, eval_prompts: set[str] | None = None) -> None:
                         f"{len(overlap)} prompts that overlap the eval set; "
                         f"this would contaminate the demo. Example: {next(iter(overlap))!r}"
                     )
+
+
+def _apply_backend_env_overrides(be: dict) -> None:
+    """Same env-override layer used by config.apply_tier_env_overrides, but
+    for the router-backends.yaml schema.
+
+    For each tier id `tier{N}`, TIER{N}_URL / TIER{N}_MODEL / TIER{N}_API_KEY
+    override base_url / model / api_key_env if set and non-empty. .env is
+    the single user-facing place for per-tier endpoint config.
+    """
+    backends = be.get("backends") or {}
+    for tier_id, cfg in backends.items():
+        if not (isinstance(tier_id, str) and tier_id.startswith("tier")):
+            continue
+        suffix = tier_id[len("tier"):]
+        if not suffix.isdigit():
+            continue
+        n = suffix
+
+        url = os.environ.get(f"TIER{n}_URL", "").strip()
+        if url:
+            cfg["base_url"] = url
+
+        model = os.environ.get(f"TIER{n}_MODEL", "").strip()
+        if model:
+            cfg["model"] = model
+
+        key = os.environ.get(f"TIER{n}_API_KEY", "").strip()
+        if key:
+            cfg["api_key_env"] = f"TIER{n}_API_KEY"
 
 
 def _validate_backends(be: dict, declared_tier_ids: set[str]) -> None:
@@ -525,6 +556,10 @@ def build(
     """
     ex = yaml.safe_load(exemplars_path.read_text())
     be = yaml.safe_load(backends_path.read_text())
+    # Env overrides: TIER{N}_URL / TIER{N}_MODEL / TIER{N}_API_KEY win
+    # over YAML when set. Lets .env be the single user-facing place to
+    # flip per-tier endpoint config.
+    _apply_backend_env_overrides(be)
 
     eval_prompts: set[str] | None = None
     if eval_set_path:
