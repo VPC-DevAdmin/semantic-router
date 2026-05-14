@@ -30,79 +30,97 @@ VLLM_SR_BINARY = "vllm-sr"
 EVAL_TIMEOUT_S = 30.0
 
 
+# Per-signal thresholds we set in router-exemplars.yaml. The eval response
+# doesn't echo these back, so we hardcode here. Update if the YAML changes.
+HARD_THRESHOLD = 0.42
+EASY_THRESHOLD = 0.50
+
+
 @dataclass
 class SignalScore:
-    name: str         # e.g. "reasoning_hard"
-    score: float
-    threshold: float
-    matched: bool
+    name: str                  # e.g. "reasoning_hard"
+    score: float               # raw embedding similarity from vllm-sr
+    threshold: float           # our config threshold for this signal
+    matched_by_router: bool    # whether vllm-sr's matched_signals lists this signal
 
     @property
     def gap(self) -> float:
-        """Positive when above threshold (matched), negative when below (missed)."""
+        """Positive when score is above our threshold, negative when below.
+
+        Note: this is "would match if threshold were the only criterion."
+        vllm-sr appears to use a single-winner policy in practice — see
+        `matched_by_router` for the runtime's verdict.
+        """
         return self.score - self.threshold
 
+    @property
+    def above_threshold(self) -> bool:
+        return self.score >= self.threshold
 
-def _coerce_score(raw: Any) -> SignalScore | None:
-    """Tolerate several possible per-signal JSON shapes.
 
-    Known/guessed shapes we try:
-      {name, score, threshold, matched}
-      {signal, confidence, threshold, ...}
-      {name, value, threshold, matched}
-      "embedding:reasoning_hard: 0.41 / threshold 0.42"  (string form, unlikely but safe)
-    """
-    if not isinstance(raw, dict):
-        return None
-    name = raw.get("name") or raw.get("signal") or raw.get("rule")
-    score = raw.get("score") or raw.get("confidence") or raw.get("value")
-    threshold = raw.get("threshold")
-    matched = raw.get("matched")
-    if name is None or score is None or threshold is None:
-        return None
-    return SignalScore(
-        name=str(name),
-        score=float(score),
-        threshold=float(threshold),
-        matched=bool(matched) if matched is not None else (float(score) >= float(threshold)),
-    )
+def _threshold_for(signal_name: str) -> float:
+    return HARD_THRESHOLD if signal_name.endswith("_hard") else EASY_THRESHOLD
 
 
 def parse_eval_response(data: Any) -> list[SignalScore]:
-    """Walk the response looking for signal-score-shaped objects.
+    """Extract per-signal scores from vllm-sr's eval JSON.
 
-    The upstream schema may put scores at any of several keys. We look at
-    a few common ones, then walk anything list-shaped that we can coerce.
+    Real shape (vllm-sr v0.3, observed):
+      {
+        "signal_values": {
+          "embedding:reasoning_hard": 0.436,
+          "embedding:reasoning_hard:best": 0.437,
+          "embedding:reasoning_hard:support": 0.435,
+          "embedding:reasoning_hard:prototype_count": 8,
+          "embedding:reasoning_easy": 0.573,
+          ... (one main + 3 sub-keys per signal)
+        },
+        "matched_signals": {"embeddings": ["expertise_easy"]},
+        "decision_result": {...},
+        ...
+      }
+
+    We pull the main score (the unsuffixed `embedding:<name>` key) for each
+    signal, look up our config threshold, and note whether vllm-sr's
+    matched_signals lists it.
     """
     if not isinstance(data, dict):
         return []
 
-    candidates: list[Any] = []
-    for key in ("signal_confidences", "signals", "rules", "rule_evaluations", "confidences"):
-        val = data.get(key)
-        if isinstance(val, list):
-            candidates.extend(val)
-        elif isinstance(val, dict):
-            # Maybe nested: {"signals": {"used": [...], "matched": [...]}}
-            for sub in val.values():
-                if isinstance(sub, list):
-                    candidates.extend(sub)
+    signal_values = data.get("signal_values")
+    if not isinstance(signal_values, dict):
+        return []
+
+    # Build "main score per signal" map. Skip sub-keys (`:best`, `:support`,
+    # `:prototype_count`) which appear alongside the main score.
+    scores: dict[str, float] = {}
+    for key, val in signal_values.items():
+        if not (isinstance(key, str) and key.startswith("embedding:")):
+            continue
+        if not isinstance(val, int | float):
+            continue
+        suffix = key[len("embedding:"):]
+        if ":" in suffix:
+            continue
+        scores[suffix] = float(val)
+
+    # Which signals does vllm-sr's runtime consider "matched"?
+    matched_set: set[str] = set()
+    matched_signals = data.get("matched_signals", {})
+    if isinstance(matched_signals, dict):
+        emb_matched = matched_signals.get("embeddings")
+        if isinstance(emb_matched, list):
+            matched_set = {str(s) for s in emb_matched}
 
     out: list[SignalScore] = []
-    for c in candidates:
-        coerced = _coerce_score(c)
-        if coerced is not None:
-            out.append(coerced)
-
-    # Deduplicate by name (some shapes may repeat in matched + used lists).
-    seen: set[str] = set()
-    unique: list[SignalScore] = []
-    for s in out:
-        if s.name in seen:
-            continue
-        seen.add(s.name)
-        unique.append(s)
-    return unique
+    for name, score in scores.items():
+        out.append(SignalScore(
+            name=name,
+            score=score,
+            threshold=_threshold_for(name),
+            matched_by_router=(name in matched_set),
+        ))
+    return out
 
 
 async def fetch_eval(
@@ -152,13 +170,38 @@ async def fetch_eval(
         ) from e
 
 
-def _format_signal_line(s: SignalScore, *, width: int = 24) -> str:
+def _format_signal_line(s: SignalScore, *, width: int = 20) -> str:
     sign = "+" if s.gap >= 0 else "-"
-    marker = "✓" if s.matched else "·"
+    above_marker = "✓" if s.above_threshold else "·"
+    # Two pieces of info: whether the score is above our config threshold,
+    # AND whether vllm-sr's runtime put this signal in matched_signals.
+    # These often disagree — that's the point of showing both.
+    router_tag = "ROUTER-MATCHED" if s.matched_by_router else ""
     return (
-        f"    {marker} {s.name:<{width}}  score={s.score:.3f}  "
-        f"threshold={s.threshold:.3f}  gap={sign}{abs(s.gap):.3f}"
-    )
+        f"    {above_marker} {s.name:<{width}}  score={s.score:.3f}  "
+        f"threshold={s.threshold:.3f}  gap={sign}{abs(s.gap):.3f}  {router_tag}"
+    ).rstrip()
+
+
+def _diagnose(signals: list[SignalScore]) -> str:
+    """One-line summary of where this misroute sits, threshold-wise vs router-wise."""
+    above = [s for s in signals if s.above_threshold]
+    matched = [s for s in signals if s.matched_by_router]
+    hard_above = [s for s in above if s.name.endswith("_hard")]
+
+    if not above:
+        return "DIAGNOSIS: no signal above threshold — exemplar gap, not a threshold issue."
+    if hard_above and not any(s.matched_by_router for s in hard_above):
+        return (
+            f"DIAGNOSIS: {len(hard_above)} hard signal(s) above threshold but vllm-sr "
+            f"matched only {sorted({s.name for s in matched})} — single-winner semantics."
+        )
+    if matched and not any(s.name.endswith("_hard") for s in matched):
+        return (
+            "DIAGNOSIS: router matched an easy signal as winner; hard signals were "
+            "outscored even though some are above threshold."
+        )
+    return ""
 
 
 def render_query_scores(
@@ -187,6 +230,10 @@ def render_query_scores(
     signals_sorted = sorted(signals, key=lambda s: -s.gap)
     for s in signals_sorted:
         lines.append(_format_signal_line(s))
+
+    diag = _diagnose(signals)
+    if diag:
+        lines.append(f"    {diag}")
     return "\n".join(lines)
 
 
