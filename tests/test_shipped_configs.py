@@ -76,6 +76,53 @@ def test_openai_https_backend_emits_provider_openai(monkeypatch, tmp_path) -> No
     assert "protocol" not in ref
 
 
+def test_google_oai_compat_backend_emits_provider_openai(monkeypatch) -> None:
+    """Google Gemini's OAI-compatible endpoint should flow through the
+    same `provider: openai` + Bearer-auth path as OpenAI itself, since
+    Google designed that endpoint to be OAI-format-equivalent."""
+    monkeypatch.setenv(
+        "TIER3_URL", "https://generativelanguage.googleapis.com/v1beta/openai"
+    )
+    monkeypatch.setenv("TIER3_MODEL", "gemini-2.5-flash")
+    monkeypatch.setenv("TIER3_API_KEY", "AIza-test")
+    from benchmark.build_router_config import build
+    cfg = build(
+        exemplars_path=ROOT / "config" / "router-exemplars.yaml",
+        backends_path=ROOT / "config" / "router-backends.yaml",
+        eval_set_path=None,
+    )
+    t3 = next(m for m in cfg["providers"]["models"] if m["name"] == "tier3")
+    assert t3["provider_model_id"] == "gemini-2.5-flash"
+    assert t3["api_format"] == "openai"
+    ref = t3["backend_refs"][0]
+    assert ref["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+    assert ref["provider"] == "openai"
+    assert ref["auth_header"] == "Authorization"
+    assert ref["auth_prefix"] == "Bearer"
+    assert ref["api_key_env"] == "TIER3_API_KEY"
+
+
+def test_anthropic_backend_still_takes_anthropic_path(monkeypatch) -> None:
+    """Sanity: anthropic.com URLs route through the Anthropic adapter,
+    not the generic openai HTTPS path. The Anthropic adapter handles the
+    OAI→Anthropic shape translation."""
+    monkeypatch.setenv("TIER4_URL", "https://api.anthropic.com/v1")
+    monkeypatch.setenv("TIER4_MODEL", "claude-sonnet-4-5")
+    monkeypatch.setenv("TIER4_API_KEY", "sk-ant-test")
+    from benchmark.build_router_config import build
+    cfg = build(
+        exemplars_path=ROOT / "config" / "router-exemplars.yaml",
+        backends_path=ROOT / "config" / "router-backends.yaml",
+        eval_set_path=None,
+    )
+    t4 = next(m for m in cfg["providers"]["models"] if m["name"] == "tier4")
+    assert t4["api_format"] == "anthropic"
+    ref = t4["backend_refs"][0]
+    assert ref["provider"] == "anthropic"
+    # Anthropic adapter strips the /v1 suffix; vllm-sr appends it itself.
+    assert ref["base_url"] == "https://api.anthropic.com"
+
+
 def test_tier_yamls_parse() -> None:
     m = load_models(ROOT / "config" / "tiers")
     assert len(m.tiers) >= 5
