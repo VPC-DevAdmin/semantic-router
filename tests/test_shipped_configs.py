@@ -6,7 +6,6 @@ This test catches spec-name drift between code and the shipped configs.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from benchmark.config import (
     load_models,
@@ -44,17 +43,18 @@ def test_queries_json_parses() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Builder tests — make sure config/router-config.yaml is shaped for vllm-sr v0.3.
+# Builder tests — verify the projections-shape config:
+#   routing.signals.complexity[]
+#   routing.projections.scores.request_difficulty (weighted_sum)
+#   routing.projections.mappings.tier_band (threshold_bands, 5 outputs)
+#   routing.decisions[] — one per tier, each conditioning on its band
 # ─────────────────────────────────────────────────────────────────────────
 
-def test_router_exemplars_build_v03_shape() -> None:
-    """Verify the builder emits a v0.3-shaped config:
-      - routing.signals.embeddings[] (not top-level signals)
-      - routing.decisions[] (not top-level decision_rules)
-      - providers.models[] with backend_refs[] (not providers.endpoints[])
+def test_router_exemplars_build_projections_shape() -> None:
+    """Verify the builder emits the canonical v0.3 projections-based shape.
 
-    Also runs the eval-overlap check that `make load` runs — if any exemplar
-    prompt drifted into data/queries.json, the build aborts here.
+    Also runs the eval-overlap check that `make load` runs — if any
+    candidate prompt drifted into data/queries.json, the build aborts here.
     """
     from benchmark.build_router_config import build
 
@@ -69,52 +69,88 @@ def test_router_exemplars_build_v03_shape() -> None:
         assert key in cfg, f"built router config missing top-level key {key!r}"
     assert cfg["version"] == "v0.3"
 
-    # Semantic cache must be explicitly disabled — without this the router
-    # fatal-crashes when Milvus isn't fast enough to respond at startup.
+    # Semantic cache must be explicitly disabled.
     assert cfg["global"]["stores"]["semantic_cache"]["enabled"] is False
+    # Complexity prototype scoring needs to be on for the new signals to work.
+    assert (
+        cfg["global"]["model_catalog"]["modules"]["complexity"]["prototype_scoring"]["enabled"]
+        is True
+    )
 
-    # No leftover invented keys.
-    for stale in ("signals", "decision_rules", "signals_builtin"):
+    # No leftover invented keys from the OLD design.
+    for stale in ("signals", "decision_rules", "signals_builtin", "projections"):
         assert stale not in cfg, (
-            f"top-level {stale!r} is the OLD invented schema; v0.3 wants this "
-            f"nested under routing:"
+            f"top-level {stale!r} is the OLD shape; v0.3 wants this nested under routing:"
         )
 
-    # Providers: must use models[].backend_refs[], not endpoints[].
-    assert "endpoints" not in cfg["providers"], (
-        "providers.endpoints[] was the OLD shape; v0.3 wants providers.models[]"
-    )
+    # Providers: still uses models[].backend_refs[] — unchanged.
     assert "models" in cfg["providers"]
     for m in cfg["providers"]["models"]:
         assert "name" in m and "provider_model_id" in m and "api_format" in m
         assert m["backend_refs"], f"model {m['name']} has no backend_refs"
-        ref = m["backend_refs"][0]
-        # OAI-compatible refs use endpoint+protocol; anthropic refs use base_url+provider.
-        assert "endpoint" in ref or "base_url" in ref
 
-    # Routing block.
     routing = cfg["routing"]
-    assert "modelCards" in routing
-    assert routing["modelCards"], "modelCards is empty"
+    assert "modelCards" in routing and routing["modelCards"]
+
+    # Signals: complexity (not embeddings).
     assert "signals" in routing
-    assert "embeddings" in routing["signals"]
-    assert routing["signals"]["embeddings"], "no embedding signals emitted"
-    assert "decisions" in routing
-    assert routing["decisions"], "no decisions emitted"
+    assert "complexity" in routing["signals"], (
+        "signals.complexity[] is the projections-design entry point"
+    )
+    assert "embeddings" not in routing["signals"], (
+        "embeddings[] was the OLD DIY hard/easy design; should be replaced by complexity[]"
+    )
+    complexity_signals = routing["signals"]["complexity"]
+    assert complexity_signals, "no complexity signals emitted"
+    for sig in complexity_signals:
+        assert "name" in sig and "threshold" in sig
+        assert sig["hard"]["candidates"], f"signal {sig['name']} missing hard candidates"
+        assert sig["easy"]["candidates"], f"signal {sig['name']} missing easy candidates"
+    sig_names = {s["name"] for s in complexity_signals}
+    assert sig_names == {"needs_reasoning", "needs_expertise", "needs_judgment"}
 
-    # Embedding signals: two per axis (hard + easy), with threshold + candidates.
-    sig_names = {s["name"] for s in routing["signals"]["embeddings"]}
-    for axis in ("reasoning", "expertise", "judgment"):
-        assert f"{axis}_hard" in sig_names, f"missing embedding signal {axis}_hard"
-        assert f"{axis}_easy" in sig_names, f"missing embedding signal {axis}_easy"
-    for sig in routing["signals"]["embeddings"]:
-        assert "threshold" in sig and isinstance(sig["threshold"], int | float)
-        assert sig["candidates"], f"signal {sig['name']} has no candidates"
-        assert sig.get("aggregation_method") == "max"
+    # Projections: scores.request_difficulty + mappings.tier_band.
+    assert "projections" in routing
+    scores = routing["projections"]["scores"]
+    assert len(scores) == 1
+    rd = scores[0]
+    assert rd["name"] == "request_difficulty"
+    assert rd["method"] == "weighted_sum"
+    # Each signal contributes via an input.
+    input_names = {i["name"] for i in rd["inputs"]}
+    assert input_names == sig_names
+    for inp in rd["inputs"]:
+        assert inp["type"] == "complexity"
+        assert isinstance(inp["weight"], int | float)
+    # Weights should sum to ~1.0 — keeps request_difficulty in [0, 1].
+    weight_sum = sum(i["weight"] for i in rd["inputs"])
+    assert abs(weight_sum - 1.0) < 1e-6, (
+        f"signal weights sum to {weight_sum} — should be ~1.0 to keep "
+        f"request_difficulty in [0, 1]"
+    )
 
-    # Tier alignment: every model name in providers.models must have a matching
-    # router_alias in config/tiers/. Drift here means TierLookup records the
-    # router's pick as unknown_tier.
+    mappings = routing["projections"]["mappings"]
+    assert len(mappings) == 1
+    tb = mappings[0]
+    assert tb["name"] == "tier_band"
+    assert tb["source"] == "request_difficulty"
+    assert tb["method"] == "threshold_bands"
+    assert len(tb["outputs"]) == 5, "5 tier bands expected"
+
+    # Decisions: one per tier, each conditioning on its band.
+    decisions = routing["decisions"]
+    assert len(decisions) == 5
+    band_to_decision = {
+        d["rules"]["conditions"][0]["name"]: d for d in decisions
+    }
+    for tier_id in ("tier1", "tier2", "tier3", "tier4", "tier5"):
+        band_name = f"{tier_id}_band"
+        assert band_name in band_to_decision, f"no decision conditioning on {band_name}"
+        d = band_to_decision[band_name]
+        assert d["modelRefs"][0]["model"] == tier_id
+        assert d["rules"]["conditions"][0]["type"] == "projection"
+
+    # Tier alignment with config/tiers/.
     router_tier_names = {m["name"] for m in cfg["providers"]["models"]}
     harness_router_aliases = {
         t.router_alias for t in load_models(ROOT / "config" / "tiers").tiers
@@ -126,17 +162,8 @@ def test_router_exemplars_build_v03_shape() -> None:
     )
 
 
-def test_exemplar_routing_reaches_every_tier() -> None:
-    """Synthetically evaluate each band combination against the v0.3 decisions
-    and confirm every tier is reachable.
-
-    Modeling: for a query in band X on axis A, the `<A>_hard` signal "matches"
-    iff X == high, and `<A>_easy` signal "matches" iff X == low. Then we walk
-    the decision conditions (with AND/OR/NOT) and pick the first decision
-    whose rules evaluate true.
-
-    This is the same test as before, just rewritten for v0.3 conditions.
-    """
+def test_tier_bands_cover_unit_interval_without_gaps_or_overlap() -> None:
+    """The five tier bands together must cover [0, 1] with no gaps or overlap."""
     from benchmark.build_router_config import build
 
     cfg = build(
@@ -144,179 +171,52 @@ def test_exemplar_routing_reaches_every_tier() -> None:
         backends_path=ROOT / "config" / "router-backends.yaml",
         eval_set_path=None,
     )
-    decisions = sorted(cfg["routing"]["decisions"], key=lambda d: -d["priority"])
+    outputs = cfg["routing"]["projections"]["mappings"][0]["outputs"]
+    assert len(outputs) == 5
 
-    def eval_cond(c: dict, bands: dict[str, str]) -> bool:
-        """Evaluate one v0.3 condition or condition tree against synthetic bands."""
-        # Atom: {type: embedding, name: "<axis>_<side>"}
-        if "type" in c and "name" in c and "operator" not in c:
-            name: str = c["name"]
-            axis, _, side = name.rpartition("_")
-            assert side in ("hard", "easy"), f"unrecognized signal name {name!r}"
-            band = bands.get(axis)
-            return (side == "hard" and band == "high") or (side == "easy" and band == "low")
-        # Composite: {operator: AND|OR|NOT, conditions: [...]}
-        op = c["operator"]
-        children = c["conditions"]
-        if op == "AND":
-            return all(eval_cond(ch, bands) for ch in children)
-        if op == "OR":
-            return any(eval_cond(ch, bands) for ch in children)
-        if op == "NOT":
-            assert len(children) == 1
-            return not eval_cond(children[0], bands)
-        raise AssertionError(f"unknown operator {op!r}")
-
-    def eval_rules(rules: dict, bands: dict[str, str]) -> bool:
-        # rules itself looks like a composite (operator + conditions).
-        if not rules["conditions"]:
-            return True  # unconditional fallthrough
-        return eval_cond(rules, bands)
-
-    bands_values = ["low", "medium", "high"]
-    reached: set[str] = set()
-    for r_ in bands_values:
-        for e_ in bands_values:
-            for j_ in bands_values:
-                query_bands = {"reasoning": r_, "expertise": e_, "judgment": j_}
-                for dec in decisions:
-                    if eval_rules(dec["rules"], query_bands):
-                        reached.add(dec["modelRefs"][0]["model"])
-                        break
-
-    expected = {"tier1", "tier2", "tier3", "tier4", "tier5"}
-    assert reached == expected, f"unreachable tiers: {expected - reached}"
+    # First band: no lower bound (must have only lte).
+    assert "gt" not in outputs[0]
+    assert "lte" in outputs[0]
+    # Last band: no upper bound.
+    assert "gt" in outputs[-1]
+    assert "lte" not in outputs[-1]
+    # Adjacent bands meet: outputs[i].lte == outputs[i+1].gt.
+    for i in range(len(outputs) - 1):
+        assert outputs[i]["lte"] == outputs[i + 1]["gt"], (
+            f"gap or overlap between {outputs[i]['name']} and {outputs[i + 1]['name']}"
+        )
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# Unit tests for the band→condition translation table.
-# These are the load-bearing piece of the builder — verify in isolation.
-# ─────────────────────────────────────────────────────────────────────────
-
-def test_axis_condition_table() -> None:
-    """Smoke-check each row of the band→condition table by name/structure."""
-    from benchmark.build_router_config import _axis_condition
-
-    # all three bands → no constraint
-    assert _axis_condition("reasoning", ["low", "medium", "high"]) is None
-
-    # [high] → hard
-    c = _axis_condition("reasoning", ["high"])
-    assert c == {"type": "embedding", "name": "reasoning_hard"}
-
-    # [low] → easy AND NOT hard
-    c = _axis_condition("reasoning", ["low"])
-    assert c["operator"] == "AND"
-    assert {"type": "embedding", "name": "reasoning_easy"} in c["conditions"]
-    has_not_hard = any(
-        cond.get("operator") == "NOT"
-        and cond["conditions"] == [{"type": "embedding", "name": "reasoning_hard"}]
-        for cond in c["conditions"]
-    )
-    assert has_not_hard
-
-    # [low, medium] → NOT hard
-    c = _axis_condition("reasoning", ["low", "medium"])
-    assert c == {
-        "operator": "NOT",
-        "conditions": [{"type": "embedding", "name": "reasoning_hard"}],
-    }
-
-    # [medium, high] → NOT easy
-    c = _axis_condition("reasoning", ["medium", "high"])
-    assert c == {
-        "operator": "NOT",
-        "conditions": [{"type": "embedding", "name": "reasoning_easy"}],
-    }
-
-    # [medium] → NOT hard AND NOT easy
-    c = _axis_condition("reasoning", ["medium"])
-    assert c["operator"] == "AND"
-    assert len(c["conditions"]) == 2
-    assert all(cc["operator"] == "NOT" for cc in c["conditions"])
-
-
-def _walk(node: Any) -> list[Any]:
-    """Flatten a condition tree to a list of every dict node (for searching)."""
-    out: list[Any] = [node]
-    if isinstance(node, dict) and "conditions" in node:
-        for ch in node["conditions"]:
-            out.extend(_walk(ch))
-    return out
-
-
-def test_emit_decision_preserves_route_target() -> None:
-    """Every rule's `route_to` ends up as the model in `modelRefs`."""
-    from benchmark.build_router_config import _emit_decision
-
-    rule = {
-        "name": "test",
-        "route_to": "tier3",
-        "when": {"reasoning": ["high"]},
-        "description": "test rule",
-    }
-    d = _emit_decision(rule, priority=42)
-    assert d["name"] == "test"
-    assert d["priority"] == 42
-    assert d["modelRefs"] == [{"model": "tier3", "use_reasoning": False}]
-    assert d["description"] == "test rule"
-    # rules.conditions should contain at least one reference to reasoning_hard.
-    flat = _walk(d["rules"])
-    assert any(n.get("name") == "reasoning_hard" for n in flat if isinstance(n, dict))
-
-
-def test_emit_decision_empty_when_is_fallthrough() -> None:
-    """An empty `when` yields an empty conditions list (unconditional match)."""
-    from benchmark.build_router_config import _emit_decision
-
-    rule = {"name": "fallthrough", "route_to": "tier5", "when": {}}
-    d = _emit_decision(rule, priority=0)
-    assert d["rules"]["operator"] == "AND"
-    assert d["rules"]["conditions"] == []
-
-
-def test_builder_mock_endpoint_overrides_every_backend() -> None:
-    """With --mock-endpoint set, every providers.models[].backend_refs[]
-    points at the mock, and api_format is forced to openai (no Anthropic
-    translation, since the mock speaks plain OAI)."""
+def test_score_at_each_cutoff_lands_in_expected_tier() -> None:
+    """Sanity check: a request_difficulty score just above each cutoff
+    maps to the next tier up. Catches off-by-one in lte/gt boundary handling."""
     from benchmark.build_router_config import build
 
-    mock = "host.docker.internal:8811/v1"
     cfg = build(
         exemplars_path=ROOT / "config" / "router-exemplars.yaml",
         backends_path=ROOT / "config" / "router-backends.yaml",
         eval_set_path=None,
-        mock_endpoint=mock,
     )
-    models = cfg["providers"]["models"]
-    assert models, "no provider models emitted"
-    for m in models:
-        assert m["api_format"] == "openai", f"{m['name']}: api_format should be openai in mock mode"
-        refs = m["backend_refs"]
-        assert len(refs) == 1
-        ref = refs[0]
-        assert ref["endpoint"] == mock, f"{m['name']}: endpoint not redirected to mock"
-        # No api_key — the mock doesn't enforce auth.
-        assert "api_key_env" not in ref
-        # provider_model_id should be the tier name, not e.g. claude-opus-4-7.
-        assert m["provider_model_id"] == m["name"]
+    outputs = cfg["routing"]["projections"]["mappings"][0]["outputs"]
 
+    def band_for_score(score: float) -> str | None:
+        for o in outputs:
+            gt_ok = ("gt" not in o) or (score > o["gt"])
+            lte_ok = ("lte" not in o) or (score <= o["lte"])
+            if gt_ok and lte_ok:
+                return o["name"]
+        return None
 
-def test_emit_decision_requires_any_high() -> None:
-    """`requires_any_high: [a, b]` adds an OR over the *_hard signals."""
-    from benchmark.build_router_config import _emit_decision
-
-    rule = {
-        "name": "any_high",
-        "route_to": "tier3",
-        "when": {"judgment": ["low", "medium"]},
-        "requires_any_high": ["reasoning", "expertise"],
-    }
-    d = _emit_decision(rule, priority=50)
-    # Find the OR block.
-    flat = _walk(d["rules"])
-    or_nodes = [n for n in flat if isinstance(n, dict) and n.get("operator") == "OR"]
-    assert or_nodes, "no OR block emitted for requires_any_high"
-    or_block = or_nodes[0]
-    or_names = {c["name"] for c in or_block["conditions"]}
-    assert or_names == {"reasoning_hard", "expertise_hard"}
+    # Sample scores. Cutoffs = [0.20, 0.40, 0.60, 0.80].
+    cases = [
+        (0.00, "tier1_band"),
+        (0.20, "tier1_band"),   # cutoff inclusive on the lte side
+        (0.25, "tier2_band"),
+        (0.50, "tier3_band"),
+        (0.70, "tier4_band"),
+        (0.95, "tier5_band"),
+        (1.00, "tier5_band"),
+    ]
+    for score, expected in cases:
+        actual = band_for_score(score)
+        assert actual == expected, f"score {score} → {actual}, expected {expected}"

@@ -2,36 +2,58 @@
 # Router training data — semantic routing demo
 # ═════════════════════════════════════════════════════════════════════════
 #
-# This file is the COMPLETE training data for the semantic router.
-# It contains every exemplar and every routing rule. Nothing else
-# teaches the router how to make decisions.
+# Routing model (projections-based — the canonical vllm-sr v0.3 pattern):
 #
-# Read this top-to-bottom and you know exactly what the router knows.
-# No hidden training set. No fine-tuned weights. No keyword tricks.
+#   1. Each `complexity_signal` below is a contrastive embedding signal
+#      with `hard` and `easy` candidate banks. The router computes a
+#      single confidence in [0, 1] reflecting how "hard-like" each query
+#      looks on that axis.
 #
-# How it works:
-#   1. Each "axis" below defines a contrastive embedding signal.
-#      Exemplars on the `hard` side and the `easy` side get their
-#      embeddings precomputed at router startup.
-#   2. Incoming queries are embedded and compared to both sides
-#      via cosine similarity. The difference becomes a score:
-#      positive = closer to "hard", negative = closer to "easy".
-#   3. Decision rules below combine these scores to pick a tier.
+#   2. Those per-signal confidences are combined via weighted_sum into a
+#      single continuous `request_difficulty` score in [0, 1].
 #
-# To swap in a different training set: edit this file and restart
-# the router. Nothing else needs to change.
+#   3. `tier_cutoffs` partitions that score into 5 mutually-exclusive
+#      bands. Exactly one band fires per query → exactly one tier
+#      decision fires.
 #
+# This replaces the previous hard/easy embedding pair + AND/OR/NOT rule
+# tree, which hit a structural ceiling at ~84% routing accuracy because
+# vllm-sr's matched_signals uses single-winner semantics (only the
+# top-scoring signal counts as matched), making rules that depended on
+# multiple hard signals firing structurally impossible.
+#
+# Tuning surface — both in this file, both human-readable:
+#   • `weight:` per signal — how much each axis contributes to difficulty.
+#   • `tier_cutoffs:` — where to split the score into bands.
+#
+# To swap in a different training set: edit this file and restart the
+# router. Nothing else needs to change.
 # ─────────────────────────────────────────────────────────────────────────
 
-schema_version: 1
-name: "five-tier-complexity-router"
+schema_version: 2
+name: "five-tier-projection-router"
+
+# ═════════════════════════════════════════════════════════════════════════
+# Tier bands — request_difficulty → tier
+# ═════════════════════════════════════════════════════════════════════════
+# Four cutoffs produce five bands along request_difficulty ∈ [0, 1].
+#   score ≤ 0.20            → tier1 (trivial)
+#   0.20 < score ≤ 0.40     → tier2 (workhorse)
+#   0.40 < score ≤ 0.60     → tier3 (heavy technical)
+#   0.60 < score ≤ 0.80     → tier4 (high-stakes judgment)
+#   score > 0.80            → tier5 (frontier)
+#
+# After the first production run, look at the score distribution across
+# the eval set and adjust these cutoffs so the bands match the desired
+# tier mix. Tunable in ONE place.
+tier_cutoffs: [0.20, 0.40, 0.60, 0.80]
 
 # ═════════════════════════════════════════════════════════════════════════
 # Tiers — what we're routing to
 # ═════════════════════════════════════════════════════════════════════════
-# These are logical names. The mapping to actual model endpoints lives
-# in router-backends.yaml. That separation lets us swap model identities
-# (e.g. try a different T2 model) without touching this training file.
+# Logical names. The mapping to actual model endpoints lives in
+# router-backends.yaml. That separation lets us swap model identities
+# without touching this training file.
 
 tiers:
   - id: tier1
@@ -51,48 +73,36 @@ tiers:
     role: "Frontier — needed when a query is BOTH deeply technical AND demands judgment"
 
 # ═════════════════════════════════════════════════════════════════════════
-# Complexity axes — the exemplar banks
+# Complexity signals — the exemplar banks
 # ═════════════════════════════════════════════════════════════════════════
-# Three independent axes of complexity. Each is judged by comparing the
-# query's embedding to two reference sets — `hard` and `easy`.
+# Each signal is a vllm-sr v0.3 `routing.signals.complexity` entry. The
+# router computes a contrastive (hard - easy) score per signal and
+# normalizes it to confidence in [0, 1].
+#
+# `weight` is the signal's contribution to `request_difficulty` in the
+# weighted_sum projection. Weights here sum to 1.0 so the score stays
+# bounded in [0, 1]. Negative weights are valid (a "detractor" signal —
+# e.g. "looks-like-a-factual-lookup" would pull the score down).
 #
 # Design principles (do not violate when editing):
-#   • Exemplars are GENERIC ARCHETYPES, not drawn from any evaluation set.
-#     They describe what hard/easy LOOKS LIKE in general, across domains.
+#   • Exemplars are GENERIC ARCHETYPES, not drawn from the eval set.
 #   • Both sides need to be DIVERSE — a single domain on one side will
-#     bias the signal toward that domain. Below, each side spans 6+
-#     domains (math, code, life sciences, social sciences, humanities,
-#     business, etc.) so the embedding learns the AXIS CONCEPT, not the
-#     domain.
-#   • Aim for ~10–14 exemplars per side. More doesn't help much; fewer
-#     starts to be noisy.
-#   • Exemplars on the `easy` side should still be PLAUSIBLE queries.
-#     Trick exemplars ("asdf qwerty") teach the wrong thing.
-#   • Include a few BORDERLINE exemplars near the threshold — they
-#     teach the model where the line is, not just where the centroids are.
+#     bias the signal toward that domain.
+#   • Aim for ~10–14 exemplars per side. vllm-sr caps internal prototypes
+#     at 8 — more than ~14 yields diminishing return.
+#   • Easy-side exemplars should still be plausible queries (no garbage).
 
-axes:
+complexity_signals:
 
   # ─────────────────────────────────────────────────────────────────────
-  # AXIS 1: Multi-step reasoning
+  # SIGNAL 1: Multi-step reasoning
   # ─────────────────────────────────────────────────────────────────────
-  # Does answering require chaining multiple inferences, or can the
-  # answer be retrieved / produced in one step?
-  - id: reasoning
+  - id: needs_reasoning
     description: "Does this query require multi-step reasoning?"
-    # Per-axis threshold override. v0.3 embedding scores cluster around
-    # 0.35–0.52 in our 110-query set; 0.42 catches "just-missed" matches
-    # without lowering the easy-side bar.
-    threshold_hard: 0.42
-    score_bands:
-      # The score is roughly cosine(query, hard_centroid) − cosine(query, easy_centroid).
-      # Tune these bands if the score distribution looks miscalibrated
-      # after the first run. DO NOT tune them per-query to fix specific failures.
-      low:    { min: -1.00, max: -0.05 }
-      medium: { min: -0.05, max:  0.05 }
-      high:   { min:  0.05, max:  1.00 }
-    exemplars:
-      hard:
+    threshold: 0.55       # used for `matched_signals` reporting; doesn't gate the projection
+    weight: 0.30          # contribution to request_difficulty
+    hard:
+      candidates:
         # Math word problems / probability — chained arithmetic + setup
         - "Three pipes fill a tank — pipe A in 6 hours, B in 8 hours, C empties it in 12 hours. If all run together starting from empty, when is the tank full?"
         - "In a five-card poker hand from a standard deck, what's the probability of being dealt a flush, and how would you derive it?"
@@ -115,7 +125,8 @@ axes:
         - "Five colleagues need to be assigned to three projects under these constraints. Find an assignment or prove none exists."
         # Counterfactual reasoning
         - "If antibiotics had never been discovered, trace the likely course of 20th-century population and economic development."
-      easy:
+    easy:
+      candidates:
         # Trivia / single-step lookups across diverse domains
         - "Which artist painted the Sistine Chapel ceiling?"
         - "Define photosynthesis."
@@ -131,19 +142,14 @@ axes:
         - "Which planet is closest to the sun?"
 
   # ─────────────────────────────────────────────────────────────────────
-  # AXIS 2: Deep domain expertise
+  # SIGNAL 2: Deep domain expertise
   # ─────────────────────────────────────────────────────────────────────
-  # Does the answer require specialist knowledge — vocabulary, internal
-  # mechanics, edge cases — or is general knowledge enough?
-  - id: expertise
+  - id: needs_expertise
     description: "Does this query require deep domain expertise?"
-    threshold_hard: 0.42
-    score_bands:
-      low:    { min: -1.00, max: -0.05 }
-      medium: { min: -0.05, max:  0.05 }
-      high:   { min:  0.05, max:  1.00 }
-    exemplars:
-      hard:
+    threshold: 0.55
+    weight: 0.30
+    hard:
+      candidates:
         # Pure math / theoretical CS
         - "Explain why the Banach-Tarski paradox doesn't contradict measure theory."
         - "Discuss the lattice-based assumptions underlying CRYSTALS-Kyber and why they're believed to resist quantum attacks."
@@ -170,7 +176,8 @@ axes:
         - "Explain how garbage collectors handle the tracing-vs-reference-counting trade-off, including the failure modes of each approach."
         # Creative-writing craft — frontier-quality short fiction asks
         - "Write a literary scene that conveys grief through specific gesture and what's left unsaid, in under 500 words, no exposition or backstory."
-      easy:
+    easy:
+      candidates:
         # Common definitions across diverse domains
         - "What is a renewable resource?"
         - "What does the acronym GPS stand for?"
@@ -186,19 +193,14 @@ axes:
         - "What is interest on a savings account?"
 
   # ─────────────────────────────────────────────────────────────────────
-  # AXIS 3: Open-ended judgment
+  # SIGNAL 3: Open-ended judgment
   # ─────────────────────────────────────────────────────────────────────
-  # Does the answer require weighing tradeoffs, values, or context-
-  # specific recommendations — or is there a definite answer?
-  - id: judgment
+  - id: needs_judgment
     description: "Does this query require open-ended judgment or value-laden tradeoffs?"
-    threshold_hard: 0.42
-    score_bands:
-      low:    { min: -1.00, max: -0.05 }
-      medium: { min: -0.05, max:  0.05 }
-      high:   { min:  0.05, max:  1.00 }
-    exemplars:
-      hard:
+    threshold: 0.55
+    weight: 0.40
+    hard:
+      candidates:
         # Career / professional
         - "I'm a senior engineer choosing between a tech lead role with people management and an IC architect role. How should I think about this?"
         # Architecture / strategy
@@ -223,7 +225,8 @@ axes:
         - "Given my financial situation, should I pay down student debt aggressively or prioritize retirement contributions?"
         # Discursive ethical analysis — "Discuss the considerations of X"
         - "Discuss the ethical tensions in deploying facial recognition in public spaces, balancing law-enforcement utility against civil-liberties harms."
-      easy:
+    easy:
+      candidates:
         # Well-defined facts — no judgment required, across diverse domains
         - "What is 15 plus 27?"
         - "What color do you get when you mix blue and yellow?"
@@ -237,69 +240,3 @@ axes:
         - "What is the square root of 144?"
         - "In what century did the Industrial Revolution begin in Britain?"
         - "Is Python a programming language?"
-
-# ═════════════════════════════════════════════════════════════════════════
-# Decision policy
-# ═════════════════════════════════════════════════════════════════════════
-# Rules evaluated in order. First match wins. Each rule names the axis
-# bands it requires; an empty list means "any value on this axis".
-#
-# Why this order?
-#   1. trivial:           catch obvious lookups first (cheap path)
-#   2. light:             catch the workhorse band before anything else fires
-#   3. frontier_synthesis: BOTH high judgment AND high technical → T5 (only path to T5)
-#   4. hard_technical:    high technical, modest judgment → T3
-#   5. judgment_advice:   high judgment, modest technical → T4
-#   6. fallthrough:       safety net (shouldn't fire if axes are well-calibrated)
-#
-# Note: the original rule set made T5 unreachable — every band combination
-# was covered by trivial / light / hard_technical / judgment_heavy, so
-# "fallthrough_to_t5" was dead. Replaced judgment_heavy_to_t4 with
-# judgment_advice_to_t4 (constrained to non-high R/E) and added
-# frontier_synthesis_to_t5 to cover the case where a query genuinely
-# needs both deep technical work AND nuanced judgment.
-
-rules:
-
-  - name: trivial_to_t1
-    description: "All three axes low — trivial query, send to the smallest model"
-    when:
-      reasoning: [low]
-      expertise: [low]
-      judgment:  [low]
-    route_to: tier1
-
-  - name: light_to_t2
-    description: "At most medium on every axis — workhorse tier"
-    when:
-      reasoning: [low, medium]
-      expertise: [low, medium]
-      judgment:  [low, medium]
-    route_to: tier2
-
-  - name: frontier_synthesis_to_t5
-    description: "High judgment AND high technical depth — needs the frontier"
-    when:
-      judgment: [high]
-    requires_any_high: [reasoning, expertise]
-    route_to: tier5
-
-  - name: hard_technical_to_t3
-    description: "High reasoning or expertise, judgment low/medium — heavy technical work"
-    when:
-      judgment: [low, medium]
-    requires_any_high: [reasoning, expertise]
-    route_to: tier3
-
-  - name: judgment_advice_to_t4
-    description: "Judgment-heavy but not deeply technical — advice, ethics, strategy"
-    when:
-      reasoning: [low, medium]
-      expertise: [low, medium]
-      judgment:  [high]
-    route_to: tier4
-
-  - name: fallthrough_to_t5
-    description: "Safety net — only fires if axis calibration leaves a query unclassified"
-    when: {}
-    route_to: tier5

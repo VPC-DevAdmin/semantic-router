@@ -420,14 +420,36 @@ not `/v1/chat/completions`. Replaced with `tools/oai_mock.py`.
   is unchanged (it's the audience-facing artifact); the builder does the
   band → Boolean translation. All 27 band combinations still reach all
   5 tiers per the routing test.
+- ~~**Migrated to projections (v0.3 canonical pattern).**~~ The DIY
+  hard/easy embedding signals + AND/OR/NOT rule tree hit a structural
+  ceiling at ~84% routing accuracy because vllm-sr's `matched_signals`
+  uses single-winner semantics — only the top-scoring signal globally is
+  reported as matched, so rules that depended on multiple hard signals
+  firing were structurally impossible to satisfy. Rewrote the builder
+  and exemplars to the canonical projections shape:
+    • `routing.signals.complexity[]` — one contrastive signal per axis
+      with `hard` / `easy` candidate banks (`needs_reasoning`,
+      `needs_expertise`, `needs_judgment`). Each emits a confidence ∈ [0, 1].
+    • `routing.projections.scores.request_difficulty` (`weighted_sum`)
+      combines per-signal confidences into a single continuous score.
+    • `routing.projections.mappings.tier_band` (`threshold_bands`)
+      partitions that score into 5 mutually-exclusive bands.
+    • `routing.decisions[]` — one per tier, each conditioning on a
+      single `{type: projection, name: tierN_band}`.
+  Tuning surface is two human-readable knobs in `router-exemplars.yaml`:
+  per-signal `weight:` (contribution to difficulty) and `tier_cutoffs:`
+  (where to split the bands). Tests in `test_shipped_configs.py` assert
+  the bands cover [0, 1] with no gaps/overlap and that scores at each
+  cutoff land in the expected tier.
 
 ## 14. Known open design questions
 
-- **Embedding thresholds.** The builder emits `threshold: 0.5` for every
-  embedding signal by default. v0.3 embeddings give a raw similarity score;
-  0.5 is a reasonable starting point but will need tuning once we see what
-  the 110-query set actually matches. Override per-axis via
-  `threshold_hard` / `threshold_easy` in `router-exemplars.yaml`.
+- **Tier-cutoff calibration.** Default cutoffs are `[0.20, 0.40, 0.60, 0.80]`
+  — even splits of [0, 1] before we have real production data. Per the
+  exemplars-file comment, the operator should look at the
+  `request_difficulty` distribution across the eval set after the first
+  production run and adjust cutoffs so the bands match the desired tier
+  mix. Tunable in one place: `tier_cutoffs:` in `router-exemplars.yaml`.
 - **Docker networking from router to backend on Linux.**
   `host.docker.internal:8810` works on Docker Desktop but may need
   `--add-host=host.docker.internal:host-gateway` on Linux. If not, the

@@ -49,11 +49,15 @@ external judging workflow.
   identity (router_alias + served_model_name), endpoint (url +
   api_key_env), and backend (docker-launch params or `remote` /
   `placeholder`). Used by `make answers` and `make start_LLM`.
-- **`config/router-exemplars.yaml`** — the router's decision logic:
-  contrastive-embedding training data (3 axes × ~12 hard + ~12 easy
-  exemplars). Read top-to-bottom and you know everything the router
-  knows. Compiled into `config/router-config.yaml` as part of
-  `make load` and `make route` (the build is inlined in those targets).
+- **`config/router-exemplars.yaml`** — the router's decision logic.
+  Three complexity signals (`needs_reasoning`, `needs_expertise`,
+  `needs_judgment`), each with ~12 hard + ~12 easy contrastive
+  exemplars and a `weight:`. The builder compiles these into the v0.3
+  canonical projections shape: signal confidences → `weighted_sum` into
+  a single `request_difficulty` score → `threshold_bands` partition
+  into 5 tier bands → one decision per band. Two tuning knobs live in
+  this file: per-signal `weight:` and `tier_cutoffs:`. Compiled into
+  `config/router-config.yaml` as part of `make load` and `make route`.
 - **`config/router-backends.yaml`** — per-tier endpoints the router
   itself reaches (flat schema, separate from `config/tiers/*.yaml`).
 - **`config/router-config.yaml`** — GENERATED build artifact passed to
@@ -133,8 +137,12 @@ the laptop).
 
 End-to-end mock pipeline works: `make setup` → `make load` →
 `make route` (110/110) → `make answers` (110/110, one call per query) →
-`make export` produces a complete `demo.json`. Router is driven by
-exemplar-based routing (`config/router-exemplars.yaml` →
-`config/router-config.yaml`); the legacy keyword path has been removed.
+`make export` produces a complete `demo.json`. Router is driven by the
+v0.3 canonical projections pattern (`routing.signals.complexity[]` +
+`routing.projections.{scores,mappings}` + per-tier decisions),
+compiled from `config/router-exemplars.yaml` into
+`config/router-config.yaml`. The previous DIY hard/easy + AND/OR/NOT
+rule design hit a structural ceiling at ~84% due to vllm-sr's
+single-winner `matched_signals` semantics; projections lifts that.
 Next moves per PLAN.md §13: wire the T1 runner, run real Phase B with
 `make start_LLM`, then Phase C with Anthropic.
