@@ -92,13 +92,16 @@ def test_router_exemplars_build_projections_shape() -> None:
     routing = cfg["routing"]
     assert "modelCards" in routing and routing["modelCards"]
 
-    # Signals: complexity (not embeddings).
+    # Signals: complexity is the discrete-bucket axis; embeddings (when
+    # present) feeds continuous evidence into the same weighted_sum.
+    # The shipped config exercises the upstream mixed-source pattern.
     assert "signals" in routing
     assert "complexity" in routing["signals"], (
-        "signals.complexity[] is the projections-design entry point"
+        "signals.complexity[] is the discrete-axis entry point"
     )
-    assert "embeddings" not in routing["signals"], (
-        "embeddings[] was the OLD DIY hard/easy design; should be replaced by complexity[]"
+    assert "embeddings" in routing["signals"], (
+        "signals.embeddings[] should ship the continuous frontier_synthesis "
+        "signal alongside the complexity signals"
     )
     complexity_signals = routing["signals"]["complexity"]
     assert complexity_signals, "no complexity signals emitted"
@@ -121,20 +124,19 @@ def test_router_exemplars_build_projections_shape() -> None:
     rd = scores[0]
     assert rd["name"] == "request_difficulty"
     assert rd["method"] == "weighted_sum"
-    # Each signal contributes TWO inputs: `<id>:medium` (half weight) and
-    # `<id>:hard` (full weight). Without :medium, queries that match only
-    # at the medium level contribute 0 — which collapsed request_difficulty
-    # to 0 for most of the eval set in the first projections roll-out.
-    # Per upstream canonical config, complexity-input names take the form
-    # `<signal_id>:hard` or `<signal_id>:medium`; bare `<signal_id>` does
-    # not bind.
-    input_names = {i["name"] for i in rd["inputs"]}
+    # Complexity signal: each contributes TWO inputs (`:medium` half-weight,
+    # `:hard` full-weight). Per upstream canonical config, complexity-input
+    # names take the form `<signal_id>:hard` or `<signal_id>:medium`; bare
+    # `<signal_id>` does not bind.
+    complexity_inputs = [i for i in rd["inputs"] if i["type"] == "complexity"]
+    embedding_inputs = [i for i in rd["inputs"] if i["type"] == "embedding"]
+    assert complexity_inputs, "expected at least one complexity weighted_sum input"
+    complexity_names = {i["name"] for i in complexity_inputs}
     expected_names = (
         {f"{n}:hard" for n in sig_names} | {f"{n}:medium" for n in sig_names}
     )
-    assert input_names == expected_names
-    for inp in rd["inputs"]:
-        assert inp["type"] == "complexity"
+    assert complexity_names == expected_names
+    for inp in complexity_inputs:
         assert inp["name"].endswith((":hard", ":medium")), (
             f"complexity input {inp['name']!r} missing ':hard'/':medium' suffix"
         )
@@ -148,7 +150,18 @@ def test_router_exemplars_build_projections_shape() -> None:
             "the binary default is what we want"
         )
         assert isinstance(inp["weight"], int | float)
-    # Per signal: :medium weight should equal :hard weight × medium_weight_factor.
+
+    # Embedding signals (optional, but present in this shipped config) feed
+    # continuous confidence into the weighted_sum — upstream mixed-source
+    # pattern. They MUST set `value_source: confidence` (without it, the
+    # binary default would discard the continuous signal).
+    for inp in embedding_inputs:
+        assert inp.get("value_source") == "confidence", (
+            f"embedding input {inp['name']!r} must set value_source: confidence "
+            "(omitting it falls back to binary, defeating the continuous evidence)"
+        )
+
+    # Per complexity signal: :medium weight = :hard weight × medium_weight_factor.
     import yaml
     exemplars = yaml.safe_load(
         (ROOT / "config" / "router-exemplars.yaml").read_text()
@@ -162,11 +175,17 @@ def test_router_exemplars_build_projections_shape() -> None:
             f"{n}: medium weight {med_w} should equal hard {hard_w} × "
             f"medium_weight_factor {expected_factor}"
         )
-    # The :hard weights alone should sum to ~1.0 — caps request_difficulty
-    # at 1.0 (medium/hard are mutually exclusive per signal per query).
-    hard_weight_sum = sum(by_name[f"{n}:hard"]["weight"] for n in sig_names)
-    assert abs(hard_weight_sum - 1.0) < 1e-6, (
-        f":hard weights sum to {hard_weight_sum} — should be ~1.0"
+
+    # Maximum reachable score = sum of (all-complexity-:hard fires) +
+    # (all-embeddings at max confidence ~1.0) should be ~1.0 — caps
+    # request_difficulty at 1.0 so the threshold_bands stay calibrated.
+    max_score = (
+        sum(by_name[f"{n}:hard"]["weight"] for n in sig_names)
+        + sum(i["weight"] for i in embedding_inputs)
+    )
+    assert abs(max_score - 1.0) < 1e-6, (
+        f"max reachable score is {max_score}; should be ~1.0 "
+        "(all :hard complexity weights + all embedding weights)"
     )
 
     mappings = routing["projections"]["mappings"]
@@ -207,8 +226,14 @@ def test_router_exemplars_build_projections_shape() -> None:
             f"{band_only[0]['priority']} to override the plain band decision"
         )
         types_in_lane = {c["type"] for c in d["rules"]["conditions"]}
-        assert "projection" in types_in_lane and "complexity" in types_in_lane, (
-            f"lane {d['name']!r} must combine projection + complexity"
+        assert "projection" in types_in_lane, (
+            f"lane {d['name']!r} must include a projection condition"
+        )
+        # Each lane must combine the band projection with at least one
+        # non-projection qualifier — otherwise it's a renamed band decision.
+        assert types_in_lane - {"projection"}, (
+            f"lane {d['name']!r} has only projection conditions — needs a "
+            "complexity or embedding qualifier to justify being a lane"
         )
 
     # The two named lanes specifically. If either changes shape, downstream
@@ -232,6 +257,20 @@ def test_router_exemplars_build_projections_shape() -> None:
     assert cond_names == {
         "tier4_band", "needs_judgment:hard", "demands_commitment:hard"
     }
+
+    # Embedding-driven frontier lane: emitted only when a
+    # `frontier_synthesis` embedding signal exists in the exemplars file.
+    # The shipped config has one, so this lane must be present.
+    emb_frontier = next(
+        (d for d in lane if d["name"] == "route_tier5_embedding_frontier"), None
+    )
+    assert emb_frontier is not None, (
+        "expected a route_tier5_embedding_frontier lane decision (the "
+        "exemplars file ships a frontier_synthesis embedding signal)"
+    )
+    assert emb_frontier["modelRefs"][0]["model"] == "tier5"
+    types = {c["type"] for c in emb_frontier["rules"]["conditions"]}
+    assert types == {"projection", "embedding"}
 
     # Tier alignment with config/tiers/.
     router_tier_names = {m["name"] for m in cfg["providers"]["models"]}

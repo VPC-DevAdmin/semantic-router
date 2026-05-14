@@ -123,7 +123,7 @@ complexity_signals:
   - id: needs_reasoning
     description: "Does this query require multi-step reasoning?"
     threshold: 0.55       # used for `matched_signals` reporting; doesn't gate the projection
-    weight: 0.20          # contribution to request_difficulty
+    weight: 0.15          # contribution to request_difficulty
     hard:
       candidates:
         # Math word problems / probability — chained arithmetic + setup
@@ -170,7 +170,7 @@ complexity_signals:
   - id: needs_expertise
     description: "Does this query require deep domain expertise?"
     threshold: 0.55
-    weight: 0.20
+    weight: 0.15
     hard:
       candidates:
         # Pure math / theoretical CS
@@ -221,7 +221,7 @@ complexity_signals:
   - id: needs_judgment
     description: "Does this query require open-ended judgment or value-laden tradeoffs?"
     threshold: 0.55
-    weight: 0.30
+    weight: 0.20
     hard:
       candidates:
         # Career / professional
@@ -279,7 +279,7 @@ complexity_signals:
   - id: demands_commitment
     description: "Does this query demand a specific direction vs. a survey?"
     threshold: 0.55
-    weight: 0.30
+    weight: 0.20
     hard:
       candidates:
         - "I need to pick between three architectural approaches by tomorrow. Pick one and tell me why."
@@ -308,3 +308,60 @@ complexity_signals:
         - "Summarize the major arguments for and against universal basic income."
         - "Walk me through how diesel engines work."
         - "What are the common architectural styles in 20th-century painting?"
+
+# ═════════════════════════════════════════════════════════════════════════
+# Embedding signals — continuous evidence sources
+# ═════════════════════════════════════════════════════════════════════════
+# Unlike `complexity_signals` (contrastive hard/easy banks → discrete
+# levels :hard/:medium/none), `embedding_signals` use a single candidate
+# bank and produce a CONTINUOUS confidence value in [0, ~0.7] via cosine
+# similarity. They feed the weighted_sum projection via
+# `value_source: confidence`, giving the score real continuous resolution
+# alongside the four discrete complexity axes.
+#
+# This is the upstream "mixed sources" pattern — the canonical
+# vllm-project/semantic-router config.yaml combines `type: embedding`
+# (continuous, with value_source: confidence) and `type: complexity`
+# (binary qualifier, no value_source) in one weighted_sum.
+#
+# Aggregation `max` returns the highest cosine similarity to any
+# candidate in the bank — what you want for "looks like a frontier
+# prompt on at least one axis."
+
+embedding_signals:
+
+  # ─────────────────────────────────────────────────────────────────────
+  # FRONTIER SYNTHESIS — the T5 lane in continuous form
+  # ─────────────────────────────────────────────────────────────────────
+  # Twelve generic archetypes of T5-grade prompts spanning craft, code,
+  # judgment, methodology, and policy. None of these are drawn from the
+  # eval set (the builder's overlap check would refuse to build if any
+  # were). Higher similarity to this bank = stronger evidence the query
+  # is genuinely frontier-grade.
+  - id: frontier_synthesis
+    description: "Continuous similarity to T5-grade frontier prompts."
+    threshold: 0.55             # used for `matched_signals` reporting AND for the lane decision
+    weight: 0.30                # contribution to request_difficulty
+    aggregation_method: max
+    candidates:
+      # Long-form literary craft with structural constraints
+      - "Write a literary novella opening (~2500 words) about a character with synesthesia, establishing their inner life entirely through how they navigate the physical world. No exposition, no internal monologue that names what they feel."
+      - "Write a sustained literary essay (2000 words) comparing the moral seriousness of two contemporary novelists. Make a substantive aesthetic claim about which mode of attention is more rigorous and defend it with textual evidence."
+      # Original argument for non-consensus position
+      - "Construct a defensible position that contemporary management consulting as an industry is net-negative for the organizations it serves. Anticipate and respond to the strongest objection without retreat."
+      - "Argue rigorously for the position that the term 'mental health' as used in workplace HR has become incoherent. Discriminate this claim from anti-therapy and anti-mental-health-awareness positions. Propose a constructive replacement framework."
+      # Thick-context life advice that refuses framework
+      - "Walk this person through whether to remain in academia or leave for industry: 38-year-old researcher with two children, ten years from tenure, meaningful but underfunded research agenda. Refuse the considerations-list response. Commit to a recommendation."
+      # Frontier code review with intent reconstruction
+      - "Review this Raft-adjacent leader-election implementation. Reconstruct the author's mental model, identify where it diverges from canonical Raft, walk through the worst-case operational scenario, and propose minimum fixes."
+      - "Read this exponential-backoff retry decorator. The author was clearly attempting a named algorithm from a well-known blog post. Identify what they intended, where the implementation diverges, and what operational symptom would distinguish this from a correct one."
+      # Multi-stakeholder policy with rule-text specificity and self-critique
+      - "Propose specific regulatory mechanisms for how a US federal agency should govern healthcare AI deployment over the next three years, with rule-text-level specificity. Identify the weakest part of your own proposal and explain why."
+      # Methodological critique with counterfactual reasoning
+      - "Critique this paper's claim that scaling laws hold across modality boundaries. Identify three structurally distinct methodological problems. For each, propose a modification AND identify the new problem the modification introduces."
+      # Translation as literary judgment
+      - "Translate this Mandarin poem into idiomatic English while preserving the original's cadence and tonal patterns. Write a half-page paratext explaining your three hardest translation decisions and why."
+      # Diagnostic organizational analysis
+      - "Diagnose what's actually happening at a 400-person scaleup that has just lost three senior engineers in two months. Leadership disagrees on cause. Engage with this as organizational analysis with specific signals to trust, not as a strategy framework."
+      # Constructive ethical framework (not synthesis)
+      - "Construct an original ethical framework that takes seriously both the effective-altruist and the communitarian critiques rather than synthesizing them. Test your frame against the canonical thought experiments each tradition has used."

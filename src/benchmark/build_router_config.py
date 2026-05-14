@@ -132,6 +132,38 @@ def _validate_exemplars(ex: dict, eval_prompts: set[str] | None = None) -> None:
                         f"this would contaminate the demo. Example: {next(iter(overlap))!r}"
                     )
 
+    # Optional embedding signals — continuous evidence sources fed into
+    # the weighted_sum alongside the complexity signals.
+    emb_signals = ex.get("embedding_signals", [])
+    if emb_signals:
+        emb_ids = [s["id"] for s in emb_signals]
+        if len(emb_ids) != len(set(emb_ids)):
+            raise ValueError("duplicate embedding_signal ids")
+        # Embedding ids and complexity ids share a namespace at the
+        # weighted_sum-input level; collisions would be ambiguous.
+        collision = set(emb_ids) & set(signal_ids)
+        if collision:
+            raise ValueError(
+                f"embedding_signal ids collide with complexity_signal ids: "
+                f"{sorted(collision)}"
+            )
+        for sig in emb_signals:
+            cs = sig.get("candidates", [])
+            if len(cs) < 5:
+                print(
+                    f"WARN: embedding_signal {sig['id']!r} has only {len(cs)} "
+                    "candidates; 5+ recommended for stable scoring",
+                    file=sys.stderr,
+                )
+            if eval_prompts:
+                overlap = set(cs) & eval_prompts
+                if overlap:
+                    raise ValueError(
+                        f"embedding_signal {sig['id']!r} contains "
+                        f"{len(overlap)} prompts that overlap the eval set; "
+                        f"this would contaminate the demo. Example: {next(iter(overlap))!r}"
+                    )
+
 
 def _validate_backends(be: dict, declared_tier_ids: set[str]) -> None:
     backend_ids = set(be["backends"].keys())
@@ -238,6 +270,41 @@ def _emit_complexity_signal(sig: dict) -> dict:
     return out
 
 
+def _emit_embedding_signal(sig: dict) -> dict:
+    """One entry under routing.signals.embeddings[].
+
+    Embedding signals have a single candidates bank (no hard/easy contrast)
+    and produce continuous confidence in [0, ~0.7] via cosine similarity.
+    aggregation_method=max returns "best match against any candidate".
+    """
+    out: dict[str, Any] = {
+        "name": sig["id"],
+        "threshold": sig.get("threshold", DEFAULT_SIGNAL_THRESHOLD),
+        "aggregation_method": sig.get("aggregation_method", "max"),
+        "candidates": list(sig["candidates"]),
+    }
+    if sig.get("description"):
+        out["description"] = sig["description"]
+    return out
+
+
+def _emit_embedding_input(sig: dict) -> dict:
+    """One weighted_sum input for an embedding signal.
+
+    Uses `value_source: confidence` so the continuous similarity score
+    feeds the weighted_sum (unlike complexity inputs, which use the
+    binary default and contribute their full weight on match). This is
+    the upstream "mixed sources" pattern: continuous embeddings +
+    binary-qualifier complexity, both fed into one weighted_sum.
+    """
+    return {
+        "type": "embedding",
+        "name": sig["id"],
+        "weight": float(sig.get("weight", 0.0)),
+        "value_source": "confidence",
+    }
+
+
 # Default `:medium` weight factor when the exemplars file doesn't specify
 # `medium_weight_factor:`. A `:medium` match contributes this fraction of
 # a `:hard` match's weight. Mirrors the canonical ratio in upstream
@@ -249,9 +316,14 @@ def _emit_complexity_signal(sig: dict) -> dict:
 DEFAULT_MEDIUM_WEIGHT_FACTOR = 0.6
 
 
-def _emit_difficulty_score(signals: list[dict], medium_weight_factor: float) -> dict:
+def _emit_difficulty_score(
+    signals: list[dict],
+    medium_weight_factor: float,
+    emb_signals: list[dict] | None = None,
+) -> dict:
     """`routing.projections.scores.request_difficulty` — weighted_sum
-    over each complexity signal's `:medium` and `:hard` matches.
+    over each complexity signal's `:medium` and `:hard` matches PLUS
+    each embedding signal's continuous confidence.
 
     Schema notes (per upstream vllm-project/semantic-router config.yaml
     and confirmed by inspecting a real eval response):
@@ -284,6 +356,10 @@ def _emit_difficulty_score(signals: list[dict], medium_weight_factor: float) -> 
             "name": f"{sig['id']}:hard",
             "weight": weight,
         })
+    # Append embedding inputs after complexity ones — they feed continuous
+    # confidence into the same weighted_sum (upstream mixed-source pattern).
+    for sig in emb_signals or []:
+        inputs.append(_emit_embedding_input(sig))
     return {
         "name": "request_difficulty",
         "method": "weighted_sum",
@@ -321,6 +397,40 @@ def _emit_decision_for_band(tier_id: str) -> dict:
             "conditions": [{"type": "projection", "name": f"{tier_id}_band"}],
         },
         "modelRefs": [{"model": tier_id, "use_reasoning": False}],
+    }
+
+
+def _emit_tier5_embedding_frontier_lane(embedding_signal_id: str) -> dict:
+    """Override decision: route to tier5 from inside tier4_band when the
+    `frontier_synthesis` embedding signal matches.
+
+    Embedding signals fire as `matched` when their cosine similarity
+    exceeds the configured threshold (0.55 in our exemplars). For a
+    query that looks frontier-coded on at least one of the bank's
+    archetype patterns, this lane catches it even without any complexity
+    signal reaching :hard.
+
+    Empirically this is the most-likely-to-fire of the three T5 lanes
+    with the current exemplar set, because the frontier embedding bank
+    is specifically tuned to the kind of prompts the new T5 queries
+    look like (long-form, formal, multi-part, commitment-demanding).
+    """
+    return {
+        "name": "route_tier5_embedding_frontier",
+        "description": (
+            f"Promote tier4_band queries to tier5 when the "
+            f"{embedding_signal_id!r} embedding signal matches — "
+            "continuous-evidence path to T5."
+        ),
+        "priority": LANE_DECISION_PRIORITY,
+        "rules": {
+            "operator": "AND",
+            "conditions": [
+                {"type": "projection", "name": "tier4_band"},
+                {"type": "embedding", "name": embedding_signal_id},
+            ],
+        },
+        "modelRefs": [{"model": "tier5", "use_reasoning": False}],
     }
 
 
@@ -426,6 +536,7 @@ def build(
     _validate_backends(be, set(tier_ids))
 
     signals = ex["complexity_signals"]
+    emb_signals = ex.get("embedding_signals", [])
     cutoffs = list(ex["tier_cutoffs"])
     medium_weight_factor = float(
         ex.get("medium_weight_factor", DEFAULT_MEDIUM_WEIGHT_FACTOR)
@@ -458,9 +569,18 @@ def build(
             "modelCards": [_emit_model_card(t) for t in ex["tiers"]],
             "signals": {
                 "complexity": [_emit_complexity_signal(s) for s in signals],
+                **(
+                    {"embeddings": [_emit_embedding_signal(s) for s in emb_signals]}
+                    if emb_signals
+                    else {}
+                ),
             },
             "projections": {
-                "scores": [_emit_difficulty_score(signals, medium_weight_factor)],
+                "scores": [
+                    _emit_difficulty_score(
+                        signals, medium_weight_factor, emb_signals
+                    )
+                ],
                 "mappings": [_emit_tier_band_mapping(tier_ids, cutoffs)],
             },
             "decisions": [
@@ -468,6 +588,15 @@ def build(
                 # the higher-priority overrides up top.
                 _emit_tier5_frontier_lane(),
                 _emit_tier5_committed_judgment_lane(),
+                # Embedding-driven frontier lane — only emit if there's a
+                # frontier_synthesis embedding signal to drive it. The
+                # builder is conservative: it doesn't synthesize a lane
+                # for an embedding signal that wasn't configured.
+                *(
+                    [_emit_tier5_embedding_frontier_lane("frontier_synthesis")]
+                    if any(s["id"] == "frontier_synthesis" for s in emb_signals)
+                    else []
+                ),
                 *(_emit_decision_for_band(tier_id) for tier_id in tier_ids),
             ],
         },
