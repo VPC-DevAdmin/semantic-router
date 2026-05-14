@@ -43,27 +43,31 @@ name: "five-tier-projection-router"
 #   0.55 < score ≤ 0.80     → tier4 (high-stakes judgment)
 #   score > 0.80            → tier5 (frontier)
 #
-# Cutoff calibration (post-diagnostic re-tune): the previous setup
-# baked a ~0.54 fixed-floor offset into every query's score because
-# the contrastive complexity classifier fires `:medium` on 100% of
-# queries regardless of difficulty. With `medium_weight_factor: 0.0`
-# (see below) those `:medium` inputs are dropped from the score
-# entirely. The remaining discriminative axis is the frontier
-# embedding signal (continuous similarity ∈ [0, ~0.7]), weighted at
-# 0.40 → max useful score ~0.28 from embedding alone, with rare
-# additional contributions when complexity `:hard` actually fires.
+# Cutoff calibration (third-pass): a routing diagnostic with the previous
+# single-embedding setup showed a bimodal distribution — queries either
+# matched the frontier embedding (clustering at T3+) or didn't (clustering
+# at T1). T2 and T4 bands were empty because the embedder produces near-
+# bimodal output on max-aggregation: a query either matches at least one
+# exemplar strongly, or matches none.
 #
-# Cutoffs tightened to match the new (compressed) score range:
-#   score ≤ 0.08            → tier1 (trivial — no frontier match at all)
-#   0.08 < score ≤ 0.18     → tier2 (weak frontier engagement)
-#   0.18 < score ≤ 0.30     → tier3 (moderate frontier engagement)
-#   0.30 < score ≤ 0.50     → tier4 (strong frontier, or some :hard)
-#   score > 0.50            → tier5 (frontier + :hard)
+# Adding `moderate_complexity` (a second embedding signal targeting
+# T2/T3-grade prompts) gives the score a second independent axis. With
+# two signals contributing:
+#   • Trivial queries: neither matches → score near 0           → tier1
+#   • T2/T3 prompts: moderate matches, frontier weak/none       → tier2/tier3
+#   • Strong-frontier prompts (both can match): both contribute → tier4
+#   • Genuinely-frontier prompts: frontier match dominates      → tier5
 #
-# Look at the routing distribution after this lands and re-tune cutoffs
-# once more from real data. The architecture is now sound; cutoffs are
-# the one calibration knob left.
-tier_cutoffs: [0.08, 0.18, 0.30, 0.50]
+# Max score budget:
+#   moderate_complexity max contribution: 0.20 × ~0.7 sim ≈ 0.14
+#   frontier_synthesis  max contribution: 0.40 × ~0.7 sim ≈ 0.28
+#   complexity :hard channel (latent):    0.90 (~never fires)
+# Practical max from embeddings: ~0.42. Realistic span: 0.02–0.42.
+#
+# Cutoffs spaced to partition that span into five bands. Verify with
+# `python eval_reporter.py` after the next route pass and re-tune from
+# the confusion matrix.
+tier_cutoffs: [0.05, 0.12, 0.22, 0.32]
 
 # How much partial credit a `:medium` complexity match gets relative to
 # a `:hard` match. With `weighted_sum + binary` semantics, a `:hard`
@@ -382,3 +386,41 @@ embedding_signals:
       - "Diagnose what's actually happening at a 400-person scaleup that has just lost three senior engineers in two months. Leadership disagrees on cause. Engage with this as organizational analysis with specific signals to trust, not as a strategy framework."
       # Constructive ethical framework (not synthesis)
       - "Construct an original ethical framework that takes seriously both the effective-altruist and the communitarian critiques rather than synthesizing them. Test your frame against the canonical thought experiments each tradition has used."
+
+  # ─────────────────────────────────────────────────────────────────────
+  # MODERATE COMPLEXITY — the T2/T3 gradient
+  # ─────────────────────────────────────────────────────────────────────
+  # The diagnostic showed a bimodal routing distribution: trivial queries
+  # land at T1 (no frontier match), and queries clearing some frontier
+  # similarity all clumped at T3. Empty bands in between. The fix is a
+  # second embedding signal that fires on T2/T3-grade prompts so the
+  # score gets a second independent axis of variation. With two signals
+  # contributing (frontier + moderate), queries between the two modes
+  # get fractional credit from one or the other, populating the empty
+  # bands.
+  #
+  # Twelve generic archetypes of T2/T3-grade prompts: explain-how,
+  # compare-and-contrast, implement-basic, walk-through. NOT trivial
+  # (those don't match), NOT frontier (those match the other bank).
+  - id: moderate_complexity
+    description: "Continuous similarity to T2/T3-grade explanation, comparison, and implementation prompts."
+    threshold: 0.60
+    weight: 0.20
+    aggregation_method: max
+    candidates:
+      # Explain-how queries — technical concepts at moderate depth
+      - "Explain how a database B-tree index handles range queries with a worked example."
+      - "Walk me through how a TLS handshake establishes a shared key — the cryptographic flow at a protocol level."
+      - "Explain Bayes' theorem using a concrete worked example like spam classification or medical screening."
+      # Compare-and-contrast queries
+      - "Compare TCP, UDP, and SCTP — when to use each, and what trade-offs you're picking up."
+      - "What are the operational differences between microservices and modular monoliths for a mid-sized engineering team?"
+      - "Compare reference counting and tracing garbage collectors — what each gets right and where they typically fail."
+      # Implement-basic queries — concrete code with moderate scope
+      - "Implement a thread-safe LRU cache in Go with O(1) get and put operations."
+      - "Write a Python decorator that retries a function with exponential backoff on configured exception types."
+      - "Implement a Bloom filter in Python with configurable false-positive rate."
+      # Walk-through / diagnostic queries
+      - "Walk me through how to diagnose an event-driven Node.js backend with a slow memory leak under steady-state load."
+      - "Explain what 'eventual consistency' actually means at the application level, with the operational implications that matter to developers."
+      - "Walk through how a confusion matrix is computed for a multi-class classifier, including precision, recall, and F1 per class."
