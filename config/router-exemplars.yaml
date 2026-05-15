@@ -238,6 +238,17 @@ embedding_signals:
 
 structure_signals:
 
+  - id: short_prompt
+    description: "Fires when the prompt has fewer than 25 words. Mechanical detractor — pulls down short queries even if they semantically resemble moderate-complexity archetypes (e.g., 'what is X?' / 'why is X?' that look like 'explain how X works' to the embedder)."
+    weight: -0.15
+    feature:
+      type: count
+      source:
+        type: regex
+        pattern: '\S+'
+    predicate:
+      lt: 25
+
   - id: long_prompt
     description: "Fires when the prompt has 100+ words. Suggests a substantive ask."
     weight: 0.08
