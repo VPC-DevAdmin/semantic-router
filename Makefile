@@ -24,7 +24,7 @@ help:
 	@echo "  setup                          venv + deps + init DB + install vllm-sr (if missing)"
 	@echo "  load [MOCK=true]               validate exemplars; build router-config; load queries.json into DB"
 	@echo "  route [MOCK=true] [RUN_NEW=true]   rebuild router-config; routing pass"
-	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true] [TIER=<1-5>] [CONC=<N>]  routed-tier answers; errors retry on next run"
+	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true] [TIER=<1-5>] [CONC=<N>] [REGEN_TOP=true]  routed-tier answers; top tier uses gold unless REGEN_TOP"
 	@echo "  import-answers FILE=<path> TIER=<1-5> [RUN=<id>]  load externally-generated answers from a markdown file"
 	@echo "  export [RUN=<id>] [OUTPUT=<path>]  write demo.json (default: ./demo.json)"
 	@echo "  misroutes [RUN=<id>]           diagnostic: list queries routed BELOW their min tier"
@@ -153,11 +153,16 @@ route:
 # CONC=<N>     → concurrency (parallel requests). Default 8 in the CLI.
 #                Lower for CPU-bound local tiers (try 1-2) where parallel
 #                requests saturate the cores. Higher (16-32) for vendor APIs.
+# REGEN_TOP=true → force a live LLM call for top-tier-routed queries.
+#                By default those are filled from the gold answer
+#                (expected_answer) since the top tier IS Opus and gold
+#                is already Opus-grade — a fresh call is redundant spend.
 answers:
 	$(BENCHMARK) answers --db $(DB) \
 	    $(if $(RUN),--run $(RUN),) \
 	    $(if $(TIER),--tier $(TIER),) \
 	    $(if $(CONC),--concurrency $(CONC),) \
+	    $(if $(filter true,$(REGEN_TOP)),--regen-top-tier,) \
 	    $(if $(filter true,$(RUN_NEW)),--run-new,) \
 	    $(if $(filter true,$(MOCK)),--mock-endpoint $(MOCK_FROM_HOST),)
 

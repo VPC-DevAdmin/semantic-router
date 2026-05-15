@@ -226,6 +226,16 @@ def answers_cmd(
             "Used for pipeline verification against the local OAI mock."
         ),
     ),
+    regen_top_tier: bool = typer.Option(
+        False, "--regen-top-tier",
+        help=(
+            "By default, queries routed to the TOP tier are filled from the "
+            "gold answer (expected_answer) instead of calling the LLM — the "
+            "top tier IS Opus and gold is already Opus-grade, so a fresh "
+            "call is redundant. Pass this to force a live top-tier "
+            "generation anyway (e.g. to compare gold vs. live Opus)."
+        ),
+    ),
 ) -> None:
     """For each routed query: call the tier the router picked.
 
@@ -269,15 +279,22 @@ def answers_cmd(
         scope = f" for tier {tier}" if tier is not None else ""
         console.print(f"[yellow]--run-new[/]: deleted {n} tier_answers row(s){scope}")
 
-    seed_result = seed_pending_answers(db, rid, models_cfg, only=only)
+    seed_result = seed_pending_answers(
+        db, rid, models_cfg, only=only, regen_top_tier=regen_top_tier
+    )
     if seed_result.replaced:
         console.print(
             f"[yellow]re-seeded[/] {seed_result.replaced} stale row(s) "
             f"whose tier didn't match the latest pass1 decision"
         )
+    if seed_result.gold_filled:
+        console.print(
+            f"[green]gold-filled[/] {seed_result.gold_filled} top-tier row(s) "
+            f"from expected_answer (no LLM call — top tier == gold)"
+        )
     if seed_result.seeded:
         console.print(f"[green]seeded[/] {seed_result.seeded} new pending row(s)")
-    if not (seed_result.seeded or seed_result.replaced):
+    if not (seed_result.seeded or seed_result.replaced or seed_result.gold_filled):
         if seed_result.kept:
             console.print(
                 f"[dim]note[/]: {seed_result.kept} row(s) already at the correct "

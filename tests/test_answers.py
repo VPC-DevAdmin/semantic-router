@@ -126,6 +126,156 @@ def test_seed_idempotent_when_tier_unchanged(tmp_path: Path) -> None:
     assert r2.kept == 1
 
 
+# ---- top-tier gold-fill ----
+
+GOLD_QUERIES = [
+    {"id": "g1", "prompt": "trivial", "expected_min_tier": 1,
+     "specializations": ["general"], "expected_answer": "gold for g1"},
+    {"id": "g5", "prompt": "frontier", "expected_min_tier": 5,
+     "specializations": ["general"], "expected_answer": "GOLD ANSWER for g5"},
+    {"id": "g5b", "prompt": "frontier-no-gold", "expected_min_tier": 5,
+     "specializations": ["general"]},  # no expected_answer
+]
+
+
+def _bootstrap_gold(tmp_path: Path) -> tuple[Path, int]:
+    db = bootstrap_db(tmp_path, GOLD_QUERIES)
+    rid = create_run(
+        db,
+        router_config_path=make_router_yaml(tmp_path),
+        models_config_path=make_models_yaml(tmp_path),
+    )
+    return db, rid
+
+
+def test_seed_gold_fills_top_tier_routed_query(tmp_path: Path) -> None:
+    """A query routed to the top tier (level 5) with a gold answer is
+    filled from gold as status='success' — no LLM call needed."""
+    db, rid = _bootstrap_gold(tmp_path)
+    _record_pass1(db, rid, "g5", tier_level=5)
+    models = _models([1, 2, 3, 4, 5])
+
+    result = seed_pending_answers(db, rid, models)
+    assert result.gold_filled == 1
+    assert result.seeded == 0
+
+    with session_scope(db) as s:
+        row = s.execute(
+            select(TierAnswer).where(TierAnswer.query_id == "g5")
+        ).scalar_one()
+    assert row.tier_level == 5
+    assert row.status == "success"
+    assert row.response_text == "GOLD ANSWER for g5"
+
+
+def test_seed_non_top_tier_not_gold_filled(tmp_path: Path) -> None:
+    """A query routed BELOW the top tier still seeds a pending row even
+    if it has a gold answer (gold only short-circuits the TOP tier)."""
+    db, rid = _bootstrap_gold(tmp_path)
+    _record_pass1(db, rid, "g1", tier_level=1)
+    models = _models([1, 2, 3, 4, 5])
+
+    result = seed_pending_answers(db, rid, models)
+    assert result.gold_filled == 0
+    assert result.seeded == 1
+
+    with session_scope(db) as s:
+        row = s.execute(
+            select(TierAnswer).where(TierAnswer.query_id == "g1")
+        ).scalar_one()
+    assert row.status == "pending"
+
+
+def test_seed_top_tier_without_gold_falls_back_to_pending(tmp_path: Path) -> None:
+    """Top-tier-routed query with NO gold answer can't be short-circuited —
+    it seeds a normal pending row for the worker to fill."""
+    db, rid = _bootstrap_gold(tmp_path)
+    _record_pass1(db, rid, "g5b", tier_level=5)
+    models = _models([1, 2, 3, 4, 5])
+
+    result = seed_pending_answers(db, rid, models)
+    assert result.gold_filled == 0
+    assert result.seeded == 1
+
+    with session_scope(db) as s:
+        row = s.execute(
+            select(TierAnswer).where(TierAnswer.query_id == "g5b")
+        ).scalar_one()
+    assert row.status == "pending"
+
+
+def test_seed_regen_top_tier_disables_gold_fill(tmp_path: Path) -> None:
+    """With regen_top_tier=True, even a top-tier query with gold seeds
+    a pending row so the worker calls the LLM for a fresh generation."""
+    db, rid = _bootstrap_gold(tmp_path)
+    _record_pass1(db, rid, "g5", tier_level=5)
+    models = _models([1, 2, 3, 4, 5])
+
+    result = seed_pending_answers(db, rid, models, regen_top_tier=True)
+    assert result.gold_filled == 0
+    assert result.seeded == 1
+
+    with session_scope(db) as s:
+        row = s.execute(
+            select(TierAnswer).where(TierAnswer.query_id == "g5")
+        ).scalar_one()
+    assert row.status == "pending"
+
+
+def test_seed_upgrades_pending_top_tier_row_to_gold(tmp_path: Path) -> None:
+    """If a pending top-tier row already exists (e.g. seeded before gold
+    was loaded, or under regen_top_tier), a later default seed upgrades
+    it to gold-success without an LLM call."""
+    db, rid = _bootstrap_gold(tmp_path)
+    _record_pass1(db, rid, "g5", tier_level=5)
+    models = _models([1, 2, 3, 4, 5])
+
+    # First seed with regen → pending row.
+    r1 = seed_pending_answers(db, rid, models, regen_top_tier=True)
+    assert r1.seeded == 1
+
+    # Second seed with default → upgrades the pending row to gold-success.
+    r2 = seed_pending_answers(db, rid, models)
+    assert r2.gold_filled == 1
+    assert r2.kept == 0
+
+    with session_scope(db) as s:
+        rows = s.execute(
+            select(TierAnswer).where(TierAnswer.query_id == "g5")
+        ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].status == "success"
+    assert rows[0].response_text == "GOLD ANSWER for g5"
+
+
+@pytest.mark.asyncio
+async def test_run_answers_skips_gold_filled_rows(tmp_path: Path) -> None:
+    """End-to-end: a gold-filled top-tier row is already success, so the
+    worker doesn't call the (fake) client for it."""
+    db, rid = _bootstrap_gold(tmp_path)
+    _record_pass1(db, rid, "g1", tier_level=1)   # pending → worker runs it
+    _record_pass1(db, rid, "g5", tier_level=5)   # gold-filled → skipped
+    models = _models([1, 2, 3, 4, 5])
+    seed_pending_answers(db, rid, models)
+
+    report = await run_answers(
+        db, rid, models=models, clients_by_level=_clients([1, 2, 3, 4, 5])
+    )
+    # Only g1 was pending; g5 was already success from gold.
+    assert report.attempted == 1
+    assert report.succeeded == 1
+
+    with session_scope(db) as s:
+        by_qid = {
+            r.query_id: r
+            for r in s.execute(
+                select(TierAnswer).where(TierAnswer.run_id == rid)
+            ).scalars().all()
+        }
+    assert by_qid["g5"].response_text == "GOLD ANSWER for g5"   # untouched
+    assert by_qid["g1"].response_text.startswith("[tier1]")     # worker-generated
+
+
 def test_seed_skips_tts_only(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)
     _record_pass1(db, rid, "qtts", tier_level=2)
