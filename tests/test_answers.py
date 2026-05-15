@@ -204,48 +204,37 @@ def test_seed_top_tier_without_gold_falls_back_to_pending(tmp_path: Path) -> Non
     assert row.status == "pending"
 
 
-def test_seed_regen_top_tier_disables_gold_fill(tmp_path: Path) -> None:
-    """With regen_top_tier=True, even a top-tier query with gold seeds
-    a pending row so the worker calls the LLM for a fresh generation."""
-    db, rid = _bootstrap_gold(tmp_path)
-    _record_pass1(db, rid, "g5", tier_level=5)
-    models = _models([1, 2, 3, 4, 5])
-
-    result = seed_pending_answers(db, rid, models, regen_top_tier=True)
-    assert result.gold_filled == 0
-    assert result.seeded == 1
-
-    with session_scope(db) as s:
-        row = s.execute(
-            select(TierAnswer).where(TierAnswer.query_id == "g5")
-        ).scalar_one()
-    assert row.status == "pending"
-
-
 def test_seed_upgrades_pending_top_tier_row_to_gold(tmp_path: Path) -> None:
-    """If a pending top-tier row already exists (e.g. seeded before gold
-    was loaded, or under regen_top_tier), a later default seed upgrades
-    it to gold-success without an LLM call."""
+    """If a pending top-tier row already exists (e.g. seeded before the
+    gold answer was loaded), a later seed upgrades it to gold-success
+    without an LLM call."""
     db, rid = _bootstrap_gold(tmp_path)
-    _record_pass1(db, rid, "g5", tier_level=5)
+    _record_pass1(db, rid, "g5b", tier_level=5)  # no gold yet → pending
     models = _models([1, 2, 3, 4, 5])
 
-    # First seed with regen → pending row.
-    r1 = seed_pending_answers(db, rid, models, regen_top_tier=True)
-    assert r1.seeded == 1
+    r1 = seed_pending_answers(db, rid, models)
+    assert r1.seeded == 1  # g5b has no gold → pending
 
-    # Second seed with default → upgrades the pending row to gold-success.
+    # Now give g5b a gold answer (simulating an update-gold run) and
+    # re-seed: the pending row should upgrade to gold-success.
+    from benchmark.db import Query
+    with session_scope(db) as s:
+        q = s.execute(
+            select(Query).where(Query.query_id == "g5b")
+        ).scalar_one()
+        q.gold_answer = "freshly generated gold for g5b"
+
     r2 = seed_pending_answers(db, rid, models)
     assert r2.gold_filled == 1
     assert r2.kept == 0
 
     with session_scope(db) as s:
         rows = s.execute(
-            select(TierAnswer).where(TierAnswer.query_id == "g5")
+            select(TierAnswer).where(TierAnswer.query_id == "g5b")
         ).scalars().all()
     assert len(rows) == 1
     assert rows[0].status == "success"
-    assert rows[0].response_text == "GOLD ANSWER for g5"
+    assert rows[0].response_text == "freshly generated gold for g5b"
 
 
 @pytest.mark.asyncio

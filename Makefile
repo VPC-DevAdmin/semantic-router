@@ -8,7 +8,7 @@
 #   make export       # emit demo.json from the DB                            [TODO]
 
 .PHONY: help setup load route answers export resume misroutes scores \
-        import-answers \
+        import-answers update-gold \
         clean-results router-smoke router-stop test fmt lint \
         mock-bg mock-stop start_LLM stop_LLM
 
@@ -17,6 +17,11 @@ PYTHON := $(VENV)/bin/python
 BENCHMARK := $(VENV)/bin/benchmark
 DB := benchmark.db
 
+# For splitting comma-separated make args (e.g. QID=q1,q2,q3).
+comma := ,
+space :=
+space +=
+
 HAS_UV := $(shell command -v uv 2>/dev/null)
 
 help:
@@ -24,8 +29,9 @@ help:
 	@echo "  setup                          venv + deps + init DB + install vllm-sr (if missing)"
 	@echo "  load [MOCK=true]               validate exemplars; build router-config; load queries.json into DB"
 	@echo "  route [MOCK=true] [RUN_NEW=true]   rebuild router-config; routing pass"
-	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true] [TIER=<1-5>] [CONC=<N>] [REGEN_TOP=true]  routed-tier answers; top tier uses gold unless REGEN_TOP"
+	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true] [TIER=<1-5>] [CONC=<N>]  routed-tier answers; top tier answered from gold"
 	@echo "  import-answers FILE=<path> TIER=<1-5> [RUN=<id>]  load externally-generated answers from a markdown file"
+	@echo "  update-gold QID=<id[,id]> | ALL=true YES=true   regenerate gold answers via the top tier (overwrites expected_answer)"
 	@echo "  export [RUN=<id>] [OUTPUT=<path>]  write demo.json (default: ./demo.json)"
 	@echo "  misroutes [RUN=<id>]           diagnostic: list queries routed BELOW their min tier"
 	@echo "  scores [RUN=<id>]              diagnostic: per-signal score + threshold gap for each misroute"
@@ -153,16 +159,14 @@ route:
 # CONC=<N>     → concurrency (parallel requests). Default 8 in the CLI.
 #                Lower for CPU-bound local tiers (try 1-2) where parallel
 #                requests saturate the cores. Higher (16-32) for vendor APIs.
-# REGEN_TOP=true → force a live LLM call for top-tier-routed queries.
-#                By default those are filled from the gold answer
-#                (expected_answer) since the top tier IS Opus and gold
-#                is already Opus-grade — a fresh call is redundant spend.
+# Top-tier-routed queries are answered from the gold (expected_answer)
+# rather than re-calling the top model. To regenerate the gold itself,
+# use `make update-gold QID=...`.
 answers:
 	$(BENCHMARK) answers --db $(DB) \
 	    $(if $(RUN),--run $(RUN),) \
 	    $(if $(TIER),--tier $(TIER),) \
 	    $(if $(CONC),--concurrency $(CONC),) \
-	    $(if $(filter true,$(REGEN_TOP)),--regen-top-tier,) \
 	    $(if $(filter true,$(RUN_NEW)),--run-new,) \
 	    $(if $(filter true,$(MOCK)),--mock-endpoint $(MOCK_FROM_HOST),)
 
@@ -177,6 +181,21 @@ import-answers:
 	fi
 	$(BENCHMARK) import-answers $(FILE) --tier $(TIER) \
 	    $(if $(RUN),--run $(RUN),)
+
+# Regenerate gold answers by calling the top tier (Opus). Destructive —
+# overwrites Query.gold_answer for the named queries.
+#   QID=<id[,id,...]>  — comma-separated query IDs to regenerate
+#   ALL=true           — regenerate ALL gold (requires YES=true)
+#   YES=true           — skip the confirmation prompt
+# After this, re-run `make answers` so top-tier rows pick up new gold.
+update-gold:
+	@if [ -z "$(QID)" ] && [ "$(ALL)" != "true" ]; then \
+	  echo "usage: make update-gold QID=q00046[,q00050,...]  |  make update-gold ALL=true YES=true"; exit 2; \
+	fi
+	$(BENCHMARK) update-gold --db $(DB) \
+	    $(foreach q,$(subst $(comma), ,$(QID)),--query-id $(q)) \
+	    $(if $(filter true,$(ALL)),--all,) \
+	    $(if $(filter true,$(YES)),--yes,)
 
 OUTPUT ?= demo.json
 export:

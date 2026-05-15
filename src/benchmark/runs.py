@@ -136,7 +136,6 @@ def seed_pending_answers(
     models: ModelsConfig,
     *,
     only: list[str] | None = None,
-    regen_top_tier: bool = False,
 ) -> AnswerSeedResult:
     """Seed one `tier_answers` row per query, using the routed tier.
 
@@ -149,16 +148,15 @@ def seed_pending_answers(
     is an upstream Opus-grade reference. The top tier in our routing IS
     Claude Opus. So for a query routed to the top tier, calling the LLM
     just regenerates an Opus answer that's redundant with the gold we
-    already have — wasted API spend. By default such rows are filled
-    directly from `gold_answer` with status='success', so `make answers`
-    skips them. Pass `regen_top_tier=True` to disable this and force a
-    fresh top-tier generation (e.g., to compare gold vs. live Opus).
-    Queries with no/empty gold fall back to a normal pending row.
+    already have — wasted API spend. Such rows are filled directly from
+    `gold_answer` with status='success', so `make answers` skips them.
+    Queries with no/empty gold fall back to a normal pending row. (To
+    *regenerate* the gold itself, use the `update-gold` command, which
+    calls the top tier and overwrites `Query.gold_answer`.)
 
     Behaviour against existing rows:
       - Row exists at the same tier_level as current pass1 → kept (but a
-        pending top-tier row is upgraded to gold-success unless
-        regen_top_tier).
+        pending top-tier row is upgraded to gold-success).
       - Row exists at a DIFFERENT tier_level → stale: delete it and seed a
         fresh row at the correct level.
       - No row exists → seed a new row (pending, or gold-success for top tier).
@@ -188,11 +186,7 @@ def seed_pending_answers(
         }
 
         def _is_gold_top_tier(qid: str, level: int) -> bool:
-            return (
-                not regen_top_tier
-                and level == top_tier_level
-                and bool(gold_by_qid.get(qid))
-            )
+            return level == top_tier_level and bool(gold_by_qid.get(qid))
 
         def _new_row(qid: str, level: int) -> TierAnswer:
             """Build a row WITHOUT touching counters (caller counts)."""

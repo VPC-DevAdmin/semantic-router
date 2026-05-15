@@ -22,7 +22,7 @@ from rich.console import Console
 
 from .answers import run_answers
 from .config import load_models, load_router_process
-from .db import DEFAULT_DB_PATH, init_db
+from .db import DEFAULT_DB_PATH, Query, init_db, session_scope
 from .export import export_demo_json
 from .import_answers import import_answers_file
 from .load import load_into_db
@@ -41,6 +41,7 @@ from .runs import (
     seed_pending_answers,
 )
 from .scores import DEFAULT_APISERVER, report_scores
+from .update_gold import update_gold_answers
 
 # Load .env from CWD on every CLI start. Existing env vars win (so shell /
 # CI overrides take precedence over file values).
@@ -226,16 +227,6 @@ def answers_cmd(
             "Used for pipeline verification against the local OAI mock."
         ),
     ),
-    regen_top_tier: bool = typer.Option(
-        False, "--regen-top-tier",
-        help=(
-            "By default, queries routed to the TOP tier are filled from the "
-            "gold answer (expected_answer) instead of calling the LLM — the "
-            "top tier IS Opus and gold is already Opus-grade, so a fresh "
-            "call is redundant. Pass this to force a live top-tier "
-            "generation anyway (e.g. to compare gold vs. live Opus)."
-        ),
-    ),
 ) -> None:
     """For each routed query: call the tier the router picked.
 
@@ -279,9 +270,7 @@ def answers_cmd(
         scope = f" for tier {tier}" if tier is not None else ""
         console.print(f"[yellow]--run-new[/]: deleted {n} tier_answers row(s){scope}")
 
-    seed_result = seed_pending_answers(
-        db, rid, models_cfg, only=only, regen_top_tier=regen_top_tier
-    )
+    seed_result = seed_pending_answers(db, rid, models_cfg, only=only)
     if seed_result.replaced:
         console.print(
             f"[yellow]re-seeded[/] {seed_result.replaced} stale row(s) "
@@ -413,6 +402,80 @@ def import_answers_cmd(
     )
     console.print(f"[bold]import-answers[/] (run {rid}, tier {tier}, from {file.name})")
     console.print(str(result))
+
+
+@app.command("update-gold")
+def update_gold_cmd(
+    query_id: list[str] = typer.Option(
+        [], "--query-id", "-q",
+        help="Query ID to regenerate gold for (repeatable). Required unless --all.",
+    ),
+    all_queries: bool = typer.Option(
+        False, "--all",
+        help="Regenerate gold for EVERY query. Destructive; requires --yes.",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH),
+    models: Path = typer.Option(DEFAULT_TIERS),
+    max_tokens: int = typer.Option(2048, "--max-tokens"),
+    concurrency: int = typer.Option(4, "--concurrency"),
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt."),
+) -> None:
+    """Regenerate gold answers by calling the top-tier model.
+
+    The top tier IS the gold-grade model (Opus). When the upstream
+    `expected_answer` is stale/wrong/missing for some queries, this
+    calls the top tier with each query's prompt and OVERWRITES
+    `Query.gold_answer` (and stamps gold_model/gold_generated_at).
+
+    Destructive: requires explicit --query-id values, or --all --yes.
+    Separate from `make answers` on purpose: answers CONSUMES gold,
+    this PRODUCES it.
+    """
+    if not db.exists():
+        console.print(f"[red]error[/]: db {db} does not exist; run `make setup` first")
+        raise typer.Exit(code=2)
+
+    qids = list(query_id)
+    if all_queries:
+        if not yes:
+            console.print(
+                "[red]refusing[/]: --all overwrites every gold answer. "
+                "Re-run with --yes to confirm."
+            )
+            raise typer.Exit(code=2)
+        from sqlalchemy import select as _select
+        with session_scope(db) as s:
+            qids = [
+                qid for (qid,) in s.execute(_select(Query.query_id)).all()
+            ]
+    if not qids:
+        console.print(
+            "[red]error[/]: pass --query-id <id> (repeatable) or --all --yes"
+        )
+        raise typer.Exit(code=2)
+
+    if not yes and not all_queries:
+        console.print(
+            f"[yellow]about to overwrite gold for {len(qids)} query(ies)[/] "
+            f"by calling the top tier. Ctrl-C to abort; continuing in 3s..."
+        )
+
+    models_cfg = load_models(models)
+    result = asyncio.run(
+        update_gold_answers(
+            db,
+            query_ids=qids,
+            models=models_cfg,
+            max_tokens=max_tokens,
+            concurrency=concurrency,
+        )
+    )
+    console.print("[bold]update-gold[/]")
+    console.print(str(result))
+    console.print(
+        "[dim]note[/]: re-run `make answers` so top-tier rows pick up the "
+        "regenerated gold."
+    )
 
 
 @app.command("export")
