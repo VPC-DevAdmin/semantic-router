@@ -24,6 +24,7 @@ from .answers import run_answers
 from .config import load_models, load_router_process
 from .db import DEFAULT_DB_PATH, init_db
 from .export import export_demo_json
+from .import_answers import import_answers_file
 from .load import load_into_db
 from .misroutes import list_misroutes, render_misroutes
 from .pass1 import run_pass1
@@ -349,6 +350,52 @@ def scores_cmd(
     """
     report = asyncio.run(report_scores(db, run_id=run, apiserver=apiserver))
     console.print(report, markup=False)
+
+
+@app.command("import-answers")
+def import_answers_cmd(
+    file: Path = typer.Argument(..., help="Markdown file with ## qNNNNN sections."),
+    tier: int = typer.Option(..., "--tier", help="Tier level (1-5) these answers represent."),
+    db: Path = typer.Option(DEFAULT_DB_PATH),
+    models: Path = typer.Option(DEFAULT_TIERS),
+    run: int | None = typer.Option(None, "--run", help="Run id (default: latest active)."),
+) -> None:
+    """Import pre-generated tier answers from a markdown file.
+
+    Each `## qNNNNN — Title` (or `## qNNNNN: Title`) section's body is
+    stored as that query's answer for the specified tier. Useful when
+    answers are produced outside the harness — e.g., manual prompting
+    via a chat UI, or pre-generated reference responses.
+
+    Upsert behavior: if a tier_answers row already exists at
+    (run_id, query_id, tier_level), its response_text is overwritten
+    and status set to 'success'. Otherwise a new row is inserted.
+    Idempotent: re-run with the same file to refresh.
+    """
+    if not file.exists():
+        console.print(f"[red]error[/]: file not found: {file}")
+        raise typer.Exit(code=2)
+    if not db.exists():
+        console.print(f"[red]error[/]: db {db} does not exist; run `make setup` first")
+        raise typer.Exit(code=2)
+
+    models_cfg = load_models(models)
+    if not any(t.level == tier for t in models_cfg.tiers):
+        console.print(
+            f"[red]error[/]: --tier {tier} not present in {models}; known levels: "
+            f"{sorted(t.level for t in models_cfg.tiers)}"
+        )
+        raise typer.Exit(code=2)
+
+    rid = _resolve_run(db, run)
+    result = import_answers_file(
+        db, rid,
+        tier_level=tier,
+        file_path=file,
+        models=models_cfg,
+    )
+    console.print(f"[bold]import-answers[/] (run {rid}, tier {tier}, from {file.name})")
+    console.print(str(result))
 
 
 @app.command("export")

@@ -8,6 +8,7 @@
 #   make export       # emit demo.json from the DB                            [TODO]
 
 .PHONY: help setup load route answers export resume misroutes scores \
+        import-answers \
         clean-results router-smoke router-stop test fmt lint \
         mock-bg mock-stop start_LLM stop_LLM
 
@@ -24,6 +25,7 @@ help:
 	@echo "  load [MOCK=true]               validate exemplars; build router-config; load queries.json into DB"
 	@echo "  route [MOCK=true] [RUN_NEW=true]   rebuild router-config; routing pass"
 	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true] [TIER=<1-5>] [CONC=<N>]  routed-tier answers; errors retry on next run"
+	@echo "  import-answers FILE=<path> TIER=<1-5> [RUN=<id>]  load externally-generated answers from a markdown file"
 	@echo "  export [RUN=<id>] [OUTPUT=<path>]  write demo.json (default: ./demo.json)"
 	@echo "  misroutes [RUN=<id>]           diagnostic: list queries routed BELOW their min tier"
 	@echo "  scores [RUN=<id>]              diagnostic: per-signal score + threshold gap for each misroute"
@@ -158,6 +160,18 @@ answers:
 	    $(if $(CONC),--concurrency $(CONC),) \
 	    $(if $(filter true,$(RUN_NEW)),--run-new,) \
 	    $(if $(filter true,$(MOCK)),--mock-endpoint $(MOCK_FROM_HOST),)
+
+# Import externally-generated answers (e.g., manually prompted from a
+# chat UI) into the tier_answers table.
+#   FILE=<path>  — markdown file with `## qNNNNN — Title` sections
+#   TIER=<N>     — tier level (1-5) these answers represent
+# Idempotent: re-run to refresh the same rows.
+import-answers:
+	@if [ -z "$(FILE)" ] || [ -z "$(TIER)" ]; then \
+	  echo "usage: make import-answers FILE=<path.md> TIER=<1-5>"; exit 2; \
+	fi
+	$(BENCHMARK) import-answers $(FILE) --tier $(TIER) \
+	    $(if $(RUN),--run $(RUN),)
 
 OUTPUT ?= demo.json
 export:
