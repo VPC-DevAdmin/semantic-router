@@ -74,6 +74,21 @@ def _extra_body_by_level(models: ModelsConfig) -> dict[int, dict]:
     return out
 
 
+def _max_tokens_by_level(models: ModelsConfig) -> dict[int, int]:
+    """Per-tier generation cap from `tier.max_tokens` (set via TIER{N}_MAX_TOKENS).
+
+    Tiers without an explicit per-tier cap are absent from the map; the
+    worker falls back to the global `--max-tokens` for those. Lets a slow
+    local tier be given a bigger budget to finish a complete answer while
+    vendor tiers keep the default.
+    """
+    out: dict[int, int] = {}
+    for tier in models.tiers:
+        if tier.max_tokens is not None:
+            out[tier.level] = tier.max_tokens
+    return out
+
+
 def _build_clients_for_mock(models: ModelsConfig, mock_endpoint: str) -> dict[int, OAIClient]:
     """All tiers point at one mock endpoint — used by `make answers MOCK=true`.
 
@@ -124,6 +139,10 @@ async def run_answers(
     # Skipped when hitting the mock (it ignores unknown body fields, but
     # there's no reason to send them).
     extra_by_level = {} if mock_endpoint else _extra_body_by_level(models)
+
+    # Per-tier generation caps (TIER{N}_MAX_TOKENS). Absent → global default.
+    # Skipped for the mock, which ignores the budget anyway.
+    max_tokens_by_level = {} if mock_endpoint else _max_tokens_by_level(models)
 
     report = AnswersReport()
 
@@ -180,7 +199,7 @@ async def run_answers(
                 result = await client.chat(
                     snap["prompt"],
                     attachments=attachments,
-                    max_tokens=max_tokens,
+                    max_tokens=max_tokens_by_level.get(level, max_tokens),
                     extra=extra_by_level.get(level) or None,
                 )
                 with session_scope(db_path) as session:

@@ -8,7 +8,11 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
-from benchmark.answers import _extra_body_by_level, run_answers
+from benchmark.answers import (
+    _extra_body_by_level,
+    _max_tokens_by_level,
+    run_answers,
+)
 from benchmark.config import BackendSpec, ModelsConfig, TierConfig, TierEndpoint
 from benchmark.db import Pass1Result, TierAnswer, session_scope
 from benchmark.runs import create_run, seed_pending_answers
@@ -90,18 +94,21 @@ def _clients(levels: list[int], fail_on_query: str | None = None) -> dict[int, _
 
 @dataclass
 class _CapturingClient:
-    """Records the `extra` kwarg passed to chat()."""
+    """Records the `extra` and `max_tokens` kwargs passed to chat()."""
 
     tier_level: int
     seen_extra: list = None  # type: ignore[assignment]
+    seen_max_tokens: list = None  # type: ignore[assignment]
 
     def __post_init__(self) -> None:
         self.seen_extra = []
+        self.seen_max_tokens = []
 
     async def chat(
         self, prompt: str, *, attachments=None, max_tokens=None, extra=None, **_: Any
     ) -> ChatResult:
         self.seen_extra.append(extra)
+        self.seen_max_tokens.append(max_tokens)
         return ChatResult(
             content=f"[tier{self.tier_level}] {prompt}",
             model=f"tier{self.tier_level}",
@@ -167,6 +174,51 @@ async def test_run_answers_forwards_extra_body_to_client(tmp_path: Path) -> None
     # Tier 1 had extra_body → forwarded; tier 2 had none → extra is None.
     assert cap[1].seen_extra == [{"chat_template_kwargs": {"enable_thinking": False}}]
     assert cap[2].seen_extra == [None]
+
+
+# ---- per-tier max_tokens plumbing ----
+
+def _tier_with_max_tokens(level: int, max_tokens: int | None) -> TierConfig:
+    t = _tier_with_extra_body(level, None)
+    t.max_tokens = max_tokens
+    return t
+
+
+def test_max_tokens_by_level_reads_per_tier_cap() -> None:
+    models = ModelsConfig(tiers=[
+        _tier_with_max_tokens(1, 4096),
+        _tier_with_max_tokens(2, None),  # no per-tier cap
+        _tier_with_max_tokens(5, 256),
+    ])
+    got = _max_tokens_by_level(models)
+    assert got == {1: 4096, 5: 256}
+    assert 2 not in got  # tiers without a cap fall back to the global default
+
+
+@pytest.mark.asyncio
+async def test_run_answers_per_tier_max_tokens_overrides_global(tmp_path: Path) -> None:
+    """A tier's max_tokens wins; tiers without one get the global --max-tokens."""
+    db = bootstrap_db(tmp_path, QUERIES)
+    rid = create_run(
+        db,
+        router_config_path=make_router_yaml(tmp_path),
+        models_config_path=make_models_yaml(tmp_path),
+    )
+    _record_pass1(db, rid, "q1", tier_level=1)
+    _record_pass1(db, rid, "q2", tier_level=2)
+
+    models = ModelsConfig(tiers=[
+        _tier_with_max_tokens(1, 4096),   # per-tier override
+        _tier_with_max_tokens(2, None),   # falls back to global
+        _tier_with_max_tokens(3, None),
+    ])
+    seed_pending_answers(db, rid, models)
+
+    cap = {1: _CapturingClient(1), 2: _CapturingClient(2), 3: _CapturingClient(3)}
+    await run_answers(db, rid, models=models, clients_by_level=cap, max_tokens=512)
+
+    assert cap[1].seen_max_tokens == [4096]   # per-tier cap honored
+    assert cap[2].seen_max_tokens == [512]    # global default fallback
 
 
 # ---- seed_pending_answers ----

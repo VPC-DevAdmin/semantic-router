@@ -56,6 +56,12 @@ class TierConfig(BaseModel):
     specializations: list[str]
     timeout_s: int = 60
 
+    # Per-tier generation cap for `make answers`. None → fall back to the
+    # global --max-tokens (Makefile MAXTOK, default 2048). Override per
+    # tier via TIER{N}_MAX_TOKENS so a slow local tier can be given a
+    # bigger budget to actually finish a good answer.
+    max_tokens: int | None = None
+
     # Identity:
     #   router_alias    = what the router emits in x-vsr-selected-model.
     #   served_model_name = what the upstream serves; sent in the body's
@@ -166,18 +172,59 @@ def _read_yaml(path: Path) -> Any:
         return yaml.safe_load(f)
 
 
+def _env_bool(val: str) -> bool | None:
+    """Parse a human-written boolean. Returns None if unrecognized."""
+    v = val.strip().lower()
+    if v in {"1", "true", "yes", "on"}:
+        return True
+    if v in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _set_qwen_thinking(tier: TierConfig, enabled: bool) -> None:
+    """Flip Qwen3's `chat_template_kwargs.enable_thinking` in backend.extra_body.
+
+    This is the only "thinking mode" knob applicable in this harness — the
+    local Qwen3 tiers (T1/T2) served by vLLM, where the chat template gates
+    the hidden <think> chain on this flag. Vendor reasoning controls
+    (OpenAI reasoning_effort, Anthropic thinking budgets) are out of scope
+    here; set those in the tier YAML's `backend.extra_body` directly.
+
+    BackendSpec has extra='allow', so we read-modify-write the nested dict
+    and reassign it (a fresh dict, not in-place mutation of the YAML's) so
+    that answers.py's `tier.backend.model_dump()` picks it up.
+    """
+    extra = getattr(tier.backend, "extra_body", None)
+    extra = dict(extra) if isinstance(extra, dict) else {}
+    ctk = dict(extra.get("chat_template_kwargs") or {})
+    ctk["enable_thinking"] = enabled
+    extra["chat_template_kwargs"] = ctk
+    tier.backend.extra_body = extra
+
+
 def apply_tier_env_overrides(tier: TierConfig) -> TierConfig:
-    """Override endpoint URL / model id / API key from `TIER{N}_*` env vars.
+    """Override per-tier settings from `TIER{N}_*` env vars.
 
-    Lets `.env` be the single user-facing place to flip per-tier endpoint
-    settings without editing YAMLs. Three env vars per tier level N:
+    Lets `.env` be the single user-facing place to flip per-tier settings
+    without editing YAMLs. Env vars per tier level N:
 
-      TIER{N}_URL      → tier.endpoint.url
-      TIER{N}_MODEL    → tier.served_model_name
-      TIER{N}_API_KEY  → tier.endpoint.api_key_env = "TIER{N}_API_KEY"
-                         (the actual key value stays in the env var; this
-                          field just records its NAME for downstream readers
-                          to look up via os.environ.)
+      TIER{N}_URL         → tier.endpoint.url
+      TIER{N}_MODEL       → tier.served_model_name
+      TIER{N}_API_KEY     → tier.endpoint.api_key_env = "TIER{N}_API_KEY"
+                            (the actual key value stays in the env var; this
+                             field just records its NAME for downstream
+                             readers to look up via os.environ.)
+      TIER{N}_TIMEOUT     → tier.timeout_s (seconds)
+      TIER{N}_MAX_TOKENS  → tier.max_tokens (per-tier generation cap)
+      TIER{N}_THINKING    → backend.extra_body.chat_template_kwargs
+                            .enable_thinking (Qwen3 local tiers)
+
+    The last three exist so a slow local tier can be told to take longer
+    and produce a more complete answer (bigger token budget, longer read
+    timeout, optionally letting the model think) rather than being tuned
+    for speed — the goal is "good at low tier" so the user doesn't just
+    resubmit at a higher tier.
 
     Empty or unset env vars are ignored (the YAML default wins). This means
     .env.example can ship with empty placeholders that don't accidentally
@@ -205,6 +252,35 @@ def apply_tier_env_overrides(tier: TierConfig) -> TierConfig:
     key = os.environ.get(key_var, "").strip()
     if key:
         tier.endpoint.api_key_env = key_var
+
+    timeout_raw = os.environ.get(f"TIER{n}_TIMEOUT", "").strip()
+    if timeout_raw:
+        try:
+            tier.timeout_s = int(timeout_raw)
+        except ValueError as e:
+            raise ValueError(
+                f"TIER{n}_TIMEOUT must be an integer number of seconds, "
+                f"got {timeout_raw!r}"
+            ) from e
+
+    max_tokens_raw = os.environ.get(f"TIER{n}_MAX_TOKENS", "").strip()
+    if max_tokens_raw:
+        try:
+            tier.max_tokens = int(max_tokens_raw)
+        except ValueError as e:
+            raise ValueError(
+                f"TIER{n}_MAX_TOKENS must be an integer, got {max_tokens_raw!r}"
+            ) from e
+
+    thinking_raw = os.environ.get(f"TIER{n}_THINKING", "").strip()
+    if thinking_raw:
+        flag = _env_bool(thinking_raw)
+        if flag is None:
+            raise ValueError(
+                f"TIER{n}_THINKING must be a boolean (true/false/1/0/yes/no), "
+                f"got {thinking_raw!r}"
+            )
+        _set_qwen_thinking(tier, flag)
 
     return tier
 
