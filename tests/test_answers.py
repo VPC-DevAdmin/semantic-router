@@ -8,7 +8,8 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
-from benchmark.answers import run_answers
+from benchmark.answers import _extra_body_by_level, run_answers
+from benchmark.config import BackendSpec, ModelsConfig, TierConfig, TierEndpoint
 from benchmark.db import Pass1Result, TierAnswer, session_scope
 from benchmark.runs import create_run, seed_pending_answers
 from benchmark.tiers import ChatResult
@@ -85,6 +86,87 @@ class _FakeClient:
 
 def _clients(levels: list[int], fail_on_query: str | None = None) -> dict[int, _FakeClient]:
     return {lvl: _FakeClient(tier_level=lvl, fail_on_query=fail_on_query) for lvl in levels}
+
+
+@dataclass
+class _CapturingClient:
+    """Records the `extra` kwarg passed to chat()."""
+
+    tier_level: int
+    seen_extra: list = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        self.seen_extra = []
+
+    async def chat(
+        self, prompt: str, *, attachments=None, max_tokens=None, extra=None, **_: Any
+    ) -> ChatResult:
+        self.seen_extra.append(extra)
+        return ChatResult(
+            content=f"[tier{self.tier_level}] {prompt}",
+            model=f"tier{self.tier_level}",
+            prompt_tokens=5, completion_tokens=10,
+            latency_ms=10, raw={},
+        )
+
+
+def _tier_with_extra_body(level: int, extra_body: dict | None) -> TierConfig:
+    backend_kwargs: dict[str, Any] = {"kind": "remote"}
+    if extra_body is not None:
+        backend_kwargs["extra_body"] = extra_body
+    return TierConfig(
+        name=f"tier{level}",
+        level=level,
+        specializations=["general"],
+        router_alias=f"tier{level}",
+        served_model_name=f"tier{level}",
+        endpoint=TierEndpoint(url=f"http://localhost:880{level}/v1"),
+        backend=BackendSpec(**backend_kwargs),
+    )
+
+
+# ---- extra_body plumbing ----
+
+def test_extra_body_by_level_reads_backend_config() -> None:
+    models = ModelsConfig(tiers=[
+        _tier_with_extra_body(1, {"chat_template_kwargs": {"enable_thinking": False}}),
+        _tier_with_extra_body(2, None),  # no extra_body
+        _tier_with_extra_body(5, {"foo": "bar"}),
+    ])
+    got = _extra_body_by_level(models)
+    assert got == {
+        1: {"chat_template_kwargs": {"enable_thinking": False}},
+        5: {"foo": "bar"},
+    }
+    assert 2 not in got  # tiers without extra_body are absent
+
+
+@pytest.mark.asyncio
+async def test_run_answers_forwards_extra_body_to_client(tmp_path: Path) -> None:
+    """A tier's backend.extra_body must reach the chat() call so
+    provider knobs like enable_thinking=false actually take effect."""
+    db = bootstrap_db(tmp_path, QUERIES)
+    rid = create_run(
+        db,
+        router_config_path=make_router_yaml(tmp_path),
+        models_config_path=make_models_yaml(tmp_path),
+    )
+    _record_pass1(db, rid, "q1", tier_level=1)
+    _record_pass1(db, rid, "q2", tier_level=2)
+
+    models = ModelsConfig(tiers=[
+        _tier_with_extra_body(1, {"chat_template_kwargs": {"enable_thinking": False}}),
+        _tier_with_extra_body(2, None),
+        _tier_with_extra_body(3, None),
+    ])
+    seed_pending_answers(db, rid, models)
+
+    cap = {1: _CapturingClient(1), 2: _CapturingClient(2), 3: _CapturingClient(3)}
+    await run_answers(db, rid, models=models, clients_by_level=cap)
+
+    # Tier 1 had extra_body → forwarded; tier 2 had none → extra is None.
+    assert cap[1].seen_extra == [{"chat_template_kwargs": {"enable_thinking": False}}]
+    assert cap[2].seen_extra == [None]
 
 
 # ---- seed_pending_answers ----

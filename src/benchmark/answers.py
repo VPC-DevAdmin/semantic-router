@@ -56,6 +56,24 @@ def _build_clients_by_level(models: ModelsConfig) -> dict[int, OAIClient]:
     return out
 
 
+def _extra_body_by_level(models: ModelsConfig) -> dict[int, dict]:
+    """Per-tier `extra_body` merged into each chat request.
+
+    Read from `backend.extra_body` in the tier YAML (BackendSpec has
+    extra='allow', so arbitrary keys survive model_dump). Used to pass
+    provider-specific knobs the OpenAI schema doesn't model — e.g.
+    Qwen3's `chat_template_kwargs: {enable_thinking: false}` to stop the
+    model from spending the whole token budget on a hidden <think> chain
+    (the root cause of the T1 ReadTimeouts on CPU).
+    """
+    out: dict[int, dict] = {}
+    for tier in models.tiers:
+        extra = tier.backend.model_dump().get("extra_body")
+        if isinstance(extra, dict) and extra:
+            out[tier.level] = extra
+    return out
+
+
 def _build_clients_for_mock(models: ModelsConfig, mock_endpoint: str) -> dict[int, OAIClient]:
     """All tiers point at one mock endpoint — used by `make answers MOCK=true`.
 
@@ -101,6 +119,11 @@ async def run_answers(
             clients_by_level = _build_clients_for_mock(models, mock_endpoint)
         else:
             clients_by_level = _build_clients_by_level(models)
+
+    # Per-tier extra request-body knobs (e.g. disable Qwen3 thinking).
+    # Skipped when hitting the mock (it ignores unknown body fields, but
+    # there's no reason to send them).
+    extra_by_level = {} if mock_endpoint else _extra_body_by_level(models)
 
     report = AnswersReport()
 
@@ -158,6 +181,7 @@ async def run_answers(
                     snap["prompt"],
                     attachments=attachments,
                     max_tokens=max_tokens,
+                    extra=extra_by_level.get(level) or None,
                 )
                 with session_scope(db_path) as session:
                     row = session.execute(

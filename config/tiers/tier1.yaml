@@ -42,3 +42,14 @@ backend:
   enable_prefix_caching: true
   reasoning_parser: qwen3
   kv_gb: 24  # 1.7B model at 16K context only needs ~5-10 GiB of KV; 24 leaves room for socket-0 to also host T2 r0 (40 GiB KV) without OOM.
+
+  # Qwen3 emits a long <think> chain by default. On CPU at ~5-15 tok/s
+  # that burns the entire max_tokens budget on hidden reasoning and the
+  # request blows past the client read timeout (the q00057/q00067/q00076
+  # ReadTimeouts). Disable thinking so the budget produces the actual
+  # answer fast. `extra_body` is merged verbatim into each chat request
+  # by the answers worker; chat_template_kwargs.enable_thinking=false is
+  # Qwen3's documented switch.
+  extra_body:
+    chat_template_kwargs:
+      enable_thinking: false

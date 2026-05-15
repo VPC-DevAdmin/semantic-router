@@ -29,7 +29,7 @@ help:
 	@echo "  setup                          venv + deps + init DB + install vllm-sr (if missing)"
 	@echo "  load [MOCK=true]               validate exemplars; build router-config; load queries.json into DB"
 	@echo "  route [MOCK=true] [RUN_NEW=true]   rebuild router-config; routing pass"
-	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true] [TIER=<1-5>] [CONC=<N>]  routed-tier answers; top tier answered from gold"
+	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true] [TIER=<1-5>] [CONC=<N>] [MAXTOK=<N>]  routed-tier answers; top tier answered from gold"
 	@echo "  import-answers FILE=<path> TIER=<1-5> [RUN=<id>]  load externally-generated answers from a markdown file"
 	@echo "  update-gold [QID=<id[,id]>] [TIER=<1-5>] [YES=true]  regenerate gold via top tier (no scope = ALL, confirms)"
 	@echo "  export [RUN=<id>] [OUTPUT=<path>]  write demo.json (default: ./demo.json)"
@@ -159,6 +159,9 @@ route:
 # CONC=<N>     → concurrency (parallel requests). Default 8 in the CLI.
 #                Lower for CPU-bound local tiers (try 1-2) where parallel
 #                requests saturate the cores. Higher (16-32) for vendor APIs.
+# MAXTOK=<N>   → max_tokens per response (default 2048). Lower (e.g. 768)
+#                caps worst-case CPU wall-clock so slow generations don't
+#                hit the read timeout.
 # Top-tier-routed queries are answered from the gold (expected_answer)
 # rather than re-calling the top model. To regenerate the gold itself,
 # use `make update-gold QID=...`.
@@ -167,6 +170,7 @@ answers:
 	    $(if $(RUN),--run $(RUN),) \
 	    $(if $(TIER),--tier $(TIER),) \
 	    $(if $(CONC),--concurrency $(CONC),) \
+	    $(if $(MAXTOK),--max-tokens $(MAXTOK),) \
 	    $(if $(filter true,$(RUN_NEW)),--run-new,) \
 	    $(if $(filter true,$(MOCK)),--mock-endpoint $(MOCK_FROM_HOST),)
 
