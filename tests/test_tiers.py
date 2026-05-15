@@ -16,6 +16,7 @@ from benchmark.config import (
     apply_tier_env_overrides,
 )
 from benchmark.tiers import (
+    ChatError,
     MissingApiKeyError,
     OAIClient,
     _resolve_api_key,
@@ -71,6 +72,89 @@ async def test_text_only_request_shape(monkeypatch):
     assert result.content == "hello world"
     assert result.prompt_tokens == 7
     assert result.completion_tokens == 2
+
+
+def _patch_transport(monkeypatch, transport: httpx.MockTransport) -> None:
+    real_init = httpx.AsyncClient.__init__
+
+    def patched_init(self, *args, **kwargs):
+        kwargs["transport"] = transport
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", patched_init)
+
+
+@pytest.mark.asyncio
+async def test_chat_http_error_surfaces_body_and_model_hint(monkeypatch) -> None:
+    """A 404 from the server (e.g. wrong model name) must surface the
+    server's error body AND a model-mismatch hint, not a bare status code."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            json={"error": {"message": "The model `Qwen3-30B-A3B` does not exist."}},
+        )
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+    client = OAIClient(
+        endpoint="http://localhost:8002/v1",
+        model_id="Qwen3-30B-A3B",
+        api_key=None,
+        timeout_s=5.0,
+    )
+    with pytest.raises(ChatError) as ei:
+        await client.chat("hi", max_tokens=16)
+    msg = str(ei.value)
+    assert "HTTP 404" in msg
+    assert "Qwen3-30B-A3B" in msg
+    assert "does not exist" in msg          # server body surfaced
+    assert "model-name mismatch" in msg     # actionable hint
+    assert "/v1/models" in msg              # tells them how to check
+
+
+@pytest.mark.asyncio
+async def test_chat_timeout_is_informative(monkeypatch) -> None:
+    """A read timeout must say it's a timeout, name the budget, and point
+    at the thinking/budget knobs — not surface as an empty ReadTimeout."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+    client = OAIClient(
+        endpoint="http://localhost:8001/v1",
+        model_id="Qwen3-1.7B",
+        api_key=None,
+        timeout_s=600.0,
+    )
+    with pytest.raises(ChatError) as ei:
+        await client.chat("hi", max_tokens=4096)
+    msg = str(ei.value)
+    assert "ReadTimeout" in msg
+    assert "timeout budget 600s" in msg
+    assert "think" in msg.lower()
+    assert "MAX_TOKENS" in msg and "THINKING" in msg
+    assert "Qwen3-1.7B" in msg
+
+
+@pytest.mark.asyncio
+async def test_chat_connect_error_is_informative(monkeypatch) -> None:
+    """A refused connection must say the backend is unreachable, not raise
+    a bare httpx.ConnectError the operator has to decode."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+    client = OAIClient(
+        endpoint="http://localhost:8002/v1",
+        model_id="tier2",
+        api_key=None,
+        timeout_s=5.0,
+    )
+    with pytest.raises(ChatError) as ei:
+        await client.chat("hi", max_tokens=16)
+    msg = str(ei.value)
+    assert "ConnectError" in msg
+    assert "could not reach the backend" in msg
+    assert "docker ps" in msg
 
 
 def test_build_messages_with_image(tmp_path: Path) -> None:

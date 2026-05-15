@@ -41,6 +41,20 @@ class MissingApiKeyError(RuntimeError):
     pass
 
 
+class ChatError(RuntimeError):
+    """A chat call failed, with a message that says *what*, *where*, and *why*.
+
+    The answers worker stores `str(e)` verbatim into `tier_answers.error_msg`,
+    so the richer this is, the less the operator has to spelunk docker logs.
+    Distinguishes the three failure modes that actually happen here:
+      - timeout (backend accepted but didn't finish — usually a <think>
+        chain eating the whole token budget on CPU),
+      - HTTP 4xx/5xx with the server's error body surfaced (e.g. a
+        model-name mismatch → 404),
+      - connection refused (backend not up).
+    """
+
+
 class OAIClient:
     def __init__(
         self,
@@ -84,11 +98,63 @@ class OAIClient:
 
         url = f"{self.endpoint}/chat/completions"
         t0 = time.perf_counter()
-        async with httpx.AsyncClient(timeout=self._timeout_s) as client:
-            resp = await client.post(url, headers=self._headers(), json=body)
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout_s) as client:
+                resp = await client.post(url, headers=self._headers(), json=body)
+        except httpx.TimeoutException as e:
+            # ConnectTimeout subclasses both TimeoutException and ConnectError;
+            # catching TimeoutException first reports it as the timeout it is.
+            elapsed = time.perf_counter() - t0
+            raise ChatError(
+                f"{type(e).__name__} after {elapsed:.0f}s "
+                f"(timeout budget {self._timeout_s:.0f}s) calling {url} "
+                f"model={self.model_id!r}. The backend did not respond in "
+                f"time — most often it accepted the request and is still "
+                f"generating: a Qwen3 <think> chain can consume the entire "
+                f"max_tokens budget at CPU speed before the visible answer. "
+                f"Raise this tier's TIMEOUT / MAX_TOKENS in .env, or set "
+                f"TIER{{N}}_THINKING=false, then retry."
+            ) from e
+        except httpx.ConnectError as e:
+            raise ChatError(
+                f"ConnectError calling {url} model={self.model_id!r}: could "
+                f"not reach the backend — is it up? Check `docker ps` and "
+                f"`make start_LLM`, and that the URL/port are right. "
+                f"Underlying: {e!r}"
+            ) from e
+        except httpx.RequestError as e:
+            elapsed = time.perf_counter() - t0
+            raise ChatError(
+                f"{type(e).__name__} after {elapsed:.0f}s calling {url} "
+                f"model={self.model_id!r}: {e!r}"
+            ) from e
+
         latency_ms = int((time.perf_counter() - t0) * 1000)
-        resp.raise_for_status()
-        data = resp.json()
+
+        if resp.status_code >= 400:
+            excerpt = " ".join(resp.text.split())
+            if len(excerpt) > 600:
+                excerpt = excerpt[:600] + "…"
+            hint = ""
+            if resp.status_code in (400, 404) and "model" in excerpt.lower():
+                hint = (
+                    f" — this looks like a model-name mismatch: the request "
+                    f"sent model={self.model_id!r}, which must exactly match "
+                    f"what the server serves (`curl {self.endpoint}/models`)."
+                )
+            raise ChatError(
+                f"HTTP {resp.status_code} from {url} model={self.model_id!r} "
+                f"after {latency_ms} ms: {excerpt or '(empty response body)'}"
+                f"{hint}"
+            )
+
+        try:
+            data = resp.json()
+        except ValueError as e:
+            raise ChatError(
+                f"HTTP {resp.status_code} from {url} model={self.model_id!r} "
+                f"but the body was not JSON: {resp.text[:300]!r}"
+            ) from e
 
         choice = data["choices"][0]
         content = choice["message"]["content"]
