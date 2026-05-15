@@ -229,6 +229,38 @@ embedding_signals:
       # Constructive ethical framework (not synthesis)
       - "Construct an original ethical framework that takes seriously both the effective-altruist and the communitarian critiques rather than synthesizing them. Test your frame against the canonical thought experiments each tradition has used."
 
+  # ─────────────────────────────────────────────────────────────────────
+  # ARGUMENTATIVE CONSTRUCTION — judgment-and-commitment T4 catcher
+  # ─────────────────────────────────────────────────────────────────────
+  # Diagnostic identified a specific T4 under-route pattern: judgment
+  # prompts that demand a position/recommendation/diagnosis rather than
+  # a survey, AND don't match `moderate_complexity`'s technical archetypes
+  # (TLS, B-tree, etc.) so moderate doesn't fire for them. They have no
+  # signal contribution and collapse to T3 or below.
+  #
+  # Archetypes are written as GENERIC patterns of "demand commitment"
+  # rather than paraphrases of specific eval prompts — capturing the
+  # CATEGORY (decide, recommend, diagnose, take a position) without
+  # tying to particular eval-set content.
+  - id: argumentative_construction
+    description: "Continuous similarity to judgment/commitment-shape T4 prompts (decide, recommend, diagnose, take-a-position)."
+    threshold: 0.62
+    weight: 0.18
+    aggregation_method: max
+    candidates:
+      - "Make the case for a specific architectural pattern over its alternatives. Don't survey — commit to one."
+      - "Help me think through whether to fire an underperforming team member. Engage with this specific situation."
+      - "Pick one of these design options and tell me why. No surveys, no hedging."
+      - "Should we adopt this framework across the org? Take a position and defend it."
+      - "Recommend a specific book that would help someone in this situation. Just one."
+      - "Make a call: yes or no, and explain your reasoning. No 'it depends'."
+      - "Diagnose what's wrong with this team dynamic. Be specific, not abstract."
+      - "What's the single most important risk in this plan? Pick one."
+      - "Take a position on whether this technology will succeed. Defend it with specifics."
+      - "Engage with the strongest objection to this argument and rebut it."
+      - "Walk this person through their decision as actual advice, not as a list of considerations."
+      - "Should this organization make this change? Recommend an action, not a framework."
+
 # ═════════════════════════════════════════════════════════════════════════
 # Structure signals — mechanical / regex properties of the prompt
 # ═════════════════════════════════════════════════════════════════════════
@@ -250,7 +282,7 @@ structure_signals:
       lt: 12
 
   - id: long_prompt
-    description: "Fires when the prompt has 40+ words. Catches medium-length T4 judgment/strategy prompts that don't trigger any other structural signal."
+    description: "Fires when the prompt has 25+ words. Catches medium-length T3/T4 prompts that don't trigger any other structural signal. Threshold tuned to catch ~25-30 word technical design prompts (e.g., 'design a system to X at scale')."
     weight: 0.08
     feature:
       type: count
@@ -258,7 +290,7 @@ structure_signals:
         type: regex
         pattern: '\S+'
     predicate:
-      gte: 40
+      gte: 25
 
   - id: very_long_prompt
     description: "Fires when the prompt has 400+ words. Suggests long-form / complex ask."
