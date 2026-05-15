@@ -42,7 +42,7 @@ name: "five-tier-projection-router"
 # minimum is around -0.15 (trivial query strongly matching the detractor
 # embedding). Cutoffs are first-pass; tune from `eval_reporter.py` output
 # after the next route pass.
-tier_cutoffs: [0.03, 0.10, 0.22, 0.40]
+tier_cutoffs: [0.03, 0.10, 0.18, 0.40]
 
 # `:medium` complexity matches contribute `medium_weight_factor × weight`.
 # Kept at 0.0 because diagnostic confirmed vllm-sr's contrastive classifier
@@ -146,7 +146,7 @@ embedding_signals:
   # it pulls request_difficulty DOWN, anchoring trivial queries in T1.
   - id: trivial_lookup
     description: "Continuous similarity to short factual / lookup-shaped prompts."
-    threshold: 0.55
+    threshold: 0.65
     weight: -0.20
     aggregation_method: max
     candidates:
@@ -250,7 +250,7 @@ structure_signals:
       lt: 12
 
   - id: long_prompt
-    description: "Fires when the prompt has 100+ words. Suggests a substantive ask."
+    description: "Fires when the prompt has 40+ words. Catches medium-length T4 judgment/strategy prompts that don't trigger any other structural signal."
     weight: 0.08
     feature:
       type: count
@@ -258,7 +258,7 @@ structure_signals:
         type: regex
         pattern: '\S+'
     predicate:
-      gte: 100
+      gte: 40
 
   - id: very_long_prompt
     description: "Fires when the prompt has 400+ words. Suggests long-form / complex ask."
