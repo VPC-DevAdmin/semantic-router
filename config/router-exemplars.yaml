@@ -175,7 +175,7 @@ embedding_signals:
   - id: moderate_complexity
     description: "Continuous similarity to T2/T3-grade explanation, comparison, and basic-implementation prompts."
     threshold: 0.60
-    weight: 0.20
+    weight: 0.22
     aggregation_method: max
     candidates:
       # Explain-how — technical concepts at moderate depth
@@ -243,8 +243,8 @@ embedding_signals:
   # CATEGORY (decide, recommend, diagnose, take a position) without
   # tying to particular eval-set content.
   - id: argumentative_construction
-    description: "Continuous similarity to judgment/commitment-shape T4 prompts (decide, recommend, diagnose, take-a-position)."
-    threshold: 0.62
+    description: "Continuous similarity to judgment/commitment-shape T4 prompts (decide, recommend, diagnose, take-a-position). Threshold lowered to 0.58 so discursive 'discuss the considerations'-shape prompts also match (e.g., ethical/philosophical considerations queries) — they're argumentative-adjacent even when not commit-shaped."
+    threshold: 0.58
     weight: 0.18
     aggregation_method: max
     candidates:
