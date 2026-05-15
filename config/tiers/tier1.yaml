@@ -46,10 +46,26 @@ backend:
   # Qwen3 emits a long <think> chain by default. On CPU at ~5-15 tok/s
   # that burns the entire max_tokens budget on hidden reasoning and the
   # request blows past the client read timeout (the q00057/q00067/q00076
-  # ReadTimeouts). Disable thinking so the budget produces the actual
+  # ReadTimeouts). Disabling thinking makes the budget produce the actual
   # answer fast. `extra_body` is merged verbatim into each chat request
-  # by the answers worker; chat_template_kwargs.enable_thinking=false is
-  # Qwen3's documented switch.
+  # by the answers worker (and merged AFTER the hardcoded temperature, so
+  # the sampler keys below override it). chat_template_kwargs
+  # .enable_thinking is Qwen3's documented switch; TIER1_THINKING in .env
+  # flips it without losing the sampler keys (sibling-preserving).
+  #
+  # Sampler: the harness calls models with temperature=0 (greedy) for
+  # determinism, but Qwen3's model card explicitly says greedy decoding
+  # "can lead to performance degradation and endless repetitions" — which
+  # is exactly the verbatim synonym-list loop q00076 produced WITH
+  # thinking on. So even if thinking is re-enabled, use Qwen3's
+  # recommended sampling (temp 0.6 / top_p 0.95 / top_k 20) plus a
+  # presence_penalty (Qwen3 card: "if you encounter endless repetitions,
+  # set presence_penalty between 0 and 2"). This breaks the loop without
+  # turning thinking off.
   extra_body:
     chat_template_kwargs:
       enable_thinking: false
+    temperature: 0.6
+    top_p: 0.95
+    top_k: 20
+    presence_penalty: 1.5
