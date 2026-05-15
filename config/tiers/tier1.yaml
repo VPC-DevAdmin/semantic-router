@@ -5,7 +5,7 @@
 name: tier1
 level: 1
 specializations: [general]
-timeout_s: 30
+timeout_s: 180  # CPU inference of 200-500 tokens on Qwen3-1.7B at concurrency >1 can take 30-90s per request; 180s gives headroom.
 
 # What the router emits in `x-vsr-selected-model` (used for tier lookup).
 router_alias: tier1
