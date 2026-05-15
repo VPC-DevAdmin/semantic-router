@@ -26,7 +26,13 @@ backend:
   max_model_len: 8192
   block_size: 32
   dtype: bfloat16
-  kv_gb_per_replica: 120
+  # KV cache size per replica in GiB. Was 120 GiB, but socket 0 also hosts
+  # T1 (Qwen3-1.7B with kv_gb=64 → ~70 GiB total). 120+70 > 188 GiB socket
+  # capacity, so T2 r0 couldn't start. 40 GiB per replica is plenty for
+  # 30B-MoE at 8K context with default concurrency:
+  #   ~64 active params × bf16 × 8192 ctx × small batch = ~10 GiB working set
+  # Leaving 4× headroom for prefix-cache and batching.
+  kv_gb_per_replica: 40
   # One docker container per replica. dual_socket uses `--network host`,
   # so each replica's `port:` is bound directly on the host.
   # Port layout across local tiers:

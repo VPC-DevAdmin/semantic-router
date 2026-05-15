@@ -41,4 +41,4 @@ backend:
   dtype: bfloat16
   enable_prefix_caching: true
   reasoning_parser: qwen3
-  kv_gb: 64
+  kv_gb: 24  # 1.7B model at 16K context only needs ~5-10 GiB of KV; 24 leaves room for socket-0 to also host T2 r0 (40 GiB KV) without OOM.
