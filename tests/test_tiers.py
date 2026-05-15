@@ -157,6 +157,65 @@ async def test_chat_connect_error_is_informative(monkeypatch) -> None:
     assert "docker ps" in msg
 
 
+@pytest.mark.asyncio
+async def test_chat_falls_back_to_reasoning_content(monkeypatch) -> None:
+    """Qwen3 + reasoning-parser puts a thinking-only answer in
+    reasoning_content with content=null; we must surface it, not store ''."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "Qwen3-1.7B",
+                "choices": [{
+                    "finish_reason": "length",
+                    "message": {
+                        "content": None,
+                        "reasoning_content": "Joyful, glad, cheerful — 'content' is calm.",
+                    },
+                }],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 4096},
+            },
+        )
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+    client = OAIClient(
+        endpoint="http://localhost:8001/v1", model_id="Qwen3-1.7B",
+        api_key=None, timeout_s=5.0,
+    )
+    result = await client.chat("What's a synonym for 'happy'?", max_tokens=4096)
+    assert result.content == "Joyful, glad, cheerful — 'content' is calm."
+
+
+@pytest.mark.asyncio
+async def test_chat_empty_completion_raises(monkeypatch) -> None:
+    """A truly empty completion must be a loud error, not a fake success
+    (the q00076 bug: empty answer stored with status='success')."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "Qwen3-1.7B",
+                "choices": [{
+                    "finish_reason": "length",
+                    "message": {"content": "   ", "reasoning_content": None},
+                }],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 4096},
+            },
+        )
+
+    _patch_transport(monkeypatch, httpx.MockTransport(handler))
+    client = OAIClient(
+        endpoint="http://localhost:8001/v1", model_id="Qwen3-1.7B",
+        api_key=None, timeout_s=5.0,
+    )
+    with pytest.raises(ChatError) as ei:
+        await client.chat("What's a synonym for 'happy'?", max_tokens=4096)
+    msg = str(ei.value)
+    assert "empty completion" in msg
+    assert "finish_reason='length'" in msg
+    assert "THINKING=false" in msg and "MAX_TOKENS" in msg
+
+
 def test_build_messages_with_image(tmp_path: Path) -> None:
     img = tmp_path / "tiny.png"
     img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)  # not a real png; mime guesser uses .png

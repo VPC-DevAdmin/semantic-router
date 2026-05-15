@@ -157,14 +157,46 @@ class OAIClient:
             ) from e
 
         choice = data["choices"][0]
-        content = choice["message"]["content"]
+        message = choice.get("message") or {}
+        content = message.get("content")
         # Some servers return content as a list of parts; flatten to text.
         if isinstance(content, list):
             content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
+        content = (content or "").strip()
 
         usage = data.get("usage") or {}
+        finish_reason = choice.get("finish_reason")
+
+        # Qwen3 with `--reasoning-parser qwen3`: the <think> chain is split
+        # into message.reasoning_content and only the post-</think> text
+        # lands in message.content. If the model burns the whole token
+        # budget inside <think> (finish_reason="length", no closing tag)
+        # the parser puts *everything* in reasoning_content and content is
+        # null — which we were silently storing as an empty "success"
+        # (this is the q00076 bug). Fall back to the reasoning stream so a
+        # thinking-only completion still yields its substance.
+        if not content:
+            reasoning = message.get("reasoning_content")
+            if isinstance(reasoning, str) and reasoning.strip():
+                content = reasoning.strip()
+
+        # Still nothing → a genuinely empty completion. Make it a loud
+        # error (retried on the next pass, visible in the running list)
+        # instead of a fake success.
+        if not content:
+            raise ChatError(
+                f"empty completion from {url} model={self.model_id!r} "
+                f"(finish_reason={finish_reason!r}, "
+                f"completion_tokens={usage.get('completion_tokens')}, "
+                f"{latency_ms} ms): the model returned no content and no "
+                f"reasoning_content. If finish_reason='length' the budget "
+                f"was exhausted — most often a Qwen3 <think> chain that "
+                f"never closed. Disable thinking for this tier "
+                f"(TIER{{N}}_THINKING=false) or raise MAX_TOKENS."
+            )
+
         return ChatResult(
-            content=content or "",
+            content=content,
             model=data.get("model", self.model_id),
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
