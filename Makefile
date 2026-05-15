@@ -31,7 +31,7 @@ help:
 	@echo "  route [MOCK=true] [RUN_NEW=true]   rebuild router-config; routing pass"
 	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true] [TIER=<1-5>] [CONC=<N>]  routed-tier answers; top tier answered from gold"
 	@echo "  import-answers FILE=<path> TIER=<1-5> [RUN=<id>]  load externally-generated answers from a markdown file"
-	@echo "  update-gold QID=<id[,id]> | ALL=true YES=true   regenerate gold answers via the top tier (overwrites expected_answer)"
+	@echo "  update-gold [QID=<id[,id]>] [TIER=<1-5>] [YES=true]  regenerate gold via top tier (no scope = ALL, confirms)"
 	@echo "  export [RUN=<id>] [OUTPUT=<path>]  write demo.json (default: ./demo.json)"
 	@echo "  misroutes [RUN=<id>]           diagnostic: list queries routed BELOW their min tier"
 	@echo "  scores [RUN=<id>]              diagnostic: per-signal score + threshold gap for each misroute"
@@ -182,19 +182,16 @@ import-answers:
 	$(BENCHMARK) import-answers $(FILE) --tier $(TIER) \
 	    $(if $(RUN),--run $(RUN),)
 
-# Regenerate gold answers by calling the top tier (Opus). Destructive —
-# overwrites Query.gold_answer for the named queries.
-#   QID=<id[,id,...]>  — comma-separated query IDs to regenerate
-#   ALL=true           — regenerate ALL gold (requires YES=true)
-#   YES=true           — skip the confirmation prompt
+# Regenerate gold answers by calling the top tier (Opus). Overwrites
+# Query.gold_answer. Scope, most → least specific:
+#   QID=<id[,id,...]>  — just those queries
+#   TIER=<1-5>         — every query with that expected_min_tier
+#   (neither)          — ALL queries (prompts to confirm unless YES=true)
 # After this, re-run `make answers` so top-tier rows pick up new gold.
 update-gold:
-	@if [ -z "$(QID)" ] && [ "$(ALL)" != "true" ]; then \
-	  echo "usage: make update-gold QID=q00046[,q00050,...]  |  make update-gold ALL=true YES=true"; exit 2; \
-	fi
 	$(BENCHMARK) update-gold --db $(DB) \
 	    $(foreach q,$(subst $(comma), ,$(QID)),--query-id $(q)) \
-	    $(if $(filter true,$(ALL)),--all,) \
+	    $(if $(TIER),--tier $(TIER),) \
 	    $(if $(filter true,$(YES)),--yes,)
 
 OUTPUT ?= demo.json

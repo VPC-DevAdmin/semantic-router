@@ -408,58 +408,89 @@ def import_answers_cmd(
 def update_gold_cmd(
     query_id: list[str] = typer.Option(
         [], "--query-id", "-q",
-        help="Query ID to regenerate gold for (repeatable). Required unless --all.",
+        help="Query ID to regenerate gold for (repeatable). Narrowest scope.",
     ),
-    all_queries: bool = typer.Option(
-        False, "--all",
-        help="Regenerate gold for EVERY query. Destructive; requires --yes.",
+    tier: int | None = typer.Option(
+        None, "--tier",
+        help="Regenerate gold for every query with this expected_min_tier.",
     ),
     db: Path = typer.Option(DEFAULT_DB_PATH),
     models: Path = typer.Option(DEFAULT_TIERS),
     max_tokens: int = typer.Option(2048, "--max-tokens"),
     concurrency: int = typer.Option(4, "--concurrency"),
-    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation prompt."),
+    yes: bool = typer.Option(
+        False, "--yes",
+        help="Skip the confirmation prompt for the full-set (no scope) case.",
+    ),
 ) -> None:
     """Regenerate gold answers by calling the top-tier model.
 
     The top tier IS the gold-grade model (Opus). When the upstream
-    `expected_answer` is stale/wrong/missing for some queries, this
-    calls the top tier with each query's prompt and OVERWRITES
-    `Query.gold_answer` (and stamps gold_model/gold_generated_at).
+    `expected_answer` is stale/wrong/missing, this calls the top tier
+    with each query's prompt and OVERWRITES `Query.gold_answer` (and
+    stamps gold_model/gold_generated_at).
 
-    Destructive: requires explicit --query-id values, or --all --yes.
+    Scope (most → least specific):
+      --query-id q00046 -q q00050   just those queries
+      --tier 5                      every query with expected_min_tier == 5
+      (no scope)                    EVERY query — prompts for confirmation
+                                    unless --yes
+
     Separate from `make answers` on purpose: answers CONSUMES gold,
-    this PRODUCES it.
+    this PRODUCES it. Per-query failures are reported and never clobber
+    the existing gold.
     """
     if not db.exists():
         console.print(f"[red]error[/]: db {db} does not exist; run `make setup` first")
         raise typer.Exit(code=2)
+    if query_id and tier is not None:
+        console.print(
+            "[red]error[/]: pass --query-id OR --tier, not both"
+        )
+        raise typer.Exit(code=2)
 
-    qids = list(query_id)
-    if all_queries:
-        if not yes:
+    from sqlalchemy import select as _select
+
+    if query_id:
+        qids = list(query_id)
+        scope = f"{len(qids)} named query(ies)"
+    elif tier is not None:
+        with session_scope(db) as s:
+            qids = [
+                qid for (qid,) in s.execute(
+                    _select(Query.query_id).where(Query.expected_min_tier == tier)
+                ).all()
+            ]
+        scope = f"tier {tier} ({len(qids)} query(ies) with expected_min_tier={tier})"
+        if not qids:
             console.print(
-                "[red]refusing[/]: --all overwrites every gold answer. "
-                "Re-run with --yes to confirm."
+                f"[red]error[/]: no queries with expected_min_tier={tier}"
             )
             raise typer.Exit(code=2)
-        from sqlalchemy import select as _select
+    else:
+        # No scope → the whole set. This is the biggest blast radius
+        # (a full-set Opus regen) so it's the only path that confirms.
         with session_scope(db) as s:
             qids = [
                 qid for (qid,) in s.execute(_select(Query.query_id)).all()
             ]
+        scope = f"ALL {len(qids)} query(ies)"
+        if not yes:
+            confirmed = typer.confirm(
+                f"Regenerate gold for {scope} by calling the top tier? "
+                f"This overwrites every expected_answer and costs N top-tier "
+                f"calls.",
+                default=False,
+            )
+            if not confirmed:
+                console.print("[yellow]aborted[/] (no changes made)")
+                raise typer.Exit(code=1)
+
     if not qids:
-        console.print(
-            "[red]error[/]: pass --query-id <id> (repeatable) or --all --yes"
-        )
+        console.print("[red]error[/]: no matching queries")
         raise typer.Exit(code=2)
 
-    if not yes and not all_queries:
-        console.print(
-            f"[yellow]about to overwrite gold for {len(qids)} query(ies)[/] "
-            f"by calling the top tier. Ctrl-C to abort; continuing in 3s..."
-        )
-
+    console.print(f"[bold]update-gold[/]: regenerating gold for {scope}")
     models_cfg = load_models(models)
     result = asyncio.run(
         update_gold_answers(
@@ -470,7 +501,6 @@ def update_gold_cmd(
             concurrency=concurrency,
         )
     )
-    console.print("[bold]update-gold[/]")
     console.print(str(result))
     console.print(
         "[dim]note[/]: re-run `make answers` so top-tier rows pick up the "
