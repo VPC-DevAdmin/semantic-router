@@ -300,6 +300,11 @@ def answers_cmd(
     if tier is not None:
         console.print(f"[yellow]--tier[/]: restricting worker to tier {tier} rows")
 
+    # markup=False/highlight=False: the lines contain "[ 12/110]" which
+    # rich would otherwise try to parse as style markup.
+    def _progress(line: str) -> None:
+        console.print(line, markup=False, highlight=False)
+
     report = asyncio.run(
         run_answers(
             db,
@@ -309,6 +314,7 @@ def answers_cmd(
             max_tokens=max_tokens,
             mock_endpoint=mock_endpoint,
             tier_level=tier,
+            progress=_progress,
         )
     )
     console.print(f"[bold]answers[/] (run {rid})")

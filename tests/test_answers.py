@@ -221,6 +221,50 @@ async def test_run_answers_per_tier_max_tokens_overrides_global(tmp_path: Path) 
     assert cap[2].seen_max_tokens == [512]    # global default fallback
 
 
+# ---- live progress lines ----
+
+@pytest.mark.asyncio
+async def test_run_answers_emits_progress_lines(tmp_path: Path) -> None:
+    """make answers must show a running list: a start line and an outcome
+    line per query, naming the query number, tier, model, and status."""
+    db = bootstrap_db(tmp_path, QUERIES)
+    rid = create_run(
+        db,
+        router_config_path=make_router_yaml(tmp_path),
+        models_config_path=make_models_yaml(tmp_path),
+    )
+    _record_pass1(db, rid, "q1", tier_level=1)  # will succeed
+    _record_pass1(db, rid, "q2", tier_level=2)  # will error
+
+    models = ModelsConfig(tiers=[
+        _tier_with_extra_body(1, None),
+        _tier_with_extra_body(2, None),
+        _tier_with_extra_body(3, None),
+    ])
+    seed_pending_answers(db, rid, models)
+
+    lines: list[str] = []
+    clients = {
+        1: _FakeClient(tier_level=1),
+        2: _FakeClient(tier_level=2, fail_on_query="harder"),
+        3: _FakeClient(tier_level=3),
+    }
+    await run_answers(
+        db, rid, models=models, clients_by_level=clients, progress=lines.append
+    )
+
+    joined = "\n".join(lines)
+    # Two queries → at least a start + outcome line each.
+    assert len(lines) >= 4
+    assert all(line.startswith("[") and "/2]" in line for line in lines)
+    # q1 (tier1, model "tier1") ran and succeeded.
+    assert any("q1" in ln and "tier1" in ln and "... running" in ln for ln in lines)
+    assert any("q1" in ln and "tier1" in ln and " OK " in ln for ln in lines)
+    # q2 (tier2) errored — outcome line carries the ERROR label.
+    assert any("q2" in ln and "tier2" in ln and " ERROR " in ln for ln in lines)
+    assert "tok" in joined  # success line reports completion tokens
+
+
 # ---- seed_pending_answers ----
 
 def test_seed_one_row_per_routed_query(tmp_path: Path) -> None:

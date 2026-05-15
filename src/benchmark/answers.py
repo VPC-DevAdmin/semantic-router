@@ -16,6 +16,7 @@ Per-row session commits make killing the process mid-run safe.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -106,6 +107,30 @@ def _build_clients_for_mock(models: ModelsConfig, mock_endpoint: str) -> dict[in
     return out
 
 
+def _status_label(exc: Exception) -> str:
+    """One-word outcome for the live progress line.
+
+    Mirrors the ChatError classification so the running list reads
+    TIMEOUT / HTTP-ERR / UNREACHABLE / ERROR without the operator
+    having to parse the full message.
+    """
+    name = type(exc).__name__
+    msg = str(exc)
+    if "Timeout" in name or "Timeout" in msg:
+        return "TIMEOUT"
+    if msg.lstrip().startswith("HTTP ") or "HTTP " in msg[:16]:
+        return "HTTP-ERR"
+    if "ConnectError" in name or "could not reach the backend" in msg:
+        return "UNREACHABLE"
+    return "ERROR"
+
+
+def _one_line(s: str, limit: int = 200) -> str:
+    """Collapse whitespace and truncate so a detail fits on one line."""
+    s = " ".join(s.split())
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
 async def run_answers(
     db_path: Path,
     run_id: int,
@@ -116,6 +141,7 @@ async def run_answers(
     clients_by_level: dict[int, OAIClient] | None = None,
     mock_endpoint: str | None = None,
     tier_level: int | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> AnswersReport:
     """Process pending tier_answers rows.
 
@@ -128,6 +154,13 @@ async def run_answers(
     tiers' pending/error rows are left untouched. Useful when you want
     to exercise just-wired backends without re-hitting expensive vendor
     APIs for the tiers that already succeeded.
+
+    `progress`, if given, is called once when each query starts and once
+    when it finishes, with a preformatted single-line string (query
+    number, tier, model, then the outcome: OK / TIMEOUT / HTTP-ERR /
+    UNREACHABLE / ERROR). The CLI wires this to the console so
+    `make answers` shows a running list. None → silent (tests, library
+    use).
     """
     if clients_by_level is None:
         if mock_endpoint:
@@ -168,18 +201,34 @@ async def run_answers(
             for (ta, q) in rows
         ]
 
+    total = len(snapshot)
+    model_by_level = {t.level: t.served_model_name for t in models.tiers}
+
+    def _emit(msg: str) -> None:
+        if progress is not None:
+            progress(msg)
+
+    def _prefix(idx: int, qid: str, level: int) -> str:
+        model_name = model_by_level.get(level, "?")
+        return f"[{idx:>{len(str(total))}}/{total}] {qid}  tier{level}  {model_name}"
+
     sem = asyncio.Semaphore(concurrency)
 
-    async def run_one(snap: dict) -> None:
+    async def run_one(idx: int, snap: dict) -> None:
         async with sem:
             qid = snap["query_id"]
             level = snap["tier_level"]
             attempted_at = datetime.now(UTC)
+            _emit(f"{_prefix(idx, qid, level)}  ... running")
             client = clients_by_level.get(level)
             if client is None:
                 report.errors += 1
                 report.error_rows.append(
                     (qid, level, f"no tier with level={level} in models.yaml")
+                )
+                _emit(
+                    f"{_prefix(idx, qid, level)}  UNREACHABLE  "
+                    f"no tier with level={level} in models config"
                 )
                 with session_scope(db_path) as session:
                     row = session.execute(
@@ -217,9 +266,19 @@ async def run_answers(
                     row.error_msg = None
                     row.attempted_at = attempted_at
                 report.succeeded += 1
+                secs = (result.latency_ms or 0) / 1000
+                toks = result.completion_tokens
+                tok_str = f"{toks} tok" if toks is not None else "? tok"
+                _emit(
+                    f"{_prefix(idx, qid, level)}  OK  {secs:.1f}s  {tok_str}"
+                )
             except Exception as e:  # noqa: BLE001
                 report.errors += 1
                 report.error_rows.append((qid, level, f"{type(e).__name__}: {e}"))
+                _emit(
+                    f"{_prefix(idx, qid, level)}  {_status_label(e)}  "
+                    f"{_one_line(str(e))}"
+                )
                 with session_scope(db_path) as session:
                     row = session.execute(
                         select(TierAnswer)
@@ -233,5 +292,7 @@ async def run_answers(
             finally:
                 report.attempted += 1
 
-    await asyncio.gather(*(run_one(s) for s in snapshot))
+    await asyncio.gather(
+        *(run_one(i, s) for i, s in enumerate(snapshot, start=1))
+    )
     return report
