@@ -147,15 +147,17 @@ End-to-end mock pipeline works: `make setup` → `make load` →
 `config/router-config.yaml`. Lexical/keyword routing has been removed —
 semantic only.
 
-**Multi-model tiers (current):** each tier can front several models
-(slot 0 = bare `TIER{N}_*`, indexed `TIER{N}_{i}_*` for more, optional
-`PROVIDER` label). `make answers` calls EVERY model in the routed tier,
-so there's one `tier_answers` row per (run, query, tier, model) —
-PK `(run_id, query_id, tier_level, model_id)`. The gold set is
-per-provider in the new `gold_answers` table (`upstream` from
-queries.json, plus `update-gold` / `import:<file>`). `demo.json` now
-carries `expected_answers[]`, `routed_answers[]`, and per-tier lists of
-`{provider, model, answer}`. There is no longer a top-tier gold
-short-circuit — every top-tier model is called (each is a provider's
-expected answer). The DB schema changed: a fresh DB or
-`make clean-results` + reseed is required (no migration script).
+**Multi-model tiers (current):** each non-top tier can front several
+models (slot 0 = bare `TIER{N}_*`, indexed `TIER{N}_{i}_*` for more,
+optional `PROVIDER` label). `make answers` calls EVERY model in the
+routed tier — one `tier_answers` row per (run, query, tier, model),
+PK `(run_id, query_id, tier_level, model_id)`. **Top-tier shortcut:**
+the top tier is the gold reference (every comparison is routed-vs-top,
+never top-vs-top), so queries routed to the top tier are SKIPPED by
+`make answers` — no model calls. The per-provider gold set lives in the
+`gold_answers` table: `source="upstream"` from queries.json at
+`make load`, plus `make update-gold` (which DOES call every top-tier
+model) and `import:<file>`. `demo.json` carries `expected_answers[]`,
+`routed_answers[]`, and per-tier lists of `{provider, model, answer}`.
+The DB schema changed: a fresh DB or `make clean-results` + reseed is
+required (no migration script).

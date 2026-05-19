@@ -114,6 +114,10 @@ class AnswerSeedResult:
     replaced: int = 0  # stale rows deleted (wrong tier, or a model no longer
                        # configured for the routed tier)
     kept: int = 0      # rows left alone (already at the right tier+model)
+    skipped_top_tier: int = 0  # queries routed to the top tier — NOT called
+                               # by make answers (the top tier IS the gold;
+                               # its per-provider answers come from
+                               # update-gold / upstream, never make answers)
 
     def __int__(self) -> int:
         # Backward-compat: callers that expected just an int count still work.
@@ -125,6 +129,8 @@ class AnswerSeedResult:
             parts.append(f"replaced={self.replaced} (stale tier/model)")
         if self.kept:
             parts.append(f"kept={self.kept}")
+        if self.skipped_top_tier:
+            parts.append(f"skipped_top_tier={self.skipped_top_tier}")
         return ", ".join(parts)
 
 
@@ -145,18 +151,24 @@ def seed_pending_answers(
     null routed tier) are skipped until `make route` records a decision.
     TTS-only queries are excluded.
 
-    Row reconciliation (per row = per model):
+    TOP-TIER SHORTCUT: the top tier IS the gold/reference tier — every
+    comparison in the demo is "routed answer vs. the top-tier expected
+    answer", never the top tier against itself. So a query the router
+    sent to the top tier needs NO model calls here: its per-provider
+    answers are the gold, produced separately by `make update-gold`
+    (which calls every top-tier model) and the upstream `expected_answer`
+    seeded into gold_answers at `make load`. Such queries are skipped
+    (and any stale top-tier rows for them are deleted).
+
+    Row reconciliation for non-top tiers (per row = per model):
       - A row already at the right (tier_level, model_id) → kept.
       - A row at a different tier_level, or for a model no longer
         configured for the routed tier → stale: deleted (replaced).
       - A wanted (tier_level, model_id) with no row → seeded (pending).
-
-    (There is no longer a top-tier gold shortcut: with several top-tier
-    providers each gives a different answer, so we call them all. The
-    upstream `expected_answer` lives in the gold_answers table instead.)
     """
     result = AnswerSeedResult()
     now = datetime.now(UTC)
+    top_tier_level = max((t.level for t in models.tiers), default=0)
 
     with session_scope(db_path) as session:
         stmt = select(Query.query_id, Query.specializations)
@@ -187,6 +199,14 @@ def seed_pending_answers(
             existing_by_qid.setdefault(ta.query_id, []).append(ta)
 
         for qid, level in routed_by_qid.items():
+            if top_tier_level and level == top_tier_level:
+                # Routed to the gold tier → make answers does NOT call it.
+                # Drop any stale rows that may exist for this query.
+                for ta in existing_by_qid.get(qid, []):
+                    session.delete(ta)
+                    result.replaced += 1
+                result.skipped_top_tier += 1
+                continue
             try:
                 tier = models.by_level(level)
             except KeyError:

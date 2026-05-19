@@ -281,6 +281,12 @@ def answers_cmd(
             f"[green]seeded[/] {seed_result.seeded} new pending row(s) "
             f"(one per model in each query's routed tier)"
         )
+    if seed_result.skipped_top_tier:
+        console.print(
+            f"[dim]skipped[/] {seed_result.skipped_top_tier} top-tier-routed "
+            f"query(ies) — the top tier is the gold reference; its answers "
+            f"come from `make update-gold`, not `make answers`."
+        )
     if not (seed_result.seeded or seed_result.replaced):
         if seed_result.kept:
             console.print(

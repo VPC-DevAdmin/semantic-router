@@ -165,10 +165,14 @@ shape — a tier can front several provider models and they're all called):
 
 The external judge compares each `routed_answers[]` entry against the
 `expected_answers[]` set, so users can see how the outcome changes on
-OpenAI / Google vs. Anthropic. There is no top-tier gold short-circuit:
-every top-tier model is called and each is that provider's expected
-answer. (Pre-multi-model the shape was `responses.{gold,routed}` with a
-single answer each — superseded.)
+OpenAI / Google vs. Anthropic. **Comparisons are always routed-vs-top,
+never top-vs-top:** queries the router sends to the top tier are skipped
+by `make answers` (no model calls); their per-provider answers ARE the
+gold, produced by `make update-gold` (which calls every top-tier model)
+and the upstream `expected_answer`. So a top-tier-routed query has
+`expected_answers[]` populated and `routed_answers: []`.
+(Pre-multi-model the shape was `responses.{gold,routed}` with a single
+answer each — superseded.)
 
 ## 8. Repository layout
 
@@ -410,12 +414,15 @@ not `/v1/chat/completions`. Replaced with `tools/oai_mock.py`.
 
 ### Done
 
-- ~~**Multi-model tiers.**~~ A tier fronts N provider models (slot 0 =
-  bare `TIER{N}_*`, indexed `TIER{N}_{i}_*`, optional `PROVIDER`).
-  `make answers` calls every model in the routed tier; `gold_answers`
-  holds the per-provider expected set; `demo.json` reshaped to
-  `expected_answers[]` / `routed_answers[]` (§7). Top-tier gold
-  short-circuit removed. Lexical/keyword routing removed (semantic only).
+- ~~**Multi-model tiers.**~~ A non-top tier fronts N provider models
+  (slot 0 = bare `TIER{N}_*`, indexed `TIER{N}_{i}_*`, optional
+  `PROVIDER`). `make answers` calls every model in the routed tier but
+  SKIPS top-tier-routed queries (the top tier is the gold reference —
+  routed-vs-top, never top-vs-top). `gold_answers` holds the
+  per-provider expected set (upstream + update-gold + import);
+  `make update-gold` calls every top-tier model. `demo.json` reshaped
+  to `expected_answers[]` / `routed_answers[]` (§7). Lexical/keyword
+  routing removed (semantic only).
 - ~~**Implement `make answers`.**~~ `src/benchmark/answers.py`;
   `tier_answers` PK `(run_id, query_id, tier_level, model_id)`.
 - ~~**Implement `make export`.**~~ `src/benchmark/export.py`; emits

@@ -169,7 +169,7 @@ def test_seed_one_row_per_routed_query_single_model(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)
     _record_pass1(db, rid, "q1", 1)
     _record_pass1(db, rid, "q2", 3)
-    result = seed_pending_answers(db, rid, _models([1, 2, 3]))
+    result = seed_pending_answers(db, rid, _models([1, 2, 3, 4, 5]))
     assert (result.seeded, result.replaced, result.kept) == (2, 0, 0)
     with session_scope(db) as s:
         rows = s.execute(select(TierAnswer).where(TierAnswer.run_id == rid)).scalars().all()
@@ -183,7 +183,7 @@ def test_seed_one_row_per_model_in_routed_tier(tmp_path: Path) -> None:
     """The routed tier fronts several models → one row per model."""
     db, rid = _bootstrap(tmp_path)
     _record_pass1(db, rid, "q2", 3)
-    models = ModelsConfig(tiers=[_tier(1), _multi(3, ["gpt-5", "gemini", "claude"])])
+    models = ModelsConfig(tiers=[_tier(1), _multi(3, ["gpt-5", "gemini", "claude"]), _tier(5)])
     result = seed_pending_answers(db, rid, models)
     assert result.seeded == 3
     with session_scope(db) as s:
@@ -209,9 +209,10 @@ def test_seed_idempotent_when_unchanged(tmp_path: Path) -> None:
     assert (r2.seeded, r2.replaced, r2.kept) == (0, 0, 1)
 
 
-def test_seed_top_tier_routed_is_pending_not_gold(tmp_path: Path) -> None:
-    """No more gold short-circuit: a top-tier-routed query seeds pending
-    rows for every top-tier model (we call them all)."""
+def test_seed_skips_top_tier_routed_queries(tmp_path: Path) -> None:
+    """The top tier is the gold reference — make answers must NOT call it.
+    A top-tier-routed query seeds NO rows (its answers come from
+    update-gold / upstream)."""
     db = bootstrap_db(tmp_path, [
         {"id": "g5", "prompt": "frontier", "expected_min_tier": 5,
          "specializations": ["general"], "expected_answer": "GOLD for g5"},
@@ -223,16 +224,34 @@ def test_seed_top_tier_routed_is_pending_not_gold(tmp_path: Path) -> None:
     _record_pass1(db, rid, "g5", 5)
     models = ModelsConfig(tiers=[_tier(1), _multi(5, ["opus", "gpt-5"])])
     result = seed_pending_answers(db, rid, models)
-    assert result.seeded == 2
+    assert result.seeded == 0
+    assert result.skipped_top_tier == 1
     with session_scope(db) as s:
         rows = s.execute(select(TierAnswer).where(TierAnswer.query_id == "g5")).scalars().all()
-    assert {r.model_id for r in rows} == {"opus", "gpt-5"}
-    assert all(r.status == "pending" for r in rows)  # not gold-filled
+    assert rows == []  # no model calls for the gold tier
+
+
+def test_seed_deletes_stale_top_tier_rows(tmp_path: Path) -> None:
+    """If a query is re-routed to the top tier, any prior lower-tier rows
+    are dropped and nothing is seeded."""
+    db, rid = _bootstrap(tmp_path)
+    models = ModelsConfig(tiers=[_tier(1), _multi(5, ["opus"])])
+    _record_pass1(db, rid, "q1", 1)
+    assert seed_pending_answers(db, rid, models).seeded == 1
+    with session_scope(db) as s:
+        s.execute(
+            select(Pass1Result).where(Pass1Result.query_id == "q1")
+        ).scalar_one().router_selected_tier = 5
+    r2 = seed_pending_answers(db, rid, models)
+    assert r2.skipped_top_tier == 1 and r2.replaced == 1 and r2.seeded == 0
+    with session_scope(db) as s:
+        rows = s.execute(select(TierAnswer).where(TierAnswer.query_id == "q1")).scalars().all()
+    assert rows == []
 
 
 def test_seed_replaces_stale_tier(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)
-    models = _models([1, 2, 3])
+    models = _models([1, 2, 3, 4, 5])
     _record_pass1(db, rid, "q1", 1)
     assert seed_pending_answers(db, rid, models).seeded == 1
     with session_scope(db) as s:
@@ -250,8 +269,8 @@ def test_seed_replaces_dropped_model(tmp_path: Path) -> None:
     """A model removed from the routed tier's config → its stale row deleted."""
     db, rid = _bootstrap(tmp_path)
     _record_pass1(db, rid, "q2", 3)
-    seed_pending_answers(db, rid, ModelsConfig(tiers=[_multi(3, ["a", "b"])]))
-    r2 = seed_pending_answers(db, rid, ModelsConfig(tiers=[_multi(3, ["a"])]))
+    seed_pending_answers(db, rid, ModelsConfig(tiers=[_multi(3, ["a", "b"]), _tier(5)]))
+    r2 = seed_pending_answers(db, rid, ModelsConfig(tiers=[_multi(3, ["a"]), _tier(5)]))
     assert r2.replaced == 1 and r2.kept == 1
     with session_scope(db) as s:
         rows = s.execute(select(TierAnswer).where(TierAnswer.query_id == "q2")).scalars().all()
@@ -265,7 +284,7 @@ async def test_run_answers_persists_each_model(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)
     _record_pass1(db, rid, "q1", 1)
     _record_pass1(db, rid, "q2", 3)
-    models = _models([1, 2, 3])
+    models = _models([1, 2, 3, 4, 5])
     seed_pending_answers(db, rid, models)
     report = await run_answers(db, rid, models=models, clients_by_model=_clients([1, 2, 3]))
     assert (report.attempted, report.succeeded, report.errors) == (2, 2, 0)
@@ -281,7 +300,7 @@ async def test_run_answers_persists_each_model(tmp_path: Path) -> None:
 async def test_run_answers_calls_every_model_in_routed_tier(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)
     _record_pass1(db, rid, "q2", 3)
-    models = ModelsConfig(tiers=[_multi(3, ["gpt-5", "gemini"])])
+    models = ModelsConfig(tiers=[_multi(3, ["gpt-5", "gemini"]), _tier(5)])
     seed_pending_answers(db, rid, models)
     clients = {
         (3, "gpt-5"): _FakeClient(3, "gpt-5"),
@@ -302,7 +321,7 @@ async def test_run_answers_errors_dont_fail_pass_and_resume(tmp_path: Path) -> N
     db, rid = _bootstrap(tmp_path)
     _record_pass1(db, rid, "q1", 1)
     _record_pass1(db, rid, "q2", 2)
-    models = _models([1, 2])
+    models = _models([1, 2, 5])
     seed_pending_answers(db, rid, models)
     r1 = await run_answers(
         db, rid, models=models, clients_by_model=_clients([1, 2], fail_on_query="harder")
@@ -319,7 +338,7 @@ async def test_run_answers_tier_filter(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)
     _record_pass1(db, rid, "q1", 1)
     _record_pass1(db, rid, "q2", 3)
-    models = _models([1, 2, 3])
+    models = _models([1, 2, 3, 4, 5])
     seed_pending_answers(db, rid, models)
     report = await run_answers(
         db, rid, models=models, clients_by_model=_clients([1, 2, 3]), tier_level=1
@@ -338,7 +357,7 @@ async def test_reset_answers_tier_filter(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)
     _record_pass1(db, rid, "q1", 1)
     _record_pass1(db, rid, "q2", 3)
-    models = _models([1, 2, 3])
+    models = _models([1, 2, 3, 4, 5])
     seed_pending_answers(db, rid, models)
     await run_answers(db, rid, models=models, clients_by_model=_clients([1, 2, 3]))
     assert reset_answers(db, rid, tier_level=1) == 1
@@ -351,7 +370,7 @@ async def test_reset_answers_tier_filter(tmp_path: Path) -> None:
 async def test_run_answers_missing_client_is_error(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)
     _record_pass1(db, rid, "q1", 1)
-    models = _models([1])
+    models = _models([1, 5])
     seed_pending_answers(db, rid, models)
     report = await run_answers(db, rid, models=models, clients_by_model={})
     assert report.errors == 1
@@ -370,7 +389,7 @@ async def test_run_answers_forwards_extra_body_and_max_tokens(tmp_path: Path) ->
                              extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                              max_tokens=4096)])
     t2 = _tier(2, [TierModel(slot=0, url="http://x/v1", served_model_name="tier2")])
-    models = ModelsConfig(tiers=[t1, t2])
+    models = ModelsConfig(tiers=[t1, t2, _tier(5)])
     seed_pending_answers(db, rid, models)
     cap = {(1, "tier1"): _CapturingClient(1), (2, "tier2"): _CapturingClient(2)}
     await run_answers(db, rid, models=models, clients_by_model=cap, max_tokens=512)
@@ -384,7 +403,7 @@ async def test_run_answers_forwards_extra_body_and_max_tokens(tmp_path: Path) ->
 async def test_run_answers_progress_lines_name_model_and_provider(tmp_path: Path) -> None:
     db, rid = _bootstrap(tmp_path)
     _record_pass1(db, rid, "q2", 3)
-    models = ModelsConfig(tiers=[_multi(3, ["gpt-5", "gemini"])])
+    models = ModelsConfig(tiers=[_multi(3, ["gpt-5", "gemini"]), _tier(5)])
     seed_pending_answers(db, rid, models)
     lines: list[str] = []
     clients = {(3, "gpt-5"): _FakeClient(3, "gpt-5"), (3, "gemini"): _FakeClient(3, "gemini")}
