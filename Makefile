@@ -30,7 +30,7 @@ help:
 	@echo "  load [MOCK=true]               validate exemplars; build router-config; load queries.json into DB"
 	@echo "  route [MOCK=true] [RUN_NEW=true]   rebuild router-config; routing pass"
 	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true] [TIER=<1-5>] [CONC=<N>] [MAXTOK=<N>]  routed-tier answers; top tier answered from gold"
-	@echo "  import-answers FILE=<path> TIER=<1-5> [RUN=<id>]  load externally-generated answers from a markdown file"
+	@echo "  import-answers FILE=<path> TIER=<1-5> MODEL=<id> [PROVIDER=<name>] [RUN=<id>]  load externally-generated answers for one model"
 	@echo "  update-gold [QID=<id[,id]>] [TIER=<1-5>] [YES=true]  regenerate gold via top tier (no scope = ALL, confirms)"
 	@echo "  export [RUN=<id>] [OUTPUT=<path>]  write demo.json (default: ./demo.json)"
 	@echo "  misroutes [RUN=<id>]           diagnostic: list queries routed BELOW their min tier"
@@ -175,15 +175,18 @@ answers:
 	    $(if $(filter true,$(MOCK)),--mock-endpoint $(MOCK_FROM_HOST),)
 
 # Import externally-generated answers (e.g., manually prompted from a
-# chat UI) into the tier_answers table.
-#   FILE=<path>  — markdown file with `## qNNNNN — Title` sections
-#   TIER=<N>     — tier level (1-5) these answers represent
-# Idempotent: re-run to refresh the same rows.
+# chat UI) into the tier_answers table, attributed to one model.
+#   FILE=<path>      — markdown file with `## qNNNNN — Title` sections
+#   TIER=<N>         — tier level (1-5) these answers represent
+#   MODEL=<id>       — the model id these answers are from (per-tier key)
+#   PROVIDER=<name>  — optional label (Anthropic/OpenAI/Google) → demo.json
+# Idempotent: re-run to refresh the same (tier, model) rows.
 import-answers:
-	@if [ -z "$(FILE)" ] || [ -z "$(TIER)" ]; then \
-	  echo "usage: make import-answers FILE=<path.md> TIER=<1-5>"; exit 2; \
+	@if [ -z "$(FILE)" ] || [ -z "$(TIER)" ] || [ -z "$(MODEL)" ]; then \
+	  echo "usage: make import-answers FILE=<path.md> TIER=<1-5> MODEL=<id> [PROVIDER=<name>]"; exit 2; \
 	fi
-	$(BENCHMARK) import-answers $(FILE) --tier $(TIER) \
+	$(BENCHMARK) import-answers $(FILE) --tier $(TIER) --model $(MODEL) \
+	    $(if $(PROVIDER),--provider $(PROVIDER),) \
 	    $(if $(RUN),--run $(RUN),)
 
 # Regenerate gold answers by calling the top tier (Opus). Overwrites

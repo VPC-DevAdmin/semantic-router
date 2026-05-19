@@ -133,7 +133,8 @@ slides, and plots.
 
 ## 7. The `demo.json` shape
 
-`make export` writes a single JSON file containing, per query:
+`make export` writes a single JSON file containing, per query (MULTI-MODEL
+shape — a tier can front several provider models and they're all called):
 
 ```jsonc
 {
@@ -141,30 +142,33 @@ slides, and plots.
   "prompt": "What is the capital of France?",
   "specializations": ["general"],
   "expected_min_tier": 1,
-  "routed_tier": 1,                  // from `make route`
-  "routing_metadata": {              // signal trace from the router
-    "selected_model": "tier1",
-    "selected_tier": 1,
-    "raw": { "category": "...", "reasoning": "off", "headers": { ... } }
-  },
-  "responses": {
-    "gold":  { "tier": 5, "answer": "Paris." },     // from data/queries.json
-    "routed": { "tier": 1, "answer": "Paris." }      // routed-tier answer from `make answers`
-  },
-  "all_tier_answers": {              // typically just the routed tier
-    "tier1": "Paris."
-  }
+  "routed_tier": 3,                  // from `make route`
+  "routing_metadata": { "selected_model": "tier3", "selected_tier": 3,
+                         "raw": { ... } },
+
+  // Per-provider gold. source ∈ upstream | update-gold | import:<file>.
+  "expected_answers": [
+    { "source": "upstream",    "provider": null,        "model": "upstream",        "answer": "Paris." },
+    { "source": "update-gold", "provider": "Anthropic", "model": "claude-opus-4-7", "answer": "Paris, ..." }
+  ],
+
+  // EVERY model the routed tier fronts (one per provider configured).
+  "routed_answers": [
+    { "tier": 3, "provider": "OpenAI", "model": "gpt-5-mini",   "answer": "Paris.", "status": "success", "latency_ms": 1234 },
+    { "tier": 3, "provider": "Google", "model": "gemini-flash", "answer": "Paris.", "status": "success", "latency_ms":  980 }
+  ],
+
+  // Grouped by tier; each a list of {provider, model, answer}.
+  "all_tier_answers": { "tier3": [ { "provider": "OpenAI", "model": "gpt-5-mini", "answer": "Paris." }, ... ] }
 }
 ```
 
-The `responses` block is the minimum the external judge needs: two LLM
-outputs to compare for each query (gold vs. routed tier).
-
-`all_tier_answers` is a legacy field that previously held responses from
-every tier (5 per query). Today `make answers` calls only the routed tier
-(per user design — see §9), so this map usually has one entry. It stays in
-the schema so a future "drill-down" pass can populate the rest without a
-schema change.
+The external judge compares each `routed_answers[]` entry against the
+`expected_answers[]` set, so users can see how the outcome changes on
+OpenAI / Google vs. Anthropic. There is no top-tier gold short-circuit:
+every top-tier model is called and each is that provider's expected
+answer. (Pre-multi-model the shape was `responses.{gold,routed}` with a
+single answer each — superseded.)
 
 ## 8. Repository layout
 
@@ -240,15 +244,21 @@ queries          (query_id PK, prompt, prompt_hash, expected_min_tier,
 runs             (run_id PK, started_at, finished_at, status, notes)
 pass1_results    (run_id, query_id PK, router_selected_tier,
                   raw_routing_metadata, status, ...)
-tier_answers     (run_id, query_id, tier_level PK, tier_name, response_text,
-                  prompt_tokens, completion_tokens, latency_ms, status, ...)
+tier_answers     (run_id, query_id, tier_level, model_id PK, model_slot,
+                  provider, tier_name, response_text, prompt_tokens,
+                  completion_tokens, latency_ms, status, ...)
+gold_answers     (query_id, model_id PK, provider, answer, source,
+                  generated_at)   -- per-provider expected answers
 ```
 
-`tier_answers` PK is `(run_id, query_id, tier_level)` for schema flexibility,
-but in the current `make answers` semantics there's **one row per query**
-per run, with `tier_level = pass1_results.router_selected_tier`. The
-multi-row-per-query design is reserved for a future "drill-down all tiers"
-pass without a schema change.
+`tier_answers` PK is `(run_id, query_id, tier_level, model_id)`: the
+router picks one tier and `make answers` calls **every model that tier
+fronts**, so a routed query produces one row per model. `gold_answers`
+holds the per-provider expected set — `source="upstream"` seeded from
+queries.json at `make load`, plus `update-gold` / `import:<file>` rows.
+`Query.gold_answer` is kept as a back-compat single-value mirror of the
+slot-0 / upstream gold. **Schema changed for multi-model: a fresh DB or
+`make clean-results` + reseed is required (no migration script).**
 
 **Resume rule:** workers select rows where `status IN ('pending', 'error')`
 for the active run. Per-row session commits make killing the process
@@ -400,8 +410,14 @@ not `/v1/chat/completions`. Replaced with `tools/oai_mock.py`.
 
 ### Done
 
-- ~~**Implement `make answers`.**~~ `src/benchmark/answers.py`; new
-  `tier_answers` table with PK `(run_id, query_id, tier_level)`.
+- ~~**Multi-model tiers.**~~ A tier fronts N provider models (slot 0 =
+  bare `TIER{N}_*`, indexed `TIER{N}_{i}_*`, optional `PROVIDER`).
+  `make answers` calls every model in the routed tier; `gold_answers`
+  holds the per-provider expected set; `demo.json` reshaped to
+  `expected_answers[]` / `routed_answers[]` (§7). Top-tier gold
+  short-circuit removed. Lexical/keyword routing removed (semantic only).
+- ~~**Implement `make answers`.**~~ `src/benchmark/answers.py`;
+  `tier_answers` PK `(run_id, query_id, tier_level, model_id)`.
 - ~~**Implement `make export`.**~~ `src/benchmark/export.py`; emits
   `demo.json` per §7. Resilient to missing data — emits null fields
   where pass1 or tier_answers haven't run.
