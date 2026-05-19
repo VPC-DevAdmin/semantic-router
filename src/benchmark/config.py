@@ -50,6 +50,29 @@ class BackendSpec(BaseModel):
     model_config = {"extra": "allow"}
 
 
+class TierModel(BaseModel):
+    """One callable model endpoint within a tier.
+
+    A tier can front several models — e.g. Tier 5 served by Anthropic
+    Opus, OpenAI GPT-5, and Google Gemini Pro — so `make answers` can
+    show "how the answer changes if you're on OpenAI/Google instead of
+    Anthropic". Slot 0 is the bare `TIER{N}_*` / YAML default; slots 1..
+    come from `TIER{N}_{i}_*` env vars. `provider` is an optional human
+    label (Anthropic / OpenAI / Google) surfaced verbatim in demo.json.
+
+    `served_model_name` must be unique within a tier — it is the per-tier
+    model key used as a DB primary-key component and a demo.json key.
+    """
+    slot: int
+    url: str
+    served_model_name: str
+    api_key_env: str | None = None
+    provider: str | None = None
+    timeout_s: int = 60
+    max_tokens: int | None = None
+    extra_body: dict | None = None
+
+
 class TierConfig(BaseModel):
     name: str
     level: int = Field(ge=1, le=5)
@@ -74,12 +97,45 @@ class TierConfig(BaseModel):
     endpoint: TierEndpoint
     backend: BackendSpec
 
+    # Optional human label for the bare/slot-0 model (Anthropic / OpenAI /
+    # Google). Settable in YAML or via TIER{N}_PROVIDER; flows to demo.json.
+    provider: str | None = None
+
+    # Callable models for this tier. Populated by apply_tier_env_overrides
+    # (slot 0 from YAML/bare env + slots 1.. from TIER{N}_{i}_* env). Left
+    # empty when a TierConfig is built directly (tests) — use
+    # `resolved_models()` which synthesizes slot 0 from the legacy fields.
+    models: list[TierModel] = Field(default_factory=list)
+
     # Convenience: `model_id` returns `router_alias` for the dominant legacy
     # caller (TierLookup, which maps router header → tier). New code should
     # use the explicit `router_alias` or `served_model_name` fields.
     @property
     def model_id(self) -> str:
         return self.router_alias
+
+    def resolved_models(self) -> list[TierModel]:
+        """The tier's callable models, always at least one.
+
+        If `models` was populated (via env-override loading) it is
+        returned as-is. Otherwise a single slot-0 model is synthesized
+        from the legacy single-model fields so directly-constructed
+        TierConfigs (tests, programmatic use) still work.
+        """
+        if self.models:
+            return self.models
+        return [
+            TierModel(
+                slot=0,
+                url=self.endpoint.url,
+                served_model_name=self.served_model_name,
+                api_key_env=self.endpoint.api_key_env,
+                provider=self.provider,
+                timeout_s=self.timeout_s,
+                max_tokens=self.max_tokens,
+                extra_body=getattr(self.backend, "extra_body", None),
+            )
+        ]
 
     @field_validator("specializations")
     @classmethod
@@ -182,25 +238,123 @@ def _env_bool(val: str) -> bool | None:
     return None
 
 
-def _set_qwen_thinking(tier: TierConfig, enabled: bool) -> None:
-    """Flip Qwen3's `chat_template_kwargs.enable_thinking` in backend.extra_body.
+def _with_thinking(extra: dict | None, enabled: bool) -> dict:
+    """Return a copy of `extra` with chat_template_kwargs.enable_thinking set.
 
-    This is the only "thinking mode" knob applicable in this harness — the
-    local Qwen3 tiers (T1/T2) served by vLLM, where the chat template gates
-    the hidden <think> chain on this flag. Vendor reasoning controls
-    (OpenAI reasoning_effort, Anthropic thinking budgets) are out of scope
-    here; set those in the tier YAML's `backend.extra_body` directly.
-
-    BackendSpec has extra='allow', so we read-modify-write the nested dict
-    and reassign it (a fresh dict, not in-place mutation of the YAML's) so
-    that answers.py's `tier.backend.model_dump()` picks it up.
+    Qwen3's chat template gates the hidden <think> chain on this flag.
+    Sibling keys (sampler params, other chat_template_kwargs) are
+    preserved. Pure: never mutates the input.
     """
-    extra = getattr(tier.backend, "extra_body", None)
-    extra = dict(extra) if isinstance(extra, dict) else {}
-    ctk = dict(extra.get("chat_template_kwargs") or {})
+    out = dict(extra) if isinstance(extra, dict) else {}
+    ctk = dict(out.get("chat_template_kwargs") or {})
     ctk["enable_thinking"] = enabled
-    extra["chat_template_kwargs"] = ctk
-    tier.backend.extra_body = extra
+    out["chat_template_kwargs"] = ctk
+    return out
+
+
+def _set_qwen_thinking(tier: TierConfig, enabled: bool) -> None:
+    """Flip Qwen3's enable_thinking in the tier's slot-0 backend.extra_body.
+
+    BackendSpec has extra='allow', so reassigning a fresh dict makes
+    answers.py's `tier.backend.model_dump()` pick it up. Vendor reasoning
+    controls (OpenAI reasoning_effort, Anthropic thinking budgets) are out
+    of scope here; set those in the tier YAML's `backend.extra_body`.
+    """
+    tier.backend.extra_body = _with_thinking(
+        getattr(tier.backend, "extra_body", None), enabled
+    )
+
+
+def _int_env(name: str, raw: str, unit: str = "") -> int:
+    """Parse an int env var, raising a clear error naming the var."""
+    try:
+        return int(raw)
+    except ValueError as e:
+        suffix = f" {unit}" if unit else ""
+        raise ValueError(f"{name} must be an integer{suffix}, got {raw!r}") from e
+
+
+def _bool_env(name: str, raw: str) -> bool:
+    flag = _env_bool(raw)
+    if flag is None:
+        raise ValueError(
+            f"{name} must be a boolean (true/false/1/0/yes/no), got {raw!r}"
+        )
+    return flag
+
+
+def _slot_var(n: int, i: int, suffix: str) -> str:
+    """Env var name for tier `n` slot `i` (slot 0 = bare `TIER{n}_{suffix}`)."""
+    return f"TIER{n}_{suffix}" if i == 0 else f"TIER{n}_{i}_{suffix}"
+
+
+def _build_tier_model(
+    tier: TierConfig,
+    i: int,
+    *,
+    slot0_url: str,
+    slot0_key_env: str | None,
+    slot0_timeout: int,
+    slot0_max_tokens: int | None,
+    slot0_extra: dict | None,
+) -> TierModel | None:
+    """Assemble one TierModel for slot `i` from `TIER{n}_{i}_*` env vars.
+
+    Slot 0 always exists (built from YAML + bare env by the caller, with
+    slot0_* already resolved). For i >= 1 the slot exists iff its MODEL
+    (or URL) is set; URL falls back to slot 0's so you can run the same
+    endpoint with a different model name without repeating the URL.
+    Returns None when slot `i` is absent (signals end of discovery).
+    """
+    n = tier.level
+
+    def g(suffix: str) -> str:
+        return os.environ.get(_slot_var(n, i, suffix), "").strip()
+
+    url = g("URL")
+    model = g("MODEL")
+    if i >= 1:
+        if not url and not model:
+            return None  # gap → discovery stops here
+        if not model:
+            raise ValueError(
+                f"{_slot_var(n, i, 'URL')} is set but "
+                f"{_slot_var(n, i, 'MODEL')} is not — a model slot needs "
+                f"a model name (the URL alone can't identify a model)."
+            )
+        url = url or slot0_url
+    else:
+        url = url or slot0_url
+        model = model or tier.served_model_name
+
+    key_env: str | None = slot0_key_env
+    if g("API_KEY"):
+        key_env = _slot_var(n, i, "API_KEY")
+
+    provider = g("PROVIDER") or (tier.provider if i == 0 else None) or None
+
+    timeout = slot0_timeout
+    if g("TIMEOUT"):
+        timeout = _int_env(_slot_var(n, i, "TIMEOUT"), g("TIMEOUT"), "seconds")
+
+    max_tokens = slot0_max_tokens
+    if g("MAX_TOKENS"):
+        max_tokens = _int_env(_slot_var(n, i, "MAX_TOKENS"), g("MAX_TOKENS"))
+
+    extra = dict(slot0_extra) if isinstance(slot0_extra, dict) else None
+    if g("THINKING"):
+        extra = _with_thinking(extra, _bool_env(_slot_var(n, i, "THINKING"), g("THINKING")))
+
+    return TierModel(
+        slot=i,
+        url=url,
+        served_model_name=model,
+        api_key_env=key_env,
+        provider=provider,
+        timeout_s=timeout,
+        max_tokens=max_tokens,
+        extra_body=extra,
+    )
 
 
 def apply_tier_env_overrides(tier: TierConfig) -> TierConfig:
@@ -219,68 +373,100 @@ def apply_tier_env_overrides(tier: TierConfig) -> TierConfig:
       TIER{N}_MAX_TOKENS  → tier.max_tokens (per-tier generation cap)
       TIER{N}_THINKING    → backend.extra_body.chat_template_kwargs
                             .enable_thinking (Qwen3 local tiers)
+      TIER{N}_PROVIDER    → tier.provider (label surfaced in demo.json)
 
-    The last three exist so a slow local tier can be told to take longer
-    and produce a more complete answer (bigger token budget, longer read
-    timeout, optionally letting the model think) rather than being tuned
-    for speed — the goal is "good at low tier" so the user doesn't just
-    resubmit at a higher tier.
+    MULTIPLE MODELS PER TIER. The bare `TIER{N}_*` vars define slot 0.
+    Additional models are indexed: `TIER{N}_1_URL/MODEL/API_KEY/PROVIDER/
+    TIMEOUT/MAX_TOKENS/THINKING`, `TIER{N}_2_*`, … Slots must be
+    contiguous from 1; discovery stops at the first missing slot. A slot's
+    URL falls back to slot 0's (same endpoint, different model name);
+    MODEL is required for slots ≥ 1. All callable models land in
+    `tier.models`; `served_model_name` must be unique within the tier
+    (it's a DB key and a demo.json key).
 
-    Empty or unset env vars are ignored (the YAML default wins). This means
-    .env.example can ship with empty placeholders that don't accidentally
-    override the YAML defaults.
+    The TIMEOUT/MAX_TOKENS/THINKING knobs exist so a slow local tier can
+    be told to take longer and produce a more complete answer rather than
+    being tuned for speed — "good at low tier" so the user doesn't just
+    resubmit higher.
 
-    Mutates and returns the same TierConfig (pydantic models are mutable
-    by default).
+    Empty or unset env vars are ignored (the YAML default wins). The
+    legacy single-model fields (endpoint, served_model_name, timeout_s,
+    max_tokens, backend.extra_body) are still mutated to slot 0's values
+    for back-compat with single-model callers.
+
+    Mutates and returns the same TierConfig.
     """
     n = tier.level
-    url_var = f"TIER{n}_URL"
-    model_var = f"TIER{n}_MODEL"
-    key_var = f"TIER{n}_API_KEY"
 
-    url = os.environ.get(url_var, "").strip()
+    # ---- slot 0: legacy single-model fields (back-compat) ----
+    url = os.environ.get(f"TIER{n}_URL", "").strip()
     if url:
         tier.endpoint.url = url
 
-    model = os.environ.get(model_var, "").strip()
+    model = os.environ.get(f"TIER{n}_MODEL", "").strip()
     if model:
         tier.served_model_name = model
 
     # For the key: only set api_key_env if the env var has a non-empty value.
     # That way a blank TIER3_API_KEY= in .env doesn't override a YAML that
     # explicitly references a different env var.
-    key = os.environ.get(key_var, "").strip()
-    if key:
-        tier.endpoint.api_key_env = key_var
+    if os.environ.get(f"TIER{n}_API_KEY", "").strip():
+        tier.endpoint.api_key_env = f"TIER{n}_API_KEY"
 
     timeout_raw = os.environ.get(f"TIER{n}_TIMEOUT", "").strip()
     if timeout_raw:
-        try:
-            tier.timeout_s = int(timeout_raw)
-        except ValueError as e:
-            raise ValueError(
-                f"TIER{n}_TIMEOUT must be an integer number of seconds, "
-                f"got {timeout_raw!r}"
-            ) from e
+        tier.timeout_s = _int_env(f"TIER{n}_TIMEOUT", timeout_raw, "seconds")
 
     max_tokens_raw = os.environ.get(f"TIER{n}_MAX_TOKENS", "").strip()
     if max_tokens_raw:
-        try:
-            tier.max_tokens = int(max_tokens_raw)
-        except ValueError as e:
-            raise ValueError(
-                f"TIER{n}_MAX_TOKENS must be an integer, got {max_tokens_raw!r}"
-            ) from e
+        tier.max_tokens = _int_env(f"TIER{n}_MAX_TOKENS", max_tokens_raw)
+
+    provider_raw = os.environ.get(f"TIER{n}_PROVIDER", "").strip()
+    if provider_raw:
+        tier.provider = provider_raw
 
     thinking_raw = os.environ.get(f"TIER{n}_THINKING", "").strip()
     if thinking_raw:
-        flag = _env_bool(thinking_raw)
-        if flag is None:
+        _set_qwen_thinking(tier, _bool_env(f"TIER{n}_THINKING", thinking_raw))
+
+    # ---- build the callable-model list (slot 0 + indexed slots) ----
+    slot0_extra = getattr(tier.backend, "extra_body", None)
+    slot0 = _build_tier_model(
+        tier,
+        0,
+        slot0_url=tier.endpoint.url,
+        slot0_key_env=tier.endpoint.api_key_env,
+        slot0_timeout=tier.timeout_s,
+        slot0_max_tokens=tier.max_tokens,
+        slot0_extra=slot0_extra,
+    )
+    models: list[TierModel] = [slot0]  # slot 0 always present
+    i = 1
+    while True:
+        m = _build_tier_model(
+            tier,
+            i,
+            slot0_url=tier.endpoint.url,
+            slot0_key_env=tier.endpoint.api_key_env,
+            slot0_timeout=tier.timeout_s,
+            slot0_max_tokens=tier.max_tokens,
+            slot0_extra=slot0_extra,
+        )
+        if m is None:
+            break
+        models.append(m)
+        i += 1
+
+    seen: dict[str, int] = {}
+    for m in models:
+        if m.served_model_name in seen:
             raise ValueError(
-                f"TIER{n}_THINKING must be a boolean (true/false/1/0/yes/no), "
-                f"got {thinking_raw!r}"
+                f"tier {n}: duplicate model name {m.served_model_name!r} "
+                f"in slots {seen[m.served_model_name]} and {m.slot} — model "
+                f"names must be unique within a tier (used as a DB/JSON key)."
             )
-        _set_qwen_thinking(tier, flag)
+        seen[m.served_model_name] = m.slot
+    tier.models = models
 
     return tier
 
