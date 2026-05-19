@@ -38,13 +38,25 @@ tier label the router emits, `endpoint` is the actual backend.
 
 `data/queries.json` is the curated query set. Every query carries:
 
-- `id` (e.g. `q00001`)
-- `prompt`
-- `expected_answer` — the gold standard, produced by Opus upstream
+- `id` (e.g. `q00001`) — unique
+- `prompt` — the only thing the router sees
+- one or more reference answers, in either form (both may coexist):
+  - `expected_answer: "..."` — legacy single; treated as the `upstream`
+    gold (model_id = `"upstream"`, source = `"upstream"`, provider = null).
+  - `expected_answers: [{ answer, source, model?, provider? }, …]` —
+    multiple golds. `source` (default `"upstream"`) is the provenance
+    label; `model` (default = `source`) is the per-query unique key
+    that becomes `gold_answers.model_id` and `demo.json`'s `model`;
+    `provider` is an optional label (Anthropic / OpenAI / Google).
+    `model_id` must be unique within the query.
 - `expected_min_tier` — the lowest tier we believe should answer this well
 - `specializations` — `general | coding | creative_writing | math | reasoning`
 - `domain_tags` — free-form
 - `notes`
+
+`specializations` and `domain_tags` are **not** routing inputs — they
+exist for downstream sort/review and the post-hoc `matches_specialization`
+metric. The router sees only `prompt` (+ multimodal attachments).
 
 **Current distribution:** 110 queries — T1=25, T2=36, T3=32, T4=7, T5=10.
 

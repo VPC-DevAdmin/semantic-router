@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Specialization names as they appear in queries.json. Extend here if upstream
 # data adds a new category.
@@ -198,10 +198,38 @@ class Attachment(BaseModel):
     path: str
 
 
+class ExpectedAnswer(BaseModel):
+    """One gold/reference answer for a query, with provenance.
+
+    A query can carry several (e.g. an upstream reference plus a
+    human-reviewed one, or one per provider). Each becomes a row in the
+    `gold_answers` table and a `demo.json` `expected_answers[]` entry.
+
+      answer    the reference text (required)
+      source    provenance label (default "upstream"); free-form, e.g.
+                "upstream", "human", "vendor-export"
+      model     per-query unique key (→ gold_answers.model_id and
+                demo.json `model`). Defaults to `source` when omitted.
+      provider  optional label (Anthropic / OpenAI / Google) → demo.json
+    """
+    answer: str
+    source: str = "upstream"
+    model: str | None = None
+    provider: str | None = None
+
+    @property
+    def model_id(self) -> str:
+        return self.model or self.source
+
+
 class QuerySpec(BaseModel):
     id: str
     prompt: str
-    expected_answer: str | None = None  # gold answer (from upstream); optional for unscored sets
+    # Legacy single gold (kept working): equivalent to one
+    # expected_answers entry with source="upstream", model="upstream".
+    expected_answer: str | None = None
+    # New: multiple golds, each with source/provider/model.
+    expected_answers: list[ExpectedAnswer] = Field(default_factory=list)
     expected_min_tier: int = Field(ge=1, le=5)
     specializations: list[str]
     domain_tags: list[str] = Field(default_factory=list)
@@ -217,6 +245,34 @@ class QuerySpec(BaseModel):
         if unknown:
             raise ValueError(f"unknown specializations: {sorted(unknown)}")
         return v
+
+    @model_validator(mode="after")
+    def _check_golds_unique(self) -> QuerySpec:
+        seen: set[str] = set()
+        for g in self.golds():
+            if g.model_id in seen:
+                raise ValueError(
+                    f"query {self.id}: duplicate gold model id "
+                    f"{g.model_id!r} — each expected answer needs a unique "
+                    f"`model` (or `source`) within the query."
+                )
+            seen.add(g.model_id)
+        return self
+
+    def golds(self) -> list[ExpectedAnswer]:
+        """The unified gold list: legacy `expected_answer` (as the
+        `upstream` entry) followed by every `expected_answers` item."""
+        out: list[ExpectedAnswer] = []
+        if self.expected_answer:
+            out.append(
+                ExpectedAnswer(
+                    answer=self.expected_answer,
+                    source="upstream",
+                    model="upstream",
+                )
+            )
+        out.extend(self.expected_answers)
+        return out
 
 
 class QuerySet(BaseModel):

@@ -1,18 +1,23 @@
 """Load `data/queries.json` into the SQLite DB.
 
-Each query in the JSON file carries an `expected_answer` field that is treated
-as the gold-standard reference (these are Opus-level answers from upstream).
-There is no separate `gold` generation step — the JSON is the source of truth
-for both the prompt and its gold answer.
+Each query may carry one OR MORE gold/reference answers:
+  - legacy `expected_answer` (a single string) → one "upstream" gold, or
+  - `expected_answers: [ {answer, source, model?, provider?}, ... ]`
+    for several golds (e.g. an upstream reference + a human-reviewed one,
+    or one per provider).
+Both may coexist; each gold's `model` (default = its `source`) must be
+unique within the query. The JSON is the source of truth for the prompt
+and its gold(s) — there is no separate `gold` generation step at load.
 
 Semantics:
-  - INSERT new queries with gold populated from `expected_answer`.
-  - UPDATE metadata + gold when the query already exists.
-  - If `prompt` changes, the prompt_hash changes; gold is also refreshed from
-    `expected_answer` (so a new prompt always lands with the matching gold).
-  - Queries removed from queries.json are NOT deleted from the DB; the DB is
-    canonical. `make clean-results` is the explicit destructive path for runs;
-    nothing wipes queries automatically.
+  - INSERT new queries; sync every gold into the gold_answers table.
+  - UPDATE metadata + golds when the query already exists.
+  - Prompt change → prompt_hash change; golds re-synced too.
+  - Reloading is idempotent (unchanged queries are a no-op).
+  - Queries removed from queries.json are NOT deleted (the DB is
+    canonical). load only manages the golds the file declares plus the
+    legacy "upstream" row — it never deletes update-gold / import-answers
+    rows.
 """
 from __future__ import annotations
 
@@ -22,47 +27,97 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from .config import QuerySet, hash_prompt, load_queries
+from .config import ExpectedAnswer, QuerySet, hash_prompt, load_queries
 from .db import GoldAnswer, Query, session_scope
 
+# Stamped on Query.gold_model (the back-compat single-value mirror) when
+# the primary gold is the legacy upstream entry.
 GOLD_SOURCE_MARKER = "expected_answer (upstream gold)"
 
-# Identity used for the upstream gold in the gold_answers table. The
-# upstream queries.json doesn't record which model produced
-# expected_answer, so model_id is the literal "upstream" and provider is
-# null. update-gold / import-answers add real per-provider rows alongside.
 UPSTREAM_GOLD_MODEL = "upstream"
-UPSTREAM_GOLD_SOURCE = "upstream"
 
 
-def _upsert_upstream_gold(session, qid: str, answer: str | None, now) -> None:
-    """Mirror queries.json `expected_answer` into gold_answers (or remove it)."""
-    from sqlalchemy import select
+def _primary(golds: list[ExpectedAnswer]) -> ExpectedAnswer | None:
+    """The gold mirrored into the back-compat Query.gold_answer field:
+    the upstream entry if present, else the first declared gold."""
+    for g in golds:
+        if g.model_id == UPSTREAM_GOLD_MODEL:
+            return g
+    return golds[0] if golds else None
 
-    row = session.execute(
-        select(GoldAnswer)
-        .where(GoldAnswer.query_id == qid)
-        .where(GoldAnswer.model_id == UPSTREAM_GOLD_MODEL)
-    ).scalar_one_or_none()
-    if not answer:
-        if row is not None:
-            session.delete(row)
-        return
-    if row is None:
-        session.add(
-            GoldAnswer(
-                query_id=qid,
-                model_id=UPSTREAM_GOLD_MODEL,
-                provider=None,
-                answer=answer,
-                source=UPSTREAM_GOLD_SOURCE,
-                generated_at=now,
+
+def _gold_marker(primary: ExpectedAnswer | None) -> str | None:
+    if primary is None:
+        return None
+    if primary.model_id == UPSTREAM_GOLD_MODEL:
+        return GOLD_SOURCE_MARKER
+    return f"{GOLD_SOURCE_MARKER} :: {primary.source}"
+
+
+def _existing_golds(session, qid: str) -> dict[str, GoldAnswer]:
+    return {
+        r.model_id: r
+        for r in session.execute(
+            select(GoldAnswer).where(GoldAnswer.query_id == qid)
+        ).scalars()
+    }
+
+
+def _golds_changed(session, qid: str, golds: list[ExpectedAnswer]) -> bool:
+    """True if the file's declared golds differ from what's in the DB.
+
+    Only looks at the model_ids the file declares, plus the legacy
+    "upstream" row (so blanking it counts as a change). Other rows
+    (update-gold / import-answers) are intentionally ignored.
+    """
+    rows = _existing_golds(session, qid)
+    want = {g.model_id: g for g in golds}
+    for mid, g in want.items():
+        r = rows.get(mid)
+        if r is None or r.answer != g.answer or r.source != g.source \
+                or r.provider != g.provider:
+            return True
+    if UPSTREAM_GOLD_MODEL not in want:
+        r = rows.get(UPSTREAM_GOLD_MODEL)
+        if r is not None and r.source == "upstream":
+            return True  # file dropped the upstream gold
+    return False
+
+
+def _sync_query_golds(
+    session, qid: str, golds: list[ExpectedAnswer], now
+) -> None:
+    """Upsert every declared gold into gold_answers (PK (qid, model_id)).
+
+    Scoped deletion: if the file no longer declares the legacy
+    "upstream" gold, that one row is removed — but update-gold /
+    import-answers rows (different model_ids / sources) are never
+    touched.
+    """
+    rows = _existing_golds(session, qid)
+    want = {g.model_id: g for g in golds}
+    for mid, g in want.items():
+        r = rows.get(mid)
+        if r is None:
+            session.add(
+                GoldAnswer(
+                    query_id=qid,
+                    model_id=mid,
+                    provider=g.provider,
+                    answer=g.answer,
+                    source=g.source,
+                    generated_at=now,
+                )
             )
-        )
-    else:
-        row.answer = answer
-        row.source = UPSTREAM_GOLD_SOURCE
-        row.generated_at = now
+        else:
+            r.provider = g.provider
+            r.answer = g.answer
+            r.source = g.source
+            r.generated_at = now
+    if UPSTREAM_GOLD_MODEL not in want:
+        r = rows.get(UPSTREAM_GOLD_MODEL)
+        if r is not None and r.source == "upstream":
+            session.delete(r)
 
 
 @dataclass
@@ -93,6 +148,8 @@ def load_into_db(queries_json: Path, db_path: Path) -> LoadReport:
 
             new_hash = hash_prompt(spec.prompt, spec.attachments)
             attachments_payload = [a.model_dump() for a in spec.attachments] or None
+            golds = spec.golds()
+            primary = _primary(golds)
             existing = session.execute(
                 select(Query).where(Query.query_id == spec.id)
             ).scalar_one_or_none()
@@ -108,17 +165,17 @@ def load_into_db(queries_json: Path, db_path: Path) -> LoadReport:
                         specializations=spec.specializations,
                         domain_tags=spec.domain_tags or None,
                         notes=spec.notes,
-                        gold_answer=spec.expected_answer,
-                        gold_model=GOLD_SOURCE_MARKER if spec.expected_answer else None,
-                        gold_generated_at=now if spec.expected_answer else None,
+                        gold_answer=primary.answer if primary else None,
+                        gold_model=_gold_marker(primary),
+                        gold_generated_at=now if primary else None,
                     )
                 )
-                _upsert_upstream_gold(session, spec.id, spec.expected_answer, now)
+                _sync_query_golds(session, spec.id, golds, now)
                 report.inserted += 1
                 continue
 
             prompt_changed = existing.prompt_hash != new_hash
-            gold_changed = (existing.gold_answer or None) != (spec.expected_answer or None)
+            gold_changed = _golds_changed(session, spec.id, golds)
             metadata_changed = (
                 existing.expected_min_tier != spec.expected_min_tier
                 or list(existing.specializations or []) != spec.specializations
@@ -143,10 +200,10 @@ def load_into_db(queries_json: Path, db_path: Path) -> LoadReport:
             existing.attachments = attachments_payload
 
             if gold_changed or prompt_changed:
-                existing.gold_answer = spec.expected_answer
-                existing.gold_model = GOLD_SOURCE_MARKER if spec.expected_answer else None
-                existing.gold_generated_at = now if spec.expected_answer else None
-                _upsert_upstream_gold(session, spec.id, spec.expected_answer, now)
+                existing.gold_answer = primary.answer if primary else None
+                existing.gold_model = _gold_marker(primary)
+                existing.gold_generated_at = now if primary else None
+                _sync_query_golds(session, spec.id, golds, now)
 
             report.updated += 1
 
