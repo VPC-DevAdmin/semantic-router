@@ -52,3 +52,7 @@ demo.json
 
 # Microsoft Office temporary owner/lock files (never commit)
 ~$*
+
+# Local reference docs / data — kept on disk, not tracked in the repo
+Semantic-Router-White-Paper.docx
+data/Semantic_router.json
