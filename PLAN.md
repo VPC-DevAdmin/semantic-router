@@ -144,6 +144,7 @@ shape — a tier can front several provider models and they're all called):
   "expected_min_tier": 1,
   "routed_tier": 3,                  // from `make route`
   "routing_metadata": { "selected_model": "tier3", "selected_tier": 3,
+                         "latency_ms": 42,   // router decide time, per query
                          "raw": { ... } },
 
   // Per-provider gold. source ∈ upstream | update-gold | import:<file>.

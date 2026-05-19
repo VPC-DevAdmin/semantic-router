@@ -85,6 +85,8 @@ def test_export_basic_multimodel_shape(tmp_path: Path) -> None:
     q1 = next(e for e in json.loads(out.read_text()) if e["id"] == "q1")
     assert q1["routed_tier"] == 3
     assert q1["routing_metadata"]["selected_model"] == "tier3"
+    # Per-query routing time is surfaced (set by _add_pass1).
+    assert q1["routing_metadata"]["latency_ms"] == 20
 
     # Expected answers: the upstream gold seeded at load.
     assert q1["expected_answers"] == [

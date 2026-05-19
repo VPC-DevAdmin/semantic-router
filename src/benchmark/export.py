@@ -88,6 +88,9 @@ def _build_query_entry(
             "selected_specs": p1.router_selected_specs,
             "meets_minimum_tier": p1.meets_minimum_tier,
             "matches_specialization": p1.matches_specialization,
+            # Wall-clock the router took to decide this query (the
+            # max_tokens=1 routing probe round-trip, measured in pass1).
+            "latency_ms": p1.latency_ms,
             "raw": p1.raw_routing_metadata,
         }
 
