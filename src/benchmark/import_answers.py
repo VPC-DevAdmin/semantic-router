@@ -99,21 +99,25 @@ def import_answers_file(
     run_id: int,
     *,
     tier_level: int,
+    model_id: str,
     file_path: Path,
     models: ModelsConfig,
+    provider: str | None = None,
 ) -> ImportResult:
     """Parse a markdown answers file and upsert TierAnswer rows for `run_id`.
 
+    An imported file is "answers from one specific model at `tier_level`",
+    so the caller supplies `model_id` (and optional `provider` label).
     For each (query_id, body) pair:
-      • If a TierAnswer at (run_id, query_id, tier_level) exists → update
-        its response_text and mark status='success'.
-      • Otherwise → insert a new TierAnswer at that tier.
-      • If the query_id isn't in the queries table at all → skip (the
-        FK constraint would reject the insert; warn the caller).
-      • If the body is blank after trimming → skip (probably an empty
-        section heading without content).
+      • If a TierAnswer at (run_id, query_id, tier_level, model_id)
+        exists → update its response_text and mark status='success'.
+      • Otherwise → insert a new TierAnswer for that model.
+      • Unknown query_id (not in the queries table) → skip with a warning
+        (the FK would reject it anyway).
+      • Blank body after trimming → skip.
 
-    Idempotent: re-running with the same file overwrites the same rows.
+    Idempotent: re-running with the same file+model overwrites the same
+    rows.
     """
     text = file_path.read_text()
     parsed = parse_answers_markdown(text)
@@ -153,11 +157,13 @@ def import_answers_file(
                 .where(TierAnswer.run_id == run_id)
                 .where(TierAnswer.query_id == qid)
                 .where(TierAnswer.tier_level == tier_level)
+                .where(TierAnswer.model_id == model_id)
             ).scalar_one_or_none()
 
             if existing is not None:
                 existing.response_text = body
                 existing.tier_name = tier_name
+                existing.provider = provider
                 existing.status = "success"
                 existing.error_msg = None
                 existing.attempted_at = now
@@ -168,6 +174,9 @@ def import_answers_file(
                         run_id=run_id,
                         query_id=qid,
                         tier_level=tier_level,
+                        model_id=model_id,
+                        model_slot=0,
+                        provider=provider,
                         tier_name=tier_name,
                         response_text=body,
                         status="success",

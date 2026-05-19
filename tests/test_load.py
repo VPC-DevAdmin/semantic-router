@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from benchmark.db import Query, init_db, session_scope
+from benchmark.db import GoldAnswer, Query, init_db, session_scope
 from benchmark.load import GOLD_SOURCE_MARKER, load_into_db
 
 QUERIES_V1 = [
@@ -46,6 +46,36 @@ def test_initial_insert_populates_gold(tmp_path: Path) -> None:
         assert t001.gold_answer == "4."
         assert t001.gold_model == GOLD_SOURCE_MARKER
         assert t001.gold_generated_at is not None
+
+
+def test_initial_insert_seeds_upstream_gold_answer(tmp_path: Path) -> None:
+    db, qp = _setup(tmp_path, QUERIES_V1)
+    load_into_db(qp, db)
+    with session_scope(db) as s:
+        g = s.execute(
+            select(GoldAnswer)
+            .where(GoldAnswer.query_id == "t001")
+            .where(GoldAnswer.model_id == "upstream")
+        ).scalar_one()
+        assert g.answer == "4."
+        assert g.source == "upstream"
+        assert g.provider is None
+
+
+def test_expected_answer_change_updates_upstream_gold_row(tmp_path: Path) -> None:
+    db, qp = _setup(tmp_path, QUERIES_V1)
+    load_into_db(qp, db)
+    v2 = [dict(q) for q in QUERIES_V1]
+    v2[0]["expected_answer"] = "Four. (Updated upstream.)"
+    qp.write_text(json.dumps(v2))
+    load_into_db(qp, db)
+    with session_scope(db) as s:
+        g = s.execute(
+            select(GoldAnswer)
+            .where(GoldAnswer.query_id == "t001")
+            .where(GoldAnswer.model_id == "upstream")
+        ).scalar_one()
+        assert g.answer == "Four. (Updated upstream.)"
 
 
 def test_reload_is_noop(tmp_path: Path) -> None:

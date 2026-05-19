@@ -82,11 +82,13 @@ class Pass1Result(Base):
 
 
 class TierAnswer(Base):
-    """One row per (run, query, tier_level) — `make answers` populates these.
+    """One row per (run, query, tier_level, model) — `make answers` fills these.
 
-    Each row stores the response we got from calling tier <tier_level>'s
-    endpoint directly (NOT through the router) for the given query. The
-    export step (`make export`) reads from here to build demo.json.
+    A tier can front several models (Anthropic / OpenAI / Google …); the
+    router picks a tier and we call EVERY model configured for it, so a
+    routed query produces one row per model in that tier. Each row stores
+    the response from calling that model's endpoint directly (NOT through
+    the router). `make export` reads these as the per-query routed answers.
     """
 
     __tablename__ = "tier_answers"
@@ -94,7 +96,12 @@ class TierAnswer(Base):
     run_id: Mapped[int] = mapped_column(ForeignKey("runs.run_id"), primary_key=True)
     query_id: Mapped[str] = mapped_column(ForeignKey("queries.query_id"), primary_key=True)
     tier_level: Mapped[int] = mapped_column(Integer, primary_key=True)
-    tier_name: Mapped[str] = mapped_column(String, nullable=False)  # model_id from models.yaml
+    # The model's served name — unique within a tier, so it completes the
+    # PK. One row per model that the routed tier fronts.
+    model_id: Mapped[str] = mapped_column(String, primary_key=True)
+    model_slot: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    provider: Mapped[str | None] = mapped_column(String)  # optional label → demo.json
+    tier_name: Mapped[str] = mapped_column(String, nullable=False)  # router_alias
     response_text: Mapped[str | None] = mapped_column(Text)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer)
     completion_tokens: Mapped[int | None] = mapped_column(Integer)
@@ -102,6 +109,31 @@ class TierAnswer(Base):
     status: Mapped[str] = mapped_column(String, nullable=False)  # pending|success|error
     error_msg: Mapped[str | None] = mapped_column(Text)
     attempted_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class GoldAnswer(Base):
+    """Per-provider expected answer for a query (the gold set).
+
+    The top tier can be served by several models, so a query may have
+    more than one 'expected answer'. Sources:
+      - 'upstream'      : queries.json expected_answer (seeded at load)
+      - 'update-gold'   : a fresh top-tier model call (make update-gold)
+      - 'import:<file>' : an externally-generated answer (make import-answers)
+
+    Keyed by (query_id, model_id) so each provider's gold is independent.
+    `make export` emits these as the query's `expected_answers[]`.
+    """
+
+    __tablename__ = "gold_answers"
+
+    query_id: Mapped[str] = mapped_column(
+        ForeignKey("queries.query_id"), primary_key=True
+    )
+    model_id: Mapped[str] = mapped_column(String, primary_key=True)
+    provider: Mapped[str | None] = mapped_column(String)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(String, nullable=False)
+    generated_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
 def make_engine(db_path: Path = DEFAULT_DB_PATH):

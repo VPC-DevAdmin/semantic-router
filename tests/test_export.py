@@ -1,4 +1,4 @@
-"""demo.json export tests."""
+"""demo.json export tests (multi-model shape)."""
 from __future__ import annotations
 
 import json
@@ -7,7 +7,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from benchmark.db import Pass1Result, Query, TierAnswer, session_scope
+from benchmark.db import GoldAnswer, Pass1Result, TierAnswer, session_scope
 from benchmark.export import export_demo_json
 from benchmark.runs import create_run
 
@@ -28,7 +28,7 @@ QUERIES = [
 
 
 def _setup(tmp_path: Path) -> tuple[Path, int]:
-    db = bootstrap_db(tmp_path, QUERIES)
+    db = bootstrap_db(tmp_path, QUERIES)  # also seeds upstream GoldAnswer rows
     rid = create_run(
         db,
         router_config_path=make_router_yaml(tmp_path),
@@ -54,13 +54,14 @@ def _add_pass1(db: Path, rid: int, qid: str, *, tier: int) -> None:
 
 
 def _add_tier_answer(
-    db: Path, rid: int, qid: str, tier_level: int, response: str, *, status: str = "success"
+    db: Path, rid: int, qid: str, tier_level: int, model_id: str, response,
+    *, provider: str | None = None, slot: int = 0, status: str = "success",
 ) -> None:
     with session_scope(db) as s:
         s.add(TierAnswer(
             run_id=rid, query_id=qid,
-            tier_level=tier_level,
-            tier_name=f"tier{tier_level}",
+            tier_level=tier_level, model_id=model_id, model_slot=slot,
+            provider=provider, tier_name=f"tier{tier_level}",
             response_text=response,
             prompt_tokens=5, completion_tokens=10, latency_ms=10,
             status=status,
@@ -68,45 +69,48 @@ def _add_tier_answer(
         ))
 
 
-def test_export_basic_shape(tmp_path: Path) -> None:
+def test_export_basic_multimodel_shape(tmp_path: Path) -> None:
     db, rid = _setup(tmp_path)
-    _add_pass1(db, rid, "q1", tier=1)
-    _add_tier_answer(db, rid, "q1", 1, "Paris (tier1)")
-    _add_tier_answer(db, rid, "q1", 5, "Paris, capital of France. (tier5)")
+    _add_pass1(db, rid, "q1", tier=3)
+    # Two models in the routed tier (3).
+    _add_tier_answer(db, rid, "q1", 3, "gpt-5-mini", "Paris (OpenAI)",
+                     provider="OpenAI", slot=0)
+    _add_tier_answer(db, rid, "q1", 3, "gemini-flash", "Paris (Google)",
+                     provider="Google", slot=1)
 
     out = tmp_path / "demo.json"
     summary = export_demo_json(db, rid, out)
     assert summary.queries_exported == 2
-    assert out.exists()
 
-    data = json.loads(out.read_text())
-    assert isinstance(data, list)
-    assert len(data) == 2
+    q1 = next(e for e in json.loads(out.read_text()) if e["id"] == "q1")
+    assert q1["routed_tier"] == 3
+    assert q1["routing_metadata"]["selected_model"] == "tier3"
 
-    q1 = next(e for e in data if e["id"] == "q1")
-    assert q1["prompt"] == "easy"
-    assert q1["expected_min_tier"] == 1
-    assert q1["specializations"] == ["general"]
-    assert q1["routed_tier"] == 1
-    assert q1["routing_metadata"]["selected_model"] == "tier1"
+    # Expected answers: the upstream gold seeded at load.
+    assert q1["expected_answers"] == [
+        {"source": "upstream", "provider": None, "model": "upstream",
+         "answer": "Paris."},
+    ]
 
-    # Gold + routed responses present.
-    assert q1["responses"]["gold"]["answer"] == "Paris."
-    assert q1["responses"]["gold"]["tier"] == 5  # default gold tier
-    assert q1["responses"]["routed"]["answer"] == "Paris (tier1)"
-    assert q1["responses"]["routed"]["tier"] == 1
+    # Both routed-tier models present, ordered by slot.
+    assert q1["routed_answers"] == [
+        {"tier": 3, "provider": "OpenAI", "model": "gpt-5-mini",
+         "answer": "Paris (OpenAI)", "status": "success", "latency_ms": 10},
+        {"tier": 3, "provider": "Google", "model": "gemini-flash",
+         "answer": "Paris (Google)", "status": "success", "latency_ms": 10},
+    ]
 
-    # all_tier_answers includes both tiers we populated.
     assert q1["all_tier_answers"] == {
-        "tier1": "Paris (tier1)",
-        "tier5": "Paris, capital of France. (tier5)",
+        "tier3": [
+            {"provider": "OpenAI", "model": "gpt-5-mini", "answer": "Paris (OpenAI)"},
+            {"provider": "Google", "model": "gemini-flash", "answer": "Paris (Google)"},
+        ]
     }
 
 
 def test_export_missing_routing_is_null(tmp_path: Path) -> None:
-    """No pass1 row → routed_tier null, routed response null, gold still present."""
     db, rid = _setup(tmp_path)
-    _add_tier_answer(db, rid, "q1", 2, "ans")
+    _add_tier_answer(db, rid, "q1", 2, "m2", "ans", provider="X")
 
     out = tmp_path / "demo.json"
     export_demo_json(db, rid, out)
@@ -114,60 +118,83 @@ def test_export_missing_routing_is_null(tmp_path: Path) -> None:
 
     assert q1["routed_tier"] is None
     assert q1["routing_metadata"] is None
-    assert q1["responses"]["routed"] is None
-    assert q1["responses"]["gold"]["answer"] == "Paris."
+    assert q1["routed_answers"] == []
+    # Upstream gold still present even with no routing.
+    assert q1["expected_answers"][0]["answer"] == "Paris."
+    # Answer still surfaces in the per-tier map.
+    assert q1["all_tier_answers"]["tier2"][0]["model"] == "m2"
 
 
-def test_export_routed_tier_without_matching_answer(tmp_path: Path) -> None:
-    """Router picked tier 3 but tier 3 hasn't been answered → routed response null."""
+def test_export_routed_tier_with_error_model(tmp_path: Path) -> None:
+    """Routed-tier model that errored appears in routed_answers (status=error,
+    answer null) but is excluded from all_tier_answers."""
     db, rid = _setup(tmp_path)
     _add_pass1(db, rid, "q1", tier=3)
-    _add_tier_answer(db, rid, "q1", 1, "tier1 ans")  # tier 3 missing
+    _add_tier_answer(db, rid, "q1", 3, "ok-model", "good", provider="A", slot=0)
+    _add_tier_answer(db, rid, "q1", 3, "bad-model", None,
+                     provider="B", slot=1, status="error")
 
     out = tmp_path / "demo.json"
     export_demo_json(db, rid, out)
     q1 = next(e for e in json.loads(out.read_text()) if e["id"] == "q1")
 
-    assert q1["routed_tier"] == 3
-    assert q1["responses"]["routed"] is None
-    assert q1["all_tier_answers"] == {"tier1": "tier1 ans"}
+    statuses = {r["model"]: r["status"] for r in q1["routed_answers"]}
+    assert statuses == {"ok-model": "success", "bad-model": "error"}
+    assert q1["all_tier_answers"] == {
+        "tier3": [{"provider": "A", "model": "ok-model", "answer": "good"}]
+    }
 
 
-def test_export_failed_tier_excluded_from_all_tier_answers(tmp_path: Path) -> None:
+def test_export_per_provider_expected_answers(tmp_path: Path) -> None:
     db, rid = _setup(tmp_path)
-    _add_tier_answer(db, rid, "q1", 1, "good", status="success")
-    _add_tier_answer(db, rid, "q1", 2, None, status="error")  # no response_text
+    # Add an update-gold provider row alongside the upstream one.
+    with session_scope(db) as s:
+        s.add(GoldAnswer(
+            query_id="q1", model_id="claude-opus-4-7", provider="Anthropic",
+            answer="Paris, the capital of France.", source="update-gold",
+            generated_at=datetime.now(UTC),
+        ))
 
     out = tmp_path / "demo.json"
     export_demo_json(db, rid, out)
     q1 = next(e for e in json.loads(out.read_text()) if e["id"] == "q1")
+    # Sorted by (source, model): update-gold before upstream.
+    assert q1["expected_answers"] == [
+        {"source": "update-gold", "provider": "Anthropic",
+         "model": "claude-opus-4-7", "answer": "Paris, the capital of France."},
+        {"source": "upstream", "provider": None, "model": "upstream",
+         "answer": "Paris."},
+    ]
 
-    assert q1["all_tier_answers"] == {"tier1": "good"}
 
-
-def test_export_no_gold_means_null(tmp_path: Path) -> None:
+def test_export_no_gold_means_empty(tmp_path: Path) -> None:
     db, rid = _setup(tmp_path)
     with session_scope(db) as s:
-        q = s.execute(select(Query).where(Query.query_id == "q1")).scalar_one()
-        q.gold_answer = None
+        s.execute(
+            select(GoldAnswer).where(GoldAnswer.query_id == "q1")
+        ).scalar_one()  # exists
+        for g in s.execute(
+            select(GoldAnswer).where(GoldAnswer.query_id == "q1")
+        ).scalars().all():
+            s.delete(g)
 
     out = tmp_path / "demo.json"
     export_demo_json(db, rid, out)
     q1 = next(e for e in json.loads(out.read_text()) if e["id"] == "q1")
-    assert q1["responses"]["gold"] is None
+    assert q1["expected_answers"] == []
 
 
 def test_export_summary_counts(tmp_path: Path) -> None:
     db, rid = _setup(tmp_path)
     _add_pass1(db, rid, "q1", tier=1)
-    _add_tier_answer(db, rid, "q1", 1, "a")
-    _add_tier_answer(db, rid, "q1", 2, "b")
-    _add_tier_answer(db, rid, "q2", 3, "c")
-    # q2 has no pass1, just one tier answer.
+    _add_tier_answer(db, rid, "q1", 1, "m1a", "a", slot=0)
+    _add_tier_answer(db, rid, "q1", 1, "m1b", "b", slot=1)
 
     out = tmp_path / "demo.json"
     summary = export_demo_json(db, rid, out)
     assert summary.queries_exported == 2
-    assert summary.with_routed_tier == 1  # only q1
-    assert summary.with_routed_answer == 1  # q1 was routed to tier 1, which we have
-    assert summary.tiers_per_query == {2: 1, 1: 1}  # q1 has 2 tier answers, q2 has 1
+    assert summary.with_routed_tier == 1          # only q1
+    assert summary.with_routed_answer == 1        # q1's tier-1 models answered
+    assert summary.with_expected == 2             # both have upstream gold
+    # q1 had 2 successful routed models; q2 had 0.
+    assert summary.routed_models_per_query == {2: 1, 0: 1}

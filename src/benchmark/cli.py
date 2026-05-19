@@ -274,20 +274,18 @@ def answers_cmd(
     if seed_result.replaced:
         console.print(
             f"[yellow]re-seeded[/] {seed_result.replaced} stale row(s) "
-            f"whose tier didn't match the latest pass1 decision"
-        )
-    if seed_result.gold_filled:
-        console.print(
-            f"[green]gold-filled[/] {seed_result.gold_filled} top-tier row(s) "
-            f"from expected_answer (no LLM call — top tier == gold)"
+            f"(wrong tier, or a model no longer configured for the routed tier)"
         )
     if seed_result.seeded:
-        console.print(f"[green]seeded[/] {seed_result.seeded} new pending row(s)")
-    if not (seed_result.seeded or seed_result.replaced or seed_result.gold_filled):
+        console.print(
+            f"[green]seeded[/] {seed_result.seeded} new pending row(s) "
+            f"(one per model in each query's routed tier)"
+        )
+    if not (seed_result.seeded or seed_result.replaced):
         if seed_result.kept:
             console.print(
                 f"[dim]note[/]: {seed_result.kept} row(s) already at the correct "
-                f"tier — re-running the worker on any pending/error rows."
+                f"tier+model — re-running the worker on any pending/error rows."
             )
         else:
             console.print(
@@ -368,6 +366,14 @@ def scores_cmd(
 def import_answers_cmd(
     file: Path = typer.Argument(..., help="Markdown file with ## qNNNNN sections."),
     tier: int = typer.Option(..., "--tier", help="Tier level (1-5) these answers represent."),
+    model: str = typer.Option(
+        ..., "--model",
+        help="The model id these answers are from (per-tier unique key).",
+    ),
+    provider: str | None = typer.Option(
+        None, "--provider",
+        help="Optional provider label (Anthropic / OpenAI / Google) → demo.json.",
+    ),
     db: Path = typer.Option(DEFAULT_DB_PATH),
     models: Path = typer.Option(DEFAULT_TIERS),
     run: int | None = typer.Option(None, "--run", help="Run id (default: latest active)."),
@@ -375,14 +381,14 @@ def import_answers_cmd(
     """Import pre-generated tier answers from a markdown file.
 
     Each `## qNNNNN — Title` (or `## qNNNNN: Title`) section's body is
-    stored as that query's answer for the specified tier. Useful when
-    answers are produced outside the harness — e.g., manual prompting
-    via a chat UI, or pre-generated reference responses.
+    stored as that query's answer for (tier, model). Useful when answers
+    are produced outside the harness — e.g., manual prompting via a chat
+    UI, or pre-generated reference responses for a specific model.
 
     Upsert behavior: if a tier_answers row already exists at
-    (run_id, query_id, tier_level), its response_text is overwritten
-    and status set to 'success'. Otherwise a new row is inserted.
-    Idempotent: re-run with the same file to refresh.
+    (run_id, query_id, tier_level, model), its response_text is
+    overwritten and status set to 'success'. Otherwise a new row is
+    inserted. Idempotent: re-run with the same file+model to refresh.
     """
     if not file.exists():
         console.print(f"[red]error[/]: file not found: {file}")
@@ -403,10 +409,15 @@ def import_answers_cmd(
     result = import_answers_file(
         db, rid,
         tier_level=tier,
+        model_id=model,
+        provider=provider,
         file_path=file,
         models=models_cfg,
     )
-    console.print(f"[bold]import-answers[/] (run {rid}, tier {tier}, from {file.name})")
+    console.print(
+        f"[bold]import-answers[/] (run {rid}, tier {tier}, model {model}, "
+        f"from {file.name})"
+    )
     console.print(str(result))
 
 

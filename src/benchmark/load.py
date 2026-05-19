@@ -23,9 +23,46 @@ from pathlib import Path
 from sqlalchemy import select
 
 from .config import QuerySet, hash_prompt, load_queries
-from .db import Query, session_scope
+from .db import GoldAnswer, Query, session_scope
 
 GOLD_SOURCE_MARKER = "expected_answer (upstream gold)"
+
+# Identity used for the upstream gold in the gold_answers table. The
+# upstream queries.json doesn't record which model produced
+# expected_answer, so model_id is the literal "upstream" and provider is
+# null. update-gold / import-answers add real per-provider rows alongside.
+UPSTREAM_GOLD_MODEL = "upstream"
+UPSTREAM_GOLD_SOURCE = "upstream"
+
+
+def _upsert_upstream_gold(session, qid: str, answer: str | None, now) -> None:
+    """Mirror queries.json `expected_answer` into gold_answers (or remove it)."""
+    from sqlalchemy import select
+
+    row = session.execute(
+        select(GoldAnswer)
+        .where(GoldAnswer.query_id == qid)
+        .where(GoldAnswer.model_id == UPSTREAM_GOLD_MODEL)
+    ).scalar_one_or_none()
+    if not answer:
+        if row is not None:
+            session.delete(row)
+        return
+    if row is None:
+        session.add(
+            GoldAnswer(
+                query_id=qid,
+                model_id=UPSTREAM_GOLD_MODEL,
+                provider=None,
+                answer=answer,
+                source=UPSTREAM_GOLD_SOURCE,
+                generated_at=now,
+            )
+        )
+    else:
+        row.answer = answer
+        row.source = UPSTREAM_GOLD_SOURCE
+        row.generated_at = now
 
 
 @dataclass
@@ -76,6 +113,7 @@ def load_into_db(queries_json: Path, db_path: Path) -> LoadReport:
                         gold_generated_at=now if spec.expected_answer else None,
                     )
                 )
+                _upsert_upstream_gold(session, spec.id, spec.expected_answer, now)
                 report.inserted += 1
                 continue
 
@@ -108,6 +146,7 @@ def load_into_db(queries_json: Path, db_path: Path) -> LoadReport:
                 existing.gold_answer = spec.expected_answer
                 existing.gold_model = GOLD_SOURCE_MARKER if spec.expected_answer else None
                 existing.gold_generated_at = now if spec.expected_answer else None
+                _upsert_upstream_gold(session, spec.id, spec.expected_answer, now)
 
             report.updated += 1
 

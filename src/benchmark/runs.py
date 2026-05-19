@@ -108,12 +108,12 @@ def seed_pending(
 
 @dataclass
 class AnswerSeedResult:
-    """Outcome of `seed_pending_answers`."""
+    """Outcome of `seed_pending_answers` (counts are per ROW = per model)."""
 
-    seeded: int = 0       # new tier_answers rows inserted (pending — needs LLM)
-    replaced: int = 0     # stale rows deleted and re-seeded (tier mismatch with pass1)
-    kept: int = 0         # rows left alone (already at the correct tier)
-    gold_filled: int = 0  # top-tier rows filled from the gold answer (no LLM call)
+    seeded: int = 0    # new pending tier_answers rows inserted (needs a call)
+    replaced: int = 0  # stale rows deleted (wrong tier, or a model no longer
+                       # configured for the routed tier)
+    kept: int = 0      # rows left alone (already at the right tier+model)
 
     def __int__(self) -> int:
         # Backward-compat: callers that expected just an int count still work.
@@ -122,9 +122,7 @@ class AnswerSeedResult:
     def __str__(self) -> str:
         parts = [f"seeded={self.seeded}"]
         if self.replaced:
-            parts.append(f"replaced={self.replaced} (stale routing)")
-        if self.gold_filled:
-            parts.append(f"gold_filled={self.gold_filled} (top tier == gold)")
+            parts.append(f"replaced={self.replaced} (stale tier/model)")
         if self.kept:
             parts.append(f"kept={self.kept}")
         return ", ".join(parts)
@@ -137,78 +135,40 @@ def seed_pending_answers(
     *,
     only: list[str] | None = None,
 ) -> AnswerSeedResult:
-    """Seed one `tier_answers` row per query, using the routed tier.
+    """Seed `tier_answers` rows for every (query, routed tier, model).
 
-    The routed tier is read from `pass1_results.router_selected_tier`. Queries
-    without a successful pass1 row (or with a null routed tier) are skipped;
-    they'll be picked up by a subsequent seed call after `make route` records
-    their decision. TTS-only queries are excluded.
+    The routed tier is read from `pass1_results.router_selected_tier`.
+    The router picks ONE tier; we then call EVERY model that tier fronts
+    (Anthropic / OpenAI / Google …), so a routed query gets one pending
+    row per model in its tier — that's how the demo shows "your answer on
+    OpenAI vs Anthropic". Queries without a successful pass1 row (or a
+    null routed tier) are skipped until `make route` records a decision.
+    TTS-only queries are excluded.
 
-    TOP-TIER SHORTCUT: the query set's `expected_answer` (→ `Query.gold_answer`)
-    is an upstream Opus-grade reference. The top tier in our routing IS
-    Claude Opus. So for a query routed to the top tier, calling the LLM
-    just regenerates an Opus answer that's redundant with the gold we
-    already have — wasted API spend. Such rows are filled directly from
-    `gold_answer` with status='success', so `make answers` skips them.
-    Queries with no/empty gold fall back to a normal pending row. (To
-    *regenerate* the gold itself, use the `update-gold` command, which
-    calls the top tier and overwrites `Query.gold_answer`.)
+    Row reconciliation (per row = per model):
+      - A row already at the right (tier_level, model_id) → kept.
+      - A row at a different tier_level, or for a model no longer
+        configured for the routed tier → stale: deleted (replaced).
+      - A wanted (tier_level, model_id) with no row → seeded (pending).
 
-    Behaviour against existing rows:
-      - Row exists at the same tier_level as current pass1 → kept (but a
-        pending top-tier row is upgraded to gold-success).
-      - Row exists at a DIFFERENT tier_level → stale: delete it and seed a
-        fresh row at the correct level.
-      - No row exists → seed a new row (pending, or gold-success for top tier).
-
-    Returns an `AnswerSeedResult` with the per-bucket counts.
+    (There is no longer a top-tier gold shortcut: with several top-tier
+    providers each gives a different answer, so we call them all. The
+    upstream `expected_answer` lives in the gold_answers table instead.)
     """
     result = AnswerSeedResult()
     now = datetime.now(UTC)
 
-    # tier_level → router_alias (used as tier_name when seeding).
-    name_by_level: dict[int, str] = {t.level: t.router_alias for t in models.tiers}
-    top_tier_level = max((t.level for t in models.tiers), default=0)
-
     with session_scope(db_path) as session:
-        stmt = select(Query.query_id, Query.specializations, Query.gold_answer)
+        stmt = select(Query.query_id, Query.specializations)
         if only:
             stmt = stmt.where(Query.query_id.in_(only))
         rows = session.execute(stmt).all()
         # Exclude TTS-only queries from text-answer collection.
         target_qids = {
             qid
-            for qid, specs, _gold in rows
+            for qid, specs in rows
             if not (specs and all(s == "tts" for s in (specs or [])))
         }
-        gold_by_qid: dict[str, str | None] = {
-            qid: gold for qid, _specs, gold in rows
-        }
-
-        def _is_gold_top_tier(qid: str, level: int) -> bool:
-            return level == top_tier_level and bool(gold_by_qid.get(qid))
-
-        def _new_row(qid: str, level: int) -> TierAnswer:
-            """Build a row WITHOUT touching counters (caller counts)."""
-            name = name_by_level.get(level, f"tier{level}")
-            if _is_gold_top_tier(qid, level):
-                return TierAnswer(
-                    run_id=run_id,
-                    query_id=qid,
-                    tier_level=level,
-                    tier_name=name,
-                    response_text=gold_by_qid[qid],
-                    status="success",
-                    attempted_at=now,
-                )
-            return TierAnswer(
-                run_id=run_id,
-                query_id=qid,
-                tier_level=level,
-                tier_name=name,
-                status="pending",
-                attempted_at=now,
-            )
 
         routed_by_qid: dict[str, int] = {}
         for qid, lvl in session.execute(
@@ -219,46 +179,49 @@ def seed_pending_answers(
             if qid in target_qids and lvl is not None:
                 routed_by_qid[qid] = lvl
 
-        # Existing tier_answer rows for this run, indexed by query_id.
-        existing_by_qid: dict[str, TierAnswer] = {}
+        # Existing tier_answer rows for this run, grouped by query_id.
+        existing_by_qid: dict[str, list[TierAnswer]] = {}
         for ta in session.execute(
             select(TierAnswer).where(TierAnswer.run_id == run_id)
         ).scalars():
-            existing_by_qid[ta.query_id] = ta
+            existing_by_qid.setdefault(ta.query_id, []).append(ta)
 
         for qid, level in routed_by_qid.items():
-            existing = existing_by_qid.get(qid)
-            is_gold = _is_gold_top_tier(qid, level)
-
-            if existing is not None and existing.tier_level == level:
-                # Right tier already. Upgrade a not-yet-successful top-tier
-                # row to gold-success so the worker doesn't call the LLM.
-                if existing.status != "success" and is_gold:
-                    existing.response_text = gold_by_qid[qid]
-                    existing.status = "success"
-                    existing.error_msg = None
-                    existing.attempted_at = now
-                    result.gold_filled += 1
-                else:
-                    result.kept += 1
+            try:
+                tier = models.by_level(level)
+            except KeyError:
+                # No tier config for this level — can't seed model rows.
                 continue
+            wanted = {m.served_model_name: m for m in tier.resolved_models()}
+            present = existing_by_qid.get(qid, [])
 
-            if existing is not None:
-                # Stale: pass1 has since picked a different tier for this query.
-                session.delete(existing)
-                # Count by what the REPLACEMENT is: a gold-filled row didn't
-                # need an LLM; a pending row did. Either way the stale row
-                # was fixed — but gold_filled is the more salient fact.
-                if is_gold:
-                    result.gold_filled += 1
+            # Keep rows that match a wanted (level, model); delete the rest.
+            keep_keys: set[str] = set()
+            for ta in present:
+                if ta.tier_level == level and ta.model_id in wanted:
+                    result.kept += 1
+                    keep_keys.add(ta.model_id)
                 else:
+                    session.delete(ta)  # wrong tier, or model dropped
                     result.replaced += 1
-            elif is_gold:
-                result.gold_filled += 1
-            else:
-                result.seeded += 1
 
-            session.add(_new_row(qid, level))
+            for mid, m in wanted.items():
+                if mid in keep_keys:
+                    continue
+                session.add(
+                    TierAnswer(
+                        run_id=run_id,
+                        query_id=qid,
+                        tier_level=level,
+                        model_id=mid,
+                        model_slot=m.slot,
+                        provider=m.provider,
+                        tier_name=tier.router_alias,
+                        status="pending",
+                        attempted_at=now,
+                    )
+                )
+                result.seeded += 1
 
     return result
 

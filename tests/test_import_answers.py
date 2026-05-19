@@ -149,7 +149,10 @@ def test_import_inserts_new_rows(tmp_path: Path) -> None:
         "## q00068 — Eng team\n\nAnswer for q00068.\n"
     )
     models = make_models([1, 2, 3, 4, 5])
-    result = import_answers_file(db, rid, tier_level=4, file_path=md_path, models=models)
+    result = import_answers_file(
+        db, rid, tier_level=4, model_id="m4", provider="OpenAI",
+        file_path=md_path, models=models,
+    )
     assert result.parsed == 2
     assert result.inserted == 2
     assert result.updated == 0
@@ -162,6 +165,8 @@ def test_import_inserts_new_rows(tmp_path: Path) -> None:
     assert set(by_qid.keys()) == {"q00046", "q00068"}
     assert by_qid["q00046"].tier_level == 4
     assert by_qid["q00046"].tier_name == "tier4"
+    assert by_qid["q00046"].model_id == "m4"
+    assert by_qid["q00046"].provider == "OpenAI"
     assert by_qid["q00046"].response_text == "Long-form answer for q00046."
     assert by_qid["q00046"].status == "success"
 
@@ -172,7 +177,8 @@ def test_import_updates_existing_rows(tmp_path: Path) -> None:
     from datetime import UTC, datetime
     with session_scope(db) as s:
         s.add(TierAnswer(
-            run_id=rid, query_id="q00046", tier_level=4, tier_name="tier4",
+            run_id=rid, query_id="q00046", tier_level=4, model_id="m4",
+            model_slot=0, provider="OpenAI", tier_name="tier4",
             response_text="OLD ANSWER", status="error", error_msg="prior failure",
             attempted_at=datetime.now(UTC),
         ))
@@ -181,7 +187,10 @@ def test_import_updates_existing_rows(tmp_path: Path) -> None:
     md_path.write_text("## q00046 — Title\n\nFresh imported answer.\n")
     models = make_models([1, 2, 3, 4, 5])
 
-    result = import_answers_file(db, rid, tier_level=4, file_path=md_path, models=models)
+    result = import_answers_file(
+        db, rid, tier_level=4, model_id="m4", provider="OpenAI",
+        file_path=md_path, models=models,
+    )
     assert result.inserted == 0
     assert result.updated == 1
 
@@ -204,7 +213,10 @@ def test_import_skips_unknown_query_ids(tmp_path: Path) -> None:
         "## q99999 — Unknown\n\nThis qid doesn't exist in the DB.\n"
     )
     models = make_models([1, 2, 3, 4, 5])
-    result = import_answers_file(db, rid, tier_level=4, file_path=md_path, models=models)
+    result = import_answers_file(
+        db, rid, tier_level=4, model_id="m4", provider="OpenAI",
+        file_path=md_path, models=models,
+    )
     assert result.inserted == 1
     assert result.skipped_unknown == ["q99999"]
 
@@ -217,7 +229,10 @@ def test_import_skips_empty_bodies(tmp_path: Path) -> None:
         "## q00068 — Empty section\n\n"
     )
     models = make_models([1, 2, 3, 4, 5])
-    result = import_answers_file(db, rid, tier_level=4, file_path=md_path, models=models)
+    result = import_answers_file(
+        db, rid, tier_level=4, model_id="m4", provider="OpenAI",
+        file_path=md_path, models=models,
+    )
     assert result.inserted == 1
     assert result.skipped_empty == ["q00068"]
 
@@ -228,12 +243,18 @@ def test_import_idempotent_re_run(tmp_path: Path) -> None:
     md_path.write_text("## q00046 — Title\n\nAnswer v1.\n")
     models = make_models([1, 2, 3, 4, 5])
 
-    r1 = import_answers_file(db, rid, tier_level=4, file_path=md_path, models=models)
+    r1 = import_answers_file(
+        db, rid, tier_level=4, model_id="m4", provider="OpenAI",
+        file_path=md_path, models=models,
+    )
     assert r1.inserted == 1
 
     # Re-run with updated content — should update, not insert duplicate.
     md_path.write_text("## q00046 — Title\n\nAnswer v2 (revised).\n")
-    r2 = import_answers_file(db, rid, tier_level=4, file_path=md_path, models=models)
+    r2 = import_answers_file(
+        db, rid, tier_level=4, model_id="m4", provider="OpenAI",
+        file_path=md_path, models=models,
+    )
     assert r2.inserted == 0
     assert r2.updated == 1
 
