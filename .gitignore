@@ -49,3 +49,6 @@ demo.json
 .idea/
 .vscode/
 *.swp
+
+# Microsoft Office temporary owner/lock files (never commit)
+~$*
