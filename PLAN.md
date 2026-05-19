@@ -515,8 +515,7 @@ go at the bottom.
 - **Simplification pass** — queries.json (not YAML), folded `seed` and
   `gold` targets into `make load`, dropped `validate-config`.
 - **Dogfood fixes** — RouterProcess launcher pattern; `make setup`
-  installs vllm-sr; shipped first real `config/vllm-sr.yaml` with 5 tiers
-  + keyword routing.
+  installs vllm-sr; shipped first real `config/vllm-sr.yaml` with 5 tiers.
 - **Scope reframe** — pivoted from "continuously-runnable benchmark
   harness with internal scoring" to "production-pass that emits a single
   `demo.json` consumed by external judging + replay UI." Dropped M5+M6

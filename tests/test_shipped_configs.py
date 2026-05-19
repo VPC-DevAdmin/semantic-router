@@ -285,9 +285,9 @@ def test_router_exemplars_build_projections_shape() -> None:
             f"embedding input {inp['name']!r} must set value_source: confidence"
         )
 
-    # Structure / context / keyword inputs (if present) should be binary
+    # Structure / context inputs (if present) should be binary
     # — no value_source — and their weight should be a number.
-    for type_name in ("structure", "context", "keyword"):
+    for type_name in ("structure", "context"):
         for inp in inputs_by_type.get(type_name, []):
             assert "value_source" not in inp, (
                 f"{type_name} input {inp['name']!r} should not set value_source"

@@ -3,8 +3,8 @@
 # ═════════════════════════════════════════════════════════════════════════
 #
 # Canonical v0.3 architecture (per upstream config.yaml + docs):
-# routing.signals.{complexity,embeddings,structure,context,keywords} all
-# feed routing.projections.scores.request_difficulty via weighted_sum.
+# routing.signals.{complexity,embeddings,structure,context} all feed
+# routing.projections.scores.request_difficulty via weighted_sum.
 # routing.projections.mappings.tier_band partitions the score into 5
 # bands. routing.decisions[] routes each band to a tier model.
 #

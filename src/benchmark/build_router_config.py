@@ -165,13 +165,12 @@ def _validate_exemplars(ex: dict, eval_prompts: set[str] | None = None) -> None:
                         f"this would contaminate the demo. Example: {next(iter(overlap))!r}"
                     )
 
-    # Structure / context / keyword signals — purely declarative (no
-    # exemplar overlap risk with the eval set since they're mechanical
-    # gates, not semantic similarity).
+    # Structure / context signals — purely declarative (no exemplar
+    # overlap risk with the eval set since they're mechanical gates,
+    # not semantic similarity).
     for section, required_fields in (
         ("structure_signals", ("id", "feature")),
         ("context_signals", ("id",)),
-        ("keyword_signals", ("id", "keywords")),
     ):
         section_signals = ex.get(section, [])
         if not section_signals:
@@ -410,7 +409,7 @@ def _emit_structure_signal(sig: dict) -> dict:
     """One entry under routing.signals.structure[].
 
     Structure signals measure mechanical properties of the prompt itself:
-    word counts, regex matches, ordered keyword sequences, density of
+    word counts, regex matches, ordered token sequences, density of
     constraint markers. They're heuristic and deterministic — cheap to
     compute, carry information orthogonal to embeddings.
 
@@ -447,34 +446,10 @@ def _emit_context_signal(sig: dict) -> dict:
     return out
 
 
-def _emit_keyword_signal(sig: dict) -> dict:
-    """One entry under routing.signals.keywords[].
-
-    Lexical pattern matching with two methods: bm25 (token-level scoring)
-    and ngram (substring matching). Schema mirrors upstream config.yaml.
-    """
-    out: dict[str, Any] = {
-        "name": sig["id"],
-        "operator": sig.get("operator", "OR"),
-        "method": sig.get("method", "bm25"),
-        "keywords": list(sig["keywords"]),
-    }
-    out["case_sensitive"] = bool(sig.get("case_sensitive", False))
-    method = out["method"]
-    threshold_key = f"{method}_threshold"
-    if threshold_key in sig:
-        out[threshold_key] = sig[threshold_key]
-    if method == "ngram" and "ngram_arity" in sig:
-        out["ngram_arity"] = sig["ngram_arity"]
-    if sig.get("description"):
-        out["description"] = sig["description"]
-    return out
-
-
 def _emit_typed_input(sig: dict, type_name: str) -> dict:
     """Generic weighted_sum input for a non-embedding signal type.
 
-    Used for structure/context/keyword inputs — these fire binary
+    Used for structure/context inputs — these fire binary
     (match=1.0 / miss=0.0) by default, no value_source needed.
     """
     return {
@@ -501,11 +476,10 @@ def _emit_difficulty_score(
     emb_signals: list[dict] | None = None,
     structure_signals: list[dict] | None = None,
     context_signals: list[dict] | None = None,
-    keyword_signals: list[dict] | None = None,
 ) -> dict:
     """`routing.projections.scores.request_difficulty` — weighted_sum
     over the canonical signal-type mix: complexity, embeddings, structure,
-    context, keywords.
+    context.
 
     Schema notes (per upstream vllm-project/semantic-router config.yaml
     and confirmed by inspecting a real eval response):
@@ -549,14 +523,12 @@ def _emit_difficulty_score(
     # confidence into the same weighted_sum (upstream mixed-source pattern).
     for sig in emb_signals or []:
         inputs.append(_emit_embedding_input(sig))
-    # Structure / context / keyword signals fire binary (match=1.0/miss=0.0).
+    # Structure / context signals fire binary (match=1.0/miss=0.0).
     # Each contributes its weight on match, zero on miss. No value_source.
     for sig in structure_signals or []:
         inputs.append(_emit_typed_input(sig, "structure"))
     for sig in context_signals or []:
         inputs.append(_emit_typed_input(sig, "context"))
-    for sig in keyword_signals or []:
-        inputs.append(_emit_typed_input(sig, "keyword"))
     return {
         "name": "request_difficulty",
         "method": "weighted_sum",
@@ -776,7 +748,6 @@ def build(
     emb_signals = ex.get("embedding_signals", [])
     structure_signals = ex.get("structure_signals", [])
     context_signals = ex.get("context_signals", [])
-    keyword_signals = ex.get("keyword_signals", [])
     cutoffs = list(ex["tier_cutoffs"])
     medium_weight_factor = float(
         ex.get("medium_weight_factor", DEFAULT_MEDIUM_WEIGHT_FACTOR)
@@ -824,11 +795,6 @@ def build(
                     if context_signals
                     else {}
                 ),
-                **(
-                    {"keywords": [_emit_keyword_signal(s) for s in keyword_signals]}
-                    if keyword_signals
-                    else {}
-                ),
             },
             "projections": {
                 "scores": [
@@ -838,7 +804,6 @@ def build(
                         emb_signals,
                         structure_signals=structure_signals,
                         context_signals=context_signals,
-                        keyword_signals=keyword_signals,
                     )
                 ],
                 "mappings": [_emit_tier_band_mapping(tier_ids, cutoffs)],
