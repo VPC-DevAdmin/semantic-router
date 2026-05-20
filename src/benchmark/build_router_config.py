@@ -411,11 +411,18 @@ def _emit_provider_model(tier_id: str, cfg: dict) -> dict:
     }
 
 
-def _emit_provider_model_mock(tier_id: str, mock_endpoint: str) -> dict:
-    """All tiers point at the local mock; api_format forced to openai."""
+def _emit_provider_model_mock(tier_id: str, cfg: dict, mock_endpoint: str) -> dict:
+    """All tiers point at the local mock; api_format forced to openai.
+
+    The model card `name:` mirrors `cfg["model"]` (the upstream
+    identifier) for the same reason as `_emit_provider_model`: it must
+    match what `TierConfig.model_id` reports so x-vsr-selected-model →
+    tier lookup round-trips under MOCK=true too. The mock OAI server
+    ACKs whatever model name comes through — it doesn't validate.
+    """
     return {
-        "name": tier_id,
-        "provider_model_id": tier_id,
+        "name": cfg["model"],
+        "provider_model_id": cfg["model"],
         "api_format": "openai",
         "backend_refs": [
             {
@@ -884,7 +891,7 @@ def build(
         "providers": {
             "defaults": {"default_model": be.get("default_tier", tier_ids[0])},
             "models": [
-                _emit_provider_model_mock(tier_id, mock_endpoint)
+                _emit_provider_model_mock(tier_id, cfg, mock_endpoint)
                 if mock_endpoint
                 else _emit_provider_model(tier_id, cfg)
                 for tier_id, cfg in be["backends"].items()

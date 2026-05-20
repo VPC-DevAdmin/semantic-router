@@ -16,8 +16,8 @@ User-facing make targets (see `make help`):
 ```
 make setup              # one-time: venv + deps + DB + installs vllm-sr if missing
 make load               # validate exemplars, build router-config.yaml, load queries.json → DB
-make route              # rebuild router-config.yaml; for each query ask the router which tier (max_tokens=1)
-make answers            # for each routed query: call EVERY model the picked tier fronts
+make route              # rebuild router-config.yaml; routing pass via the local OAI mock (auto-started)
+make answers            # for each routed query: call EVERY model the picked tier fronts (real upstreams)
 make export             # emit demo.json
 make start_LLM          # YAML-driven launch of local-CPU tier backends (T2 docker procedure today)
 make stop_LLM           # tear down local-CPU tier backends
@@ -29,6 +29,16 @@ make mock-stop          # stop the mock
 rows and re-seed before running. Errors in `answers` don't fail the pass —
 they stay as `status='error'` and get retried automatically on the next
 invocation.
+
+**`make route` defaults to the local OAI mock.** Pass 1 only needs the
+router's decision headers (`x-vsr-selected-*`); it doesn't need a real
+completion. The vllm-sr router is an Envoy proxy that always forwards
+upstream, so without a mock every routed query would consume a token
+and surface vendor quirks (max_tokens vs max_completion_tokens,
+temperature=0 on gpt-5, etc.). The mock (`tools/oai_mock.py`, port 8811)
+ACKs with a tier-tagged canned reply. `make route` depends on `mock-bg`
+so the mock auto-starts. Use `REAL_BACKENDS=1` to bypass the mock when
+you specifically want to validate end-to-end connectivity.
 
 Plus `resume`, `clean-results`, `router-smoke`, `router-stop`, `test`,
 `fmt`, `lint`.
