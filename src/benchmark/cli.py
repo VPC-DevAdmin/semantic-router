@@ -29,7 +29,7 @@ from .load import load_into_db
 from .misroutes import list_misroutes, render_misroutes
 from .pass1 import run_pass1
 from .router_client import RouterClient, TierLookup
-from .router_proc import RouterProcess
+from .router_proc import RouterProcess, ensure_router_stack
 from .runs import (
     clean_results,
     create_run,
@@ -141,8 +141,25 @@ def route_cmd(
     proc_cfg = load_router_process(router_config)
     lookup = TierLookup(load_models(models))
     only = list(query_id) or None
+    built_config = Path("config/router-config.yaml")
 
     async def _go() -> int:
+        # Make sure the running router stack is serving the config we
+        # just built (or start it if it's down). Cheap when the config
+        # didn't change since the last run.
+        if built_config.exists():
+            action = await ensure_router_stack(proc_cfg, built_config)
+            if action == "unchanged":
+                console.print(
+                    "[dim]router stack already running with the current "
+                    "config — no restart needed[/]"
+                )
+            else:
+                console.print(
+                    f"[green]router stack {action}[/] with "
+                    f"{built_config} (config hash changed or stack was down)"
+                )
+
         rid = _ensure_run(db, router_config, models, only, notes or None)
         if run_new:
             n = reset_pass1(db, rid)
@@ -150,9 +167,8 @@ def route_cmd(
             from .runs import seed_pending  # noqa: F401  (already imported above)
             seed_pending(db, rid, only=only)
         console.print(f"[green]route[/] run={rid}")
-        async with RouterProcess(proc_cfg):
-            client = RouterClient(proc_cfg, lookup)
-            report = await run_pass1(db, rid, router_client=client, concurrency=concurrency)
+        client = RouterClient(proc_cfg, lookup)
+        report = await run_pass1(db, rid, router_client=client, concurrency=concurrency)
         console.print(str(report))
         return 0
 
@@ -176,13 +192,15 @@ def resume_cmd(
     rid = _resolve_run(db, run)
     proc_cfg = load_router_process(router_config)
     lookup = TierLookup(load_models(models))
+    built_config = Path("config/router-config.yaml")
 
     async def _go() -> int:
-        async with RouterProcess(proc_cfg):
-            client = RouterClient(proc_cfg, lookup)
-            r1 = await run_pass1(db, rid, router_client=client, concurrency=concurrency)
-            console.print("[bold]route[/]")
-            console.print(str(r1))
+        if built_config.exists():
+            await ensure_router_stack(proc_cfg, built_config)
+        client = RouterClient(proc_cfg, lookup)
+        r1 = await run_pass1(db, rid, router_client=client, concurrency=concurrency)
+        console.print("[bold]route[/]")
+        console.print(str(r1))
         if r1.errors == 0:
             mark_finished(db, rid, status="done")
             console.print(f"[green]run[/] {rid} finished")

@@ -36,6 +36,10 @@ logs/
 config/router-config.yaml
 # vllm-sr's per-config working dir, regenerated alongside router-config.yaml.
 config/.vllm-sr/
+# Hash of the router-config.yaml the running stack was last launched with.
+# Used by `ensure_router_stack` to skip the docker restart on the fast path
+# (config unchanged + stack healthy). Local-only state.
+.router-config-hash
 
 # vllm-sr's auto-generated artifacts in the project root.
 /config.yaml

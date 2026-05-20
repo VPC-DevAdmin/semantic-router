@@ -16,7 +16,11 @@ import httpx
 import pytest
 
 from benchmark.config import RouterProcessConfig
-from benchmark.router_proc import RouterProcess, RouterStartupError
+from benchmark.router_proc import (
+    RouterProcess,
+    RouterStartupError,
+    ensure_router_stack,
+)
 
 
 class _FakeProc:
@@ -182,3 +186,126 @@ async def test_stop_default_leaves_stack_running(monkeypatch) -> None:
         async with RouterProcess(cfg):
             pass
         run_mock.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# ensure_router_stack — hash-based skip-or-restart
+# ─────────────────────────────────────────────────────────────────────────
+
+def _config(tmp_path) -> tuple[RouterProcessConfig, type]:
+    """Builds a RouterProcessConfig + a fresh path to the (fake) router
+    config file in tmp_path."""
+    cfg = RouterProcessConfig(
+        binary="vllm-sr",
+        ready_timeout_s=5,
+        apiserver_host="127.0.0.1", apiserver_port=8080,
+        frontend_host="127.0.0.1", frontend_port=8899,
+    )
+    return cfg
+
+
+@pytest.mark.asyncio
+async def test_ensure_unchanged_when_hash_matches_and_healthy(tmp_path) -> None:
+    """Fast path: hash file matches current config AND apiserver healthy →
+    no restart, no spawn. Returns 'unchanged'."""
+    cfg = _config(tmp_path)
+    config_path = tmp_path / "router-config.yaml"
+    config_path.write_text("identical: content")
+    hash_file = tmp_path / ".router-config-hash"
+    # Pre-seed the hash file with the right hash.
+    import hashlib
+    hash_file.write_text(hashlib.sha256(config_path.read_bytes()).hexdigest())
+
+    calls: dict[str, int] = {"stop": 0, "spawn": 0}
+
+    async def healthy(_c): return True
+    def stop(_c): calls["stop"] += 1
+    async def spawn(_c): calls["spawn"] += 1
+
+    action = await ensure_router_stack(
+        cfg, config_path, hash_file=hash_file,
+        is_healthy=healthy, stop=stop, spawn_serve=spawn,
+    )
+    assert action == "unchanged"
+    assert calls == {"stop": 0, "spawn": 0}
+
+
+@pytest.mark.asyncio
+async def test_ensure_restarts_when_hash_changed(tmp_path) -> None:
+    """Hash mismatch + stack up → stop + spawn → 'restarted'. Hash file
+    is updated to the new value."""
+    cfg = _config(tmp_path)
+    config_path = tmp_path / "router-config.yaml"
+    config_path.write_text("new content")
+    hash_file = tmp_path / ".router-config-hash"
+    hash_file.write_text("0" * 64)  # stale hash
+
+    calls: dict[str, int] = {"stop": 0, "spawn": 0}
+
+    async def healthy(_c): return True
+    def stop(_c): calls["stop"] += 1
+    async def spawn(_c): calls["spawn"] += 1
+
+    action = await ensure_router_stack(
+        cfg, config_path, hash_file=hash_file,
+        is_healthy=healthy, stop=stop, spawn_serve=spawn,
+    )
+    assert action == "restarted"
+    assert calls == {"stop": 1, "spawn": 1}
+    # Stored hash reflects the new content.
+    import hashlib
+    assert hash_file.read_text().strip() == \
+        hashlib.sha256(config_path.read_bytes()).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_ensure_starts_when_stack_is_down(tmp_path) -> None:
+    """Health check fails (stack not running) → spawn, no prior stop.
+    Returns 'started'. Works whether or not a hash file exists."""
+    cfg = _config(tmp_path)
+    config_path = tmp_path / "router-config.yaml"
+    config_path.write_text("anything")
+    hash_file = tmp_path / ".router-config-hash"
+    # No hash file → first-ever start.
+
+    calls: dict[str, int] = {"stop": 0, "spawn": 0}
+
+    async def healthy(_c): return False
+    def stop(_c): calls["stop"] += 1
+    async def spawn(_c): calls["spawn"] += 1
+
+    action = await ensure_router_stack(
+        cfg, config_path, hash_file=hash_file,
+        is_healthy=healthy, stop=stop, spawn_serve=spawn,
+    )
+    assert action == "started"
+    # No stop (stack wasn't running); spawn happened.
+    assert calls == {"stop": 0, "spawn": 1}
+    assert hash_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_ensure_restarts_when_hash_match_but_stack_down(tmp_path) -> None:
+    """Edge case: hash file says we last started with this config, but
+    the user `docker stop`'d the containers manually. We must detect that
+    via the health check and restart the stack, not trust the hash file."""
+    cfg = _config(tmp_path)
+    config_path = tmp_path / "router-config.yaml"
+    config_path.write_text("the right content")
+    hash_file = tmp_path / ".router-config-hash"
+    import hashlib
+    hash_file.write_text(hashlib.sha256(config_path.read_bytes()).hexdigest())
+
+    calls: dict[str, int] = {"stop": 0, "spawn": 0}
+
+    async def healthy(_c): return False  # user killed the containers
+    def stop(_c): calls["stop"] += 1
+    async def spawn(_c): calls["spawn"] += 1
+
+    action = await ensure_router_stack(
+        cfg, config_path, hash_file=hash_file,
+        is_healthy=healthy, stop=stop, spawn_serve=spawn,
+    )
+    assert action == "started"
+    # No stop needed (already down); spawn happened.
+    assert calls == {"stop": 0, "spawn": 1}

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import os
 import shutil
 import signal
@@ -40,6 +41,13 @@ from .config import RouterProcessConfig
 
 class RouterStartupError(RuntimeError):
     pass
+
+
+# Hash of the router-config.yaml the running stack was launched with.
+# Written here by `ensure_router_stack` after a successful start/restart;
+# consulted on the next call to decide whether the stack is still running
+# the right config. Lives at repo root, gitignored.
+ROUTER_CONFIG_HASH_FILE = Path(".router-config-hash")
 
 
 class RouterProcess:
@@ -191,3 +199,102 @@ class RouterProcess:
                     self._log_handle.close()
                 finally:
                     self._log_handle = None
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Hash-based "ensure stack is up with the right config" helper
+# ─────────────────────────────────────────────────────────────────────────
+# The router stack is a long-running docker collection that loads its
+# config at startup. `make route` rebuilds `config/router-config.yaml`
+# before each pass; without an explicit restart, the running stack keeps
+# serving the old config and the new exemplars/backends silently never
+# take effect.
+#
+# `ensure_router_stack` solves that with a hash-and-restart-if-different
+# check: cheap when the config didn't change (just verifies the apiserver
+# is healthy), slower when it did (one `vllm-sr stop && vllm-sr serve`
+# cycle). The hash of the active config is persisted in
+# .router-config-hash so the check survives across CLI invocations.
+
+
+def _hash_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _read_stored_hash(hash_file: Path) -> str | None:
+    if not hash_file.exists():
+        return None
+    return hash_file.read_text().strip() or None
+
+
+def _write_stored_hash(hash_file: Path, h: str) -> None:
+    hash_file.write_text(h + "\n")
+
+
+async def _is_apiserver_healthy(cfg: RouterProcessConfig, timeout_s: float = 2.0) -> bool:
+    url = f"http://{cfg.apiserver_host}:{cfg.apiserver_port}/ready"
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            r = await client.get(url)
+            return r.status_code == 200
+    except (httpx.RequestError, httpx.TimeoutException):
+        return False
+
+
+def _vllm_sr_stop(cfg: RouterProcessConfig) -> None:
+    """Tolerant teardown — succeeds whether the stack is up or already gone."""
+    binary = shutil.which(cfg.binary) or cfg.binary
+    with contextlib.suppress(Exception):
+        subprocess.run(
+            [binary, "stop"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=cfg.stop_timeout_s, check=False,
+        )
+
+
+async def ensure_router_stack(
+    cfg: RouterProcessConfig,
+    config_path: Path,
+    *,
+    hash_file: Path | None = None,
+    is_healthy: callable[[RouterProcessConfig], object] | None = None,
+    stop: callable[[RouterProcessConfig], None] | None = None,
+    spawn_serve: callable[[RouterProcessConfig], object] | None = None,
+) -> str:
+    """Ensure the router stack is running with the config at `config_path`.
+
+    Returns one of:
+      'unchanged' — stack is up and was already serving this config; we did nothing.
+      'started'   — stack was down; we ran `vllm-sr serve --config <path>`.
+      'restarted' — stack was up with a different config; we stopped + restarted.
+
+    Fast path: when the SHA256 of `config_path` matches what we recorded
+    on the last successful start AND `/ready` returns 200, we skip the
+    docker-restart cycle entirely (sub-second).
+    """
+    hash_file = hash_file or ROUTER_CONFIG_HASH_FILE
+    health_probe = is_healthy or _is_apiserver_healthy
+    do_stop = stop or _vllm_sr_stop
+
+    async def _default_spawn(c: RouterProcessConfig) -> None:
+        # Reuse the existing launcher path — spawns `vllm-sr serve [serve_args]`,
+        # waits for it to exit 0, then polls /ready until healthy.
+        proc = RouterProcess(c)
+        await proc.start()
+        # Leave the stack running; nothing to clean up (launcher already exited).
+
+    do_spawn = spawn_serve or _default_spawn
+
+    current = _hash_file(config_path)
+    stored = _read_stored_hash(hash_file)
+    healthy = await health_probe(cfg)
+
+    if stored == current and healthy:
+        return "unchanged"
+
+    action = "restarted" if healthy else "started"
+    if healthy:
+        do_stop(cfg)
+    await do_spawn(cfg)
+    _write_stored_hash(hash_file, current)
+    return action
