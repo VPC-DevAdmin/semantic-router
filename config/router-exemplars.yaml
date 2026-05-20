@@ -86,7 +86,11 @@ complexity_signals:
   - id: query_difficulty
     description: "Is this query high-effort vs low-effort overall?"
     threshold: 0.55
-    weight: 0.20
+    # Bumped 0.20 → 0.24 so a single :hard match alone clears the
+    # tier3→tier4 cutoff (0.18). Calibrated against the q00640/q00659/
+    # q00643 misroute pattern where proof-shape prompts scored :medium
+    # AND were short, leaving them at T1 with score ≈ 0.
+    weight: 0.24
     hard:
       candidates:
         # Multi-step reasoning
@@ -106,6 +110,17 @@ complexity_signals:
         # Synthesis at length
         - "Write a literary short story of approximately 1500-2000 words sustaining a single voice and structural arc."
         - "Critique this paper's methodology, identifying three structurally distinct problem classes."
+        # Mathematical proof / formal derivation — added to capture the
+        # proof-shape T3/T4 prompts the prior bank missed (induction,
+        # constrained optimization, MLE/CI, divergence/convergence
+        # arguments, combinatorial identities). Phrased as generic
+        # archetypes — no overlap with eval-set prompts.
+        - "Establish by induction over the positive integers that a stated algebraic identity holds, including the base case and inductive step in full."
+        - "Derive the maximum of a constrained multivariable objective using Lagrange multipliers and verify the second-order conditions."
+        - "Show that an infinite series diverges by constructing a comparison or partial-sum argument from first principles."
+        - "Prove that a stated inequality holds for all positive real values by reducing it to a canonical inequality such as Cauchy-Schwarz or AM-GM."
+        - "Compute the maximum likelihood estimator for a probability parameter from sample data and construct an approximate confidence interval, justifying the asymptotic argument."
+        - "Prove a combinatorial identity by a bijective argument or by induction on a structural parameter."
     easy:
       candidates:
         # Factual lookups
@@ -203,13 +218,22 @@ embedding_signals:
   # T5-grade prompts.
   - id: frontier_synthesis
     description: "Continuous similarity to T5-grade frontier prompts."
-    threshold: 0.65
+    # Tightened 0.65 → 0.70. The lane that fires on this signal uses
+    # vllm-sr's soft-match threshold (~0.50) for the boolean condition,
+    # but the strict threshold here still controls the matched_embeddings
+    # header and downstream gating. Higher threshold reduces marginal
+    # matches like q00111 "Summarize this paragraph..." which the
+    # previous paragraph-style exemplars below were pulling in.
+    threshold: 0.70
     weight: 0.25
     aggregation_method: max
     candidates:
-      # Long-form literary craft with structural constraints
-      - "Write a literary novella opening (~2500 words) about a character with synesthesia, establishing their inner life entirely through how they navigate the physical world. No exposition, no internal monologue that names what they feel."
-      - "Write a sustained literary essay (2000 words) comparing the moral seriousness of two contemporary novelists. Make a substantive aesthetic claim about which mode of attention is more rigorous and defend it with textual evidence."
+      # Position-taking with self-critique (replaces two paragraph-style
+      # literary-craft exemplars that semantically matched "Summarize
+      # this paragraph: ..."-shape prompts and triggered the T5 lane on
+      # them — see q00111 misroute).
+      - "Take a contested position on a long-standing debate within a field, anticipate the strongest counter-argument, and refute it without retreating to consensus or hedging."
+      - "Construct an original evaluative framework for a domain where consensus methodologies are widely criticized. Take the strongest critique seriously and produce actionable recommendations."
       # Original argument for non-consensus position
       - "Construct a defensible position that contemporary management consulting as an industry is net-negative for the organizations it serves. Anticipate and respond to the strongest objection without retreat."
       - "Argue rigorously for the position that the term 'mental health' as used in workplace HR has become incoherent. Discriminate this claim from anti-therapy and anti-mental-health-awareness positions. Propose a constructive replacement framework."
@@ -271,8 +295,8 @@ embedding_signals:
 structure_signals:
 
   - id: short_prompt
-    description: "Fires when the prompt has fewer than 12 words. Mechanical detractor — pulls down very-short queries that semantically resemble moderate-complexity archetypes (e.g., 'what is X?' / 'why is X?') without competing with moderate in semantic space. Predicate is tight (lt: 12) and weight modest (-0.08) so it can stack with the moderate-complexity match for borderline cases but doesn't overpower it."
-    weight: -0.08
+    description: "Fires when the prompt has fewer than 12 words. Mechanical detractor — pulls down very-short queries that semantically resemble moderate-complexity archetypes (e.g., 'what is X?' / 'why is X?') without competing with moderate in semantic space. Predicate is tight (lt: 12) and weight modest (-0.05) so it stacks with `trivial_lookup` (the primary -0.20 detractor) for true trivials but doesn't overpower a genuine :hard match on a terse-but-rigorous prompt like 'Prove √2 is irrational' (7 tokens)."
+    weight: -0.05
     feature:
       type: count
       source:
