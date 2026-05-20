@@ -47,7 +47,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
@@ -751,8 +750,11 @@ def build(
 
     eval_prompts: set[str] | None = None
     if eval_set_path:
-        eval_data = json.loads(eval_set_path.read_text())
-        eval_prompts = {entry["prompt"] for entry in eval_data}
+        # queries.json may be a bare list or wrapped as {"queries": [...]}.
+        # Use the canonical loader so we accept both shapes (same rule as
+        # config.load_queries).
+        from .config import load_queries
+        eval_prompts = {q.prompt for q in load_queries(eval_set_path).queries}
 
     _validate_exemplars(ex, eval_prompts)
     tier_ids = [t["id"] for t in ex["tiers"]]

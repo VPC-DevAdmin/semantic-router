@@ -156,6 +156,39 @@ def test_queries_json_parses() -> None:
 #   routing.decisions[] — one per tier, each conditioning on its band
 # ─────────────────────────────────────────────────────────────────────────
 
+def test_build_accepts_wrapped_queries_json(tmp_path) -> None:
+    """`build(... eval_set_path=...)` must accept both shapes of queries.json:
+    bare `[{...}]` and wrapped `{"queries": [{...}]}` (same rule as
+    config.load_queries). Regression for a build failure on the wrapped
+    form."""
+    import json
+
+    from benchmark.build_router_config import build
+
+    wrapped = {
+        "queries": [
+            {
+                "id": "q00001",
+                "prompt": "What is 17 + 26?",
+                "expected_answers": [
+                    {"answer": "43.", "model": "Opus", "provider": "Anthropic"},
+                ],
+                "expected_min_tier": 1,
+                "specializations": ["general"],
+            }
+        ]
+    }
+    qp = tmp_path / "queries.json"
+    qp.write_text(json.dumps(wrapped))
+
+    cfg = build(
+        exemplars_path=ROOT / "config" / "router-exemplars.yaml",
+        backends_path=ROOT / "config" / "router-backends.yaml",
+        eval_set_path=qp,
+    )
+    assert cfg["version"] == "v0.3"  # built successfully
+
+
 def test_router_exemplars_build_projections_shape() -> None:
     """Verify the builder emits the canonical v0.3 projections-based shape.
 
