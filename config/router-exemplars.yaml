@@ -85,7 +85,15 @@ tiers:
 complexity_signals:
   - id: query_difficulty
     description: "Is this query high-effort vs low-effort overall?"
-    threshold: 0.55
+    # Contrastive classifier emits signal = hard_score − easy_score.
+    # Empirically (router logs, sample of 20 queries) the signal range
+    # is [-0.32, +0.11] — small contrastive margins, not absolute
+    # similarities. The previous 0.55 threshold was mathematically
+    # unreachable, so EVERY query stayed at :medium and the +0.24 weight
+    # never contributed to the projection score. 0.05 is the natural
+    # threshold for this contrastive scale: signal > 0.05 means "harder
+    # than easy", which is what :hard should mean.
+    threshold: 0.05
     # Bumped 0.20 → 0.24 so a single :hard match alone clears the
     # tier3→tier4 cutoff (0.18). Calibrated against the q00640/q00659/
     # q00643 misroute pattern where proof-shape prompts scored :medium
