@@ -107,7 +107,16 @@ class RouterClient:
             "temperature": temperature,
         }
         if max_tokens is not None:
-            body["max_tokens"] = max_tokens
+            # `max_completion_tokens` is the post-2025 OpenAI field. OpenAI's
+            # gpt-5.x reasoning models REJECT the legacy `max_tokens`
+            # ("Unsupported parameter: 'max_tokens' is not supported with
+            # this model. Use 'max_completion_tokens' instead.") and the
+            # vllm-sr Anthropic adapter (pkg/anthropic/client.go) explicitly
+            # prefers `MaxCompletionTokens` over `MaxTokens`. Modern vLLM
+            # and Google's OAI-compat endpoint accept it too. Since the
+            # router chooses the upstream and we can't pre-pick the right
+            # field, send the universally-accepted one.
+            body["max_completion_tokens"] = max_tokens
         if extra_body:
             body.update(extra_body)
 

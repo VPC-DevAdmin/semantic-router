@@ -85,7 +85,12 @@ async def test_extracts_decision_from_headers(monkeypatch) -> None:
     # Wire-format checks.
     assert captured["url"] == "http://127.0.0.1:8801/v1/chat/completions"
     assert captured["body"]["model"] == "auto"
-    assert captured["body"]["max_tokens"] == 64
+    # The post-2025 OpenAI field. `max_tokens` is rejected by gpt-5.x
+    # reasoning models; the vllm-sr Anthropic adapter prefers
+    # `max_completion_tokens` over `max_tokens`. Sending the new field
+    # works across OpenAI, vLLM, Anthropic, and Google OAI-compat.
+    assert captured["body"]["max_completion_tokens"] == 64
+    assert "max_tokens" not in captured["body"]
 
     # Decision extraction.
     d = result.decision
