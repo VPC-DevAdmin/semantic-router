@@ -20,7 +20,7 @@ import typer
 from dotenv import load_dotenv
 from rich.console import Console
 
-from .answers import run_answers
+from .answers import run_answers, run_smoke
 from .config import load_models, load_router_process
 from .db import DEFAULT_DB_PATH, Query, init_db, session_scope
 from .export import export_demo_json
@@ -229,17 +229,54 @@ def answers_cmd(
             "Used for pipeline verification against the local OAI mock."
         ),
     ),
+    smoke: bool = typer.Option(
+        False, "--smoke",
+        help=(
+            "Connectivity probe only: send a tiny chat request to every "
+            "(tier, model) that a real run would call, report OK/error per "
+            "endpoint, and exit. No DB writes, no run id needed. Verifies "
+            "URL / API key / model name without spending real tokens."
+        ),
+    ),
 ) -> None:
-    """For each routed query: call the tier the router picked.
+    """For each routed query: call every model the picked tier fronts.
 
     The tier comes from `pass1_results.router_selected_tier` (set by
-    `make route`). One row per query — not per-tier fan-out. Unreachable
-    endpoints mark the row as `status='error'`; the pass keeps going and
-    a subsequent `make answers` retries those rows.
+    `make route`). One row per (query, tier, model). Errors mark the row
+    `status='error'`; the pass keeps going and a subsequent `make answers`
+    retries them.
 
-    Queries without a successful pass1 row are not seeded; run `make route`
-    first (or re-run after fixing whatever broke route).
+    With `--smoke`, runs a connectivity probe instead — no DB writes.
     """
+    # ── smoke path: tiny probe per (tier, model), no DB, no run id ─────
+    if smoke:
+        models_cfg = load_models(models)
+        if tier is not None and not any(t.level == tier for t in models_cfg.tiers):
+            console.print(
+                f"[red]error[/]: --tier {tier} not present in {models}; "
+                f"known levels: {sorted(t.level for t in models_cfg.tiers)}"
+            )
+            raise typer.Exit(code=2)
+        if mock_endpoint:
+            console.print(f"[yellow]MOCK[/]: smoke probing against {mock_endpoint}")
+
+        def _smoke_progress(line: str) -> None:
+            console.print(line, markup=False, highlight=False)
+
+        smoke_report = asyncio.run(
+            run_smoke(
+                models_cfg,
+                concurrency=concurrency,
+                tier_level=tier,
+                mock_endpoint=mock_endpoint,
+                progress=_smoke_progress,
+            )
+        )
+        console.print("[bold]smoke[/]")
+        console.print(str(smoke_report))
+        # Exit non-zero on any error so CI / scripts can gate on it.
+        raise typer.Exit(code=1 if smoke_report.errors else 0)
+
     if not db.exists():
         console.print(f"[red]error[/]: db {db} does not exist; run `make setup` first")
         raise typer.Exit(code=2)

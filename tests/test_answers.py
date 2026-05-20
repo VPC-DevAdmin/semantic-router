@@ -9,12 +9,14 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 
+from benchmark import answers as answers_mod
 from benchmark.answers import (
     _clients_by_model,
     _clients_for_mock,
     _extra_body_by_model,
     _max_tokens_by_model,
     run_answers,
+    run_smoke,
 )
 from benchmark.config import (
     BackendSpec,
@@ -412,3 +414,134 @@ async def test_run_answers_progress_lines_name_model_and_provider(tmp_path: Path
     joined = "\n".join(lines)
     assert "gpt-5 (P0)" in joined and "gemini (P1)" in joined
     assert " OK " in joined and "... running" in joined
+
+
+# ---- run_smoke (SMOKE=true) ----
+
+def _patch_smoke_clients(monkeypatch, mapping: dict) -> None:
+    """Override `client_from_model` so smoke uses our fake clients."""
+    monkeypatch.setattr(
+        answers_mod, "client_from_model",
+        lambda m: mapping[m.served_model_name],
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_smoke_probes_every_non_top_tier_model(monkeypatch) -> None:
+    """Default scope: every model in every non-top tier."""
+    models = ModelsConfig(tiers=[
+        _multi(1, ["t1a", "t1b"]),
+        _multi(3, ["t3a", "t3b"]),
+        _multi(5, ["t5a"]),  # top tier — must be skipped by default
+    ])
+    seen: list[tuple[str, int | None]] = []
+
+    class _Probe:
+        def __init__(self, name): self.name = name
+        async def chat(self, prompt, *, max_tokens=None, extra=None, **_):
+            seen.append((self.name, max_tokens))
+            return ChatResult(content="pong", model=self.name,
+                              prompt_tokens=2, completion_tokens=1,
+                              latency_ms=7, raw={})
+
+    fakes = {n: _Probe(n) for n in ("t1a", "t1b", "t3a", "t3b", "t5a")}
+    _patch_smoke_clients(monkeypatch, fakes)
+
+    lines: list[str] = []
+    report = await run_smoke(models, progress=lines.append)
+    assert (report.attempted, report.ok, report.errors) == (4, 4, 0)
+    # Top tier not probed.
+    assert {n for n, _ in seen} == {"t1a", "t1b", "t3a", "t3b"}
+    # Tiny budget per probe (the contract).
+    assert all(tok == 16 for _, tok in seen)
+    # Progress line names the model + provider.
+    joined = "\n".join(lines)
+    assert "t1a (P0)" in joined and " OK " in joined
+
+
+@pytest.mark.asyncio
+async def test_run_smoke_classifies_errors_per_endpoint(monkeypatch) -> None:
+    """A failing probe doesn't kill the rest; outcomes are labelled."""
+    from benchmark.tiers import ChatError
+    models = ModelsConfig(tiers=[
+        _multi(3, ["good", "bad-key", "bad-model"]),
+        _multi(5, ["t5"]),
+    ])
+
+    class _OK:
+        async def chat(self, *a, **kw):
+            return ChatResult(content="pong", model="good",
+                              prompt_tokens=2, completion_tokens=1,
+                              latency_ms=5, raw={})
+
+    class _BadKey:
+        async def chat(self, *a, **kw):
+            raise ChatError("HTTP 401 from https://x/v1: invalid_api_key")
+
+    class _BadModel:
+        async def chat(self, *a, **kw):
+            raise ChatError(
+                "HTTP 404 from https://x/v1 model='bad-model': "
+                "the model 'bad-model' does not exist — model-name mismatch"
+            )
+
+    fakes = {"good": _OK(), "bad-key": _BadKey(), "bad-model": _BadModel()}
+    _patch_smoke_clients(monkeypatch, fakes)
+
+    report = await run_smoke(models)
+    assert (report.attempted, report.ok, report.errors) == (3, 1, 2)
+    labels = {row[1]: row[3] for row in report.error_rows}
+    assert "401" in labels["bad-key"]
+    assert "does not exist" in labels["bad-model"]
+
+
+@pytest.mark.asyncio
+async def test_run_smoke_tier_filter_includes_top_tier(monkeypatch) -> None:
+    """Explicit --tier=N probes that tier (even if it's the top tier),
+    so the user can verify update-gold credentials too."""
+    models = ModelsConfig(tiers=[
+        _multi(1, ["t1"]),
+        _multi(5, ["opus", "gpt5"]),
+    ])
+
+    class _OK:
+        def __init__(self, n): self.n = n
+        async def chat(self, *a, **kw):
+            return ChatResult(content="pong", model=self.n,
+                              prompt_tokens=2, completion_tokens=1,
+                              latency_ms=5, raw={})
+
+    fakes = {n: _OK(n) for n in ("t1", "opus", "gpt5")}
+    _patch_smoke_clients(monkeypatch, fakes)
+
+    report = await run_smoke(models, tier_level=5)
+    assert (report.attempted, report.ok) == (2, 2)
+    # tier 1 not probed when tier_level=5 is explicit.
+
+
+@pytest.mark.asyncio
+async def test_run_smoke_mock_endpoint_skips_client_from_model(monkeypatch) -> None:
+    """With a mock endpoint, the smoke builds clients pointing at the
+    mock URL directly (no api_key resolution, no provider extra_body)."""
+    models = ModelsConfig(tiers=[_multi(1, ["a"]), _multi(5, ["top"])])
+
+    captured: list[str] = []
+
+    class _FakeOAIClient:
+        def __init__(self, *, endpoint, model_id, api_key, timeout_s):
+            captured.append(endpoint)
+            self.endpoint = endpoint
+        async def chat(self, *a, **kw):
+            return ChatResult(content="pong", model="a", prompt_tokens=1,
+                              completion_tokens=1, latency_ms=1, raw={})
+
+    monkeypatch.setattr(answers_mod, "OAIClient", _FakeOAIClient)
+    # client_from_model should NOT be reached in mock mode.
+    monkeypatch.setattr(
+        answers_mod, "client_from_model",
+        lambda m: (_ for _ in ()).throw(AssertionError("should not be called")),
+    )
+
+    report = await run_smoke(models, mock_endpoint="http://mock/v1")
+    assert report.ok == 1  # only non-top "a"
+    assert captured == ["http://mock/v1"]

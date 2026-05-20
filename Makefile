@@ -29,7 +29,7 @@ help:
 	@echo "  setup                          venv + deps + init DB + install vllm-sr (if missing)"
 	@echo "  load [MOCK=true]               validate exemplars; build router-config; load queries.json into DB"
 	@echo "  route [MOCK=true] [RUN_NEW=true]   rebuild router-config; routing pass"
-	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true] [TIER=<1-5>] [CONC=<N>] [MAXTOK=<N>]  routed-tier answers; top tier answered from gold"
+	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true] [TIER=<1-5>] [CONC=<N>] [MAXTOK=<N>] [SMOKE=true]  routed-tier answers (SMOKE: connectivity probe only)"
 	@echo "  import-answers FILE=<path> TIER=<1-5> MODEL=<id> [PROVIDER=<name>] [RUN=<id>]  load externally-generated answers for one model"
 	@echo "  update-gold [QID=<id[,id]>] [TIER=<1-5>] [YES=true]  regenerate gold via top tier (no scope = ALL, confirms)"
 	@echo "  export [RUN=<id>] [OUTPUT=<path>]  write demo.json (default: ./demo.json)"
@@ -166,6 +166,13 @@ route:
 # The top tier is the gold reference; comparisons are routed-vs-top,
 # never top-vs-top. Its per-provider answers come from `make update-gold`
 # and from `expected_answers[]` declared in queries.json.
+#
+# SMOKE=true   → connectivity probe only: tiny chat request to every
+#                (tier, model) `make answers` would call, report OK/error
+#                per endpoint, exit non-zero on any failure. No DB writes.
+#                Use this BEFORE a real run to catch wrong URLs / bad API
+#                keys / unknown model names. Honors TIER=<N> (probe just
+#                that tier; useful for testing Tier 5 / update-gold creds).
 answers:
 	$(BENCHMARK) answers --db $(DB) \
 	    $(if $(RUN),--run $(RUN),) \
@@ -173,6 +180,7 @@ answers:
 	    $(if $(CONC),--concurrency $(CONC),) \
 	    $(if $(MAXTOK),--max-tokens $(MAXTOK),) \
 	    $(if $(filter true,$(RUN_NEW)),--run-new,) \
+	    $(if $(filter true,$(SMOKE)),--smoke,) \
 	    $(if $(filter true,$(MOCK)),--mock-endpoint $(MOCK_FROM_HOST),)
 
 # Import externally-generated answers (e.g., manually prompted from a

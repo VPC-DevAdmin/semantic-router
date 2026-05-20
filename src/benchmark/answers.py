@@ -102,6 +102,125 @@ def _clients_for_mock(
     return out
 
 
+@dataclass
+class SmokeReport:
+    """Outcome of `run_smoke` — connectivity probe per (tier, model)."""
+    attempted: int = 0
+    ok: int = 0
+    errors: int = 0
+    # (tier_level, model_id, provider_or_empty, msg)
+    error_rows: list[tuple[int, str, str, str]] = field(default_factory=list)
+
+    def __str__(self) -> str:
+        lines = [
+            f"  attempted: {self.attempted}",
+            f"  ok:        {self.ok}",
+            f"  errors:    {self.errors}",
+        ]
+        for level, model_id, provider, msg in self.error_rows[:10]:
+            prov = f" ({provider})" if provider else ""
+            lines.append(f"    [tier {level} {model_id}{prov}] {msg}")
+        if len(self.error_rows) > 10:
+            lines.append(f"    ... and {len(self.error_rows) - 10} more")
+        return "\n".join(lines)
+
+
+# Smoke probe prompt + budget. Tiny enough that vendor cost is negligible,
+# benign enough that no safety filter will refuse to answer.
+_SMOKE_PROMPT = "Reply with the single word: pong."
+_SMOKE_MAX_TOKENS = 16
+
+
+async def run_smoke(
+    models: ModelsConfig,
+    *,
+    concurrency: int = 8,
+    tier_level: int | None = None,
+    mock_endpoint: str | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> SmokeReport:
+    """Tiny chat probe of every (tier, model) `make answers` would call.
+
+    No DB writes, no run id needed. Verifies for each model:
+      • URL is reachable,
+      • the API key is accepted,
+      • the server recognises the model name.
+
+    Scope mirrors `make answers`: by default, every non-top tier (the
+    top tier is the gold reference and isn't called by answers). An
+    explicit `tier_level` overrides that and probes ONLY that tier
+    (including the top, useful for checking update-gold credentials).
+
+    `mock_endpoint` points every probe at the local mock — useful for
+    exercising the smoke harness itself.
+    """
+    top = max((t.level for t in models.tiers), default=0)
+    if tier_level is not None:
+        in_scope = [t for t in models.tiers if t.level == tier_level]
+    else:
+        in_scope = [t for t in models.tiers if t.level != top]
+
+    # Flatten to (tier, model) targets, preserving declared order.
+    targets: list[tuple[int, object, str | None]] = []  # (level, TierModel, mock_url|None)
+    for tier in in_scope:
+        for m in tier.resolved_models():
+            targets.append((tier.level, m, mock_endpoint))
+
+    total = len(targets)
+    report = SmokeReport()
+
+    def _emit(msg: str) -> None:
+        if progress is not None:
+            progress(msg)
+
+    def _prefix(idx: int, level: int, model_id: str, provider: str | None) -> str:
+        prov = f" ({provider})" if provider else ""
+        return f"[{idx:>{len(str(max(total, 1)))}}/{total}] tier{level}  {model_id}{prov}"
+
+    sem = asyncio.Semaphore(concurrency)
+
+    async def probe(idx: int, level: int, m, mock: str | None) -> None:
+        async with sem:
+            provider = m.provider
+            model_id = m.served_model_name
+            _emit(f"{_prefix(idx, level, model_id, provider)}  ... pinging")
+            try:
+                # Build the client lazily so MissingApiKeyError surfaces
+                # per-target instead of crashing the whole smoke.
+                if mock is not None:
+                    client = OAIClient(
+                        endpoint=mock, model_id=model_id,
+                        api_key=None, timeout_s=float(m.timeout_s),
+                    )
+                    extra = None
+                else:
+                    client = client_from_model(m)
+                    extra = m.extra_body if isinstance(m.extra_body, dict) else None
+                result = await client.chat(
+                    _SMOKE_PROMPT, max_tokens=_SMOKE_MAX_TOKENS, extra=extra,
+                )
+                latency = result.latency_ms or 0
+                _emit(f"{_prefix(idx, level, model_id, provider)}  OK  {latency} ms")
+                report.ok += 1
+            except Exception as e:  # noqa: BLE001
+                label = _status_label(e)
+                _emit(
+                    f"{_prefix(idx, level, model_id, provider)}  "
+                    f"{label}  {_one_line(str(e))}"
+                )
+                report.errors += 1
+                report.error_rows.append(
+                    (level, model_id, provider or "", f"{type(e).__name__}: {e}")
+                )
+            finally:
+                report.attempted += 1
+
+    await asyncio.gather(
+        *(probe(i, lvl, m, mock) for i, (lvl, m, mock) in enumerate(targets, start=1))
+    )
+    return report
+
+
 def _status_label(exc: Exception) -> str:
     """One-word outcome for the live progress line (mirrors ChatError)."""
     name = type(exc).__name__
