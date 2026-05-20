@@ -86,14 +86,22 @@ complexity_signals:
   - id: query_difficulty
     description: "Is this query high-effort vs low-effort overall?"
     # Contrastive classifier emits signal = hard_score − easy_score.
-    # Empirically (router logs, sample of 20 queries) the signal range
-    # is [-0.32, +0.11] — small contrastive margins, not absolute
-    # similarities. The previous 0.55 threshold was mathematically
-    # unreachable, so EVERY query stayed at :medium and the +0.24 weight
-    # never contributed to the projection score. 0.05 is the natural
-    # threshold for this contrastive scale: signal > 0.05 means "harder
-    # than easy", which is what :hard should mean.
-    threshold: 0.05
+    # Empirical signal range from router logs is [-0.32, +0.11] —
+    # small contrastive margins, not absolute similarities.
+    #
+    # Threshold history:
+    #   0.55 (original) — mathematically unreachable → NOTHING fired :hard
+    #   0.05 (v4)       — too lenient → spurious :hard on q00111, q00151
+    #                     etc. (signal ~0.06), which triggered the T5
+    #                     embedding-frontier lane even after we required
+    #                     :hard as a third lane condition (v7)
+    #   0.08 (current)  — filters the lowest-margin positives. Sample
+    #                     log distribution: 5/20 queries had signal >
+    #                     0.05; only 3/20 had signal > 0.08, and those
+    #                     three were the cleanly hard prompts. Proofs
+    #                     should land in the 0.10+ range with the v3+
+    #                     short hard-archetype additions.
+    threshold: 0.08
     # Bumped 0.20 → 0.24 so a single :hard match alone clears the
     # tier3→tier4 cutoff (0.18). Calibrated against the q00640/q00659/
     # q00643 misroute pattern where proof-shape prompts scored :medium
