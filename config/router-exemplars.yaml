@@ -89,19 +89,19 @@ complexity_signals:
     # Empirical signal range from router logs is [-0.32, +0.11] —
     # small contrastive margins, not absolute similarities.
     #
-    # Threshold history:
+    # Threshold settled at 0.05 after experimentation:
     #   0.55 (original) — mathematically unreachable → NOTHING fired :hard
-    #   0.05 (v4)       — too lenient → spurious :hard on q00111, q00151
-    #                     etc. (signal ~0.06), which triggered the T5
-    #                     embedding-frontier lane even after we required
-    #                     :hard as a third lane condition (v7)
-    #   0.08 (current)  — filters the lowest-margin positives. Sample
-    #                     log distribution: 5/20 queries had signal >
-    #                     0.05; only 3/20 had signal > 0.08, and those
-    #                     three were the cleanly hard prompts. Proofs
-    #                     should land in the 0.10+ range with the v3+
-    #                     short hard-archetype additions.
-    threshold: 0.08
+    #   0.05 — current. Catches genuinely-hard prompts (proofs/MLE/
+    #          probability problems at signal 0.05-0.12). Some spurious
+    #          :hard fires on shorter heterogeneous prompts (q00111
+    #          "Summarize this paragraph"-shape at signal ~0.06), but
+    #          empirically the lift on legitimate-hard prompts outweighs
+    #          the spurious-:hard cost.
+    #   0.08 — tried; filters spurious matches BUT also drops legit
+    #          proofs at signal 0.05-0.08. Net -50 meets_min vs 0.05.
+    #          The legit-hard and spurious-hard signal distributions
+    #          overlap too much for threshold-only filtering.
+    threshold: 0.05
     # Bumped 0.20 → 0.24 so a single :hard match alone clears the
     # tier3→tier4 cutoff (0.18). Calibrated against the q00640/q00659/
     # q00643 misroute pattern where proof-shape prompts scored :medium
