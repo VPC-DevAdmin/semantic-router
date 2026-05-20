@@ -48,13 +48,19 @@ tier label the router emits, `endpoint` is the actual backend.
   unique within the query. Extra fields are rejected (the loader
   validates with `extra=forbid`).
 - `expected_min_tier` — the lowest tier we believe should answer this well
-- `specializations` — `general | coding | creative_writing | math | reasoning`
+- `specializations` — free-form `list[str]` (downstream metadata only;
+  see below). Common labels: `general`, `coding`, `math`, `reasoning`,
+  `creative_writing`, `vision`, `tts` — these are what the tier YAMLs
+  advertise, so use them if you want `matches_specialization` to report
+  cleanly.
 - `domain_tags` — free-form
 - `notes`
 
 `specializations` and `domain_tags` are **not** routing inputs — they
 exist for downstream sort/review and the post-hoc `matches_specialization`
-metric. The router sees only `prompt` (+ multimodal attachments).
+metric. The router sees only `prompt` (+ multimodal attachments). The
+queries.json loader stores whatever labels you provide verbatim; the
+tier YAMLs do enforce a whitelist (small, author-edited).
 
 **Current distribution:** 110 queries — T1=25, T2=36, T3=32, T4=7, T5=10.
 

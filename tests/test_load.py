@@ -244,12 +244,30 @@ def test_reload_does_not_clobber_update_gold_rows(tmp_path: Path) -> None:
     assert mids == {"Opus", "gpt-5"}
 
 
-def test_unknown_specialization_rejected(tmp_path: Path) -> None:
+def test_query_specializations_are_free_form(tmp_path: Path) -> None:
+    """Specializations are downstream metadata (sort/review/matches metric),
+    not routing inputs — so the loader accepts any non-empty list of
+    strings rather than enforcing a whitelist. Verbatim labels survive
+    into the DB."""
     queries = [{
         "id": "x", "prompt": "p", "expected_min_tier": 1,
-        "specializations": ["not_a_real_spec"],
+        "specializations": ["code", "creative", "anything-goes"],
         "expected_answers": [],
     }]
     db, qp = _setup(tmp_path, queries)
-    with pytest.raises(Exception, match="unknown specializations"):
+    r = load_into_db(qp, db)
+    assert r.inserted == 1
+    with session_scope(db) as s:
+        q = s.execute(select(Query).where(Query.query_id == "x")).scalar_one()
+    assert q.specializations == ["code", "creative", "anything-goes"]
+
+
+def test_empty_specializations_still_rejected(tmp_path: Path) -> None:
+    """An empty list is still an error — every query must have at least one."""
+    queries = [{
+        "id": "x", "prompt": "p", "expected_min_tier": 1,
+        "specializations": [], "expected_answers": [],
+    }]
+    db, qp = _setup(tmp_path, queries)
+    with pytest.raises(Exception, match="at least one specialization"):
         load_into_db(qp, db)

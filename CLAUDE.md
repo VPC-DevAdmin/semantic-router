@@ -96,9 +96,14 @@ external judging workflow.
   `make answers` do not fail the pass — they retry on the next invocation.
 - **`RUN_NEW=true`** on `make route` / `make answers` deletes existing
   rows for the active run before re-seeding.
-- **Specializations whitelist:** `general`, `coding`, `math`, `reasoning`,
-  `creative_writing`, `vision`, `tts`. Both queries.json AND per-tier
-  YAMLs MUST use these exact strings.
+- **Specializations:** the tier YAMLs are whitelisted to `general`,
+  `coding`, `math`, `reasoning`, `creative_writing`, `vision`, `tts`
+  (5 small author-edited files; catches typos cheaply). Queries.json
+  specializations are FREE-FORM `list[str]` — they're downstream
+  metadata (sort / review / the `matches_specialization` metric) and do
+  not drive routing, so whatever labels the source uses are accepted
+  verbatim. If you want `matches_specialization` to report cleanly, use
+  labels that match what the tier YAMLs advertise.
 
 ## Router model (important — this surprised the original implementation)
 
