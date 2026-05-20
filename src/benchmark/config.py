@@ -249,11 +249,13 @@ class QuerySpec(BaseModel):
     @field_validator("specializations")
     @classmethod
     def _check_specs(cls, v: list[str]) -> list[str]:
+        # specializations are downstream-only (sort / review / the
+        # post-hoc matches_specialization metric) — they do NOT drive
+        # routing. So we don't enforce a whitelist here; whatever labels
+        # the source files use are stored verbatim. The tier YAMLs DO
+        # keep the whitelist (small, author-edited; cheap typo catch).
         if not v:
             raise ValueError("at least one specialization required")
-        unknown = set(v) - SPECIALIZATIONS
-        if unknown:
-            raise ValueError(f"unknown specializations: {sorted(unknown)}")
         return v
 
     @model_validator(mode="after")
