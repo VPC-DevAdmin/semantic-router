@@ -8,6 +8,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import yaml
+
 from benchmark.config import (
     load_models,
     load_queries,
@@ -69,41 +71,54 @@ def test_localhost_backend_url_translated_to_host_docker_internal(monkeypatch) -
         eval_set_path=None,
     )
 
-    def ref_for(tier_name):
-        m = next(m for m in cfg["providers"]["models"] if m["name"] == tier_name)
+    # Model card `name` is the upstream model identifier (not the tier
+    # alias) so the Anthropic path's verbatim body-rewrite produces the
+    # right name. Look up by that.
+    def ref_for(model_name):
+        m = next(m for m in cfg["providers"]["models"] if m["name"] == model_name)
         ref = m["backend_refs"][0]
         # Local-HTTP shape uses `endpoint:` (host:port/path); HTTPS/vendor
         # shapes use `base_url:`. Concatenate both for the substring check.
         return ref.get("endpoint", "") + " " + ref.get("base_url", "")
 
     # Both localhost variants translated.
-    assert "host.docker.internal:8001" in ref_for("tier1")
-    assert "host.docker.internal:8002" in ref_for("tier2")
+    assert "host.docker.internal:8001" in ref_for("Qwen3-1.7B")
+    assert "host.docker.internal:8002" in ref_for("Qwen3-30B-A3B")
     # Vendor URL untouched.
-    assert "api.openai.com" in ref_for("tier3")
-    assert "host.docker.internal" not in ref_for("tier3")
+    assert "api.openai.com" in ref_for("gpt-5-mini")
+    assert "host.docker.internal" not in ref_for("gpt-5-mini")
 
 
-def test_external_model_ids_emitted_for_every_tier(monkeypatch) -> None:
-    """`external_model_ids: {vllm: <real model>}` is what makes vllm-sr
-    rewrite the outgoing `model:` field in the request body. Without it,
-    the router forwards the router-side alias (`tier3`) verbatim and
-    OpenAI/Anthropic 404 with "model `tier3` does not exist".
+def test_model_card_name_is_upstream_model_identifier(monkeypatch) -> None:
+    """The compiled `providers.models[].name` must be the upstream model
+    identifier (TIER{N}_1_MODEL), NOT the tier alias.
 
-    Source: src/semantic-router/pkg/config/helper.go:ResolveExternalModelID
-    — looks up modelConfig.ExternalModelIDs[endpointType]; endpointType
-    defaults to "vllm" when the backend_ref omits `type:`.
+    Why: vllm-sr's Anthropic adapter
+    (pkg/extproc/processor_req_body_anthropic.go:64) does
+    `openAIRequest.Model = targetModel` and serializes the request body
+    verbatim — it does NOT consult `external_model_ids`. So if the model
+    card is named "tier5", Anthropic receives `model: "tier5"` and 400s.
 
-    Regression for a 417/417 error pass where every tier3+ query 404'd.
+    The OpenAI path WOULD respect external_model_ids, but mixing
+    behaviours is brittle. Naming the card after the upstream identifier
+    makes both paths work uniformly; the tier alias survives in band
+    names (e.g. tier5_band) which are routing-internal labels.
+
+    Regression for a 417/417 error pass where every tier3+ query 4xx'd.
     """
     monkeypatch.setenv("TIER1_1_URL", "http://localhost:8001/v1")
     monkeypatch.setenv("TIER1_1_MODEL", "Qwen3-1.7B")
+    monkeypatch.setenv("TIER2_1_URL", "http://localhost:8002/v1")
+    monkeypatch.setenv("TIER2_1_MODEL", "Qwen3-30B-A3B")
     monkeypatch.setenv("TIER3_1_URL", "https://api.openai.com/v1")
     monkeypatch.setenv("TIER3_1_MODEL", "gpt-5.4-mini")
     monkeypatch.setenv("TIER3_1_API_KEY", "sk-test")
     monkeypatch.setenv("TIER4_1_URL", "https://api.anthropic.com/v1")
     monkeypatch.setenv("TIER4_1_MODEL", "claude-sonnet-4-5")
     monkeypatch.setenv("TIER4_1_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("TIER5_1_URL", "https://api.anthropic.com/v1")
+    monkeypatch.setenv("TIER5_1_MODEL", "claude-opus-4-7")
+    monkeypatch.setenv("TIER5_1_API_KEY", "sk-ant-test")
 
     from benchmark.build_router_config import build
     cfg = build(
@@ -111,14 +126,42 @@ def test_external_model_ids_emitted_for_every_tier(monkeypatch) -> None:
         backends_path=ROOT / "config" / "router-backends.yaml",
         eval_set_path=None,
     )
-    by_name = {m["name"]: m for m in cfg["providers"]["models"]}
+    model_card_names = {m["name"] for m in cfg["providers"]["models"]}
+    assert model_card_names == {
+        "Qwen3-1.7B", "Qwen3-30B-A3B", "gpt-5.4-mini",
+        "claude-sonnet-4-5", "claude-opus-4-7",
+    }, f"unexpected model card names: {model_card_names}"
 
-    # Local HTTP backend: rewrite tier1 → Qwen3-1.7B.
-    assert by_name["tier1"]["external_model_ids"] == {"vllm": "Qwen3-1.7B"}
-    # HTTPS OpenAI: rewrite tier3 → gpt-5.4-mini.
-    assert by_name["tier3"]["external_model_ids"] == {"vllm": "gpt-5.4-mini"}
-    # Anthropic: rewrite tier4 → claude-sonnet-4-5.
-    assert by_name["tier4"]["external_model_ids"] == {"vllm": "claude-sonnet-4-5"}
+    # routing.modelCards[] must match providers.models[].name 1:1.
+    routing_card_names = {m["name"] for m in cfg["routing"]["modelCards"]}
+    assert routing_card_names == model_card_names
+
+    # decisions[].modelRefs[].model must reference the upstream name too,
+    # so the Anthropic path's verbatim body-rewrite sends the right id.
+    decision_model_refs = {
+        ref["model"]
+        for d in cfg["routing"]["decisions"]
+        for ref in d["modelRefs"]
+    }
+    # Every model reference is in the upstream-name set (lanes may all
+    # point at tier5_model, so this is a subset check).
+    assert decision_model_refs <= model_card_names
+
+    # Band conditions still use the tier alias (routing-internal).
+    band_names = {
+        c["name"]
+        for d in cfg["routing"]["decisions"]
+        for c in d["rules"]["conditions"]
+        if c["type"] == "projection"
+    }
+    assert "tier1_band" in band_names and "tier5_band" in band_names
+
+    # No `external_model_ids` field — it isn't needed and the Anthropic
+    # path ignores it anyway. Keeping it out keeps the config minimal.
+    for m in cfg["providers"]["models"]:
+        assert "external_model_ids" not in m, (
+            f"unexpected external_model_ids on {m['name']!r}"
+        )
 
 
 def test_build_module_loads_dotenv(tmp_path) -> None:
@@ -176,7 +219,9 @@ def test_api_key_inlined_at_build_time(monkeypatch) -> None:
         backends_path=ROOT / "config" / "router-backends.yaml",
         eval_set_path=None,
     )
-    t3 = next(m for m in cfg["providers"]["models"] if m["name"] == "tier3")
+    # Model card name is the upstream identifier (see
+    # test_model_card_name_is_upstream_model_identifier for why).
+    t3 = next(m for m in cfg["providers"]["models"] if m["name"] == "gpt-5-mini")
     ref = t3["backend_refs"][0]
     # The literal value, not the env-var name, is what the router reads.
     assert ref["api_key"] == "sk-build-time-resolved"
@@ -230,7 +275,8 @@ def test_openai_https_backend_emits_provider_openai(monkeypatch, tmp_path) -> No
         backends_path=ROOT / "config" / "router-backends.yaml",
         eval_set_path=None,
     )
-    t3 = next(m for m in cfg["providers"]["models"] if m["name"] == "tier3")
+    # Look up by upstream model identifier — the model card's `name:`.
+    t3 = next(m for m in cfg["providers"]["models"] if m["name"] == "gpt-5-mini")
     assert t3["provider_model_id"] == "gpt-5-mini"
     assert t3["api_format"] == "openai"
     ref = t3["backend_refs"][0]
@@ -263,7 +309,7 @@ def test_google_oai_compat_backend_emits_provider_openai(monkeypatch) -> None:
         backends_path=ROOT / "config" / "router-backends.yaml",
         eval_set_path=None,
     )
-    t3 = next(m for m in cfg["providers"]["models"] if m["name"] == "tier3")
+    t3 = next(m for m in cfg["providers"]["models"] if m["name"] == "gemini-2.5-flash")
     assert t3["provider_model_id"] == "gemini-2.5-flash"
     assert t3["api_format"] == "openai"
     ref = t3["backend_refs"][0]
@@ -291,7 +337,7 @@ def test_anthropic_backend_still_takes_anthropic_path(monkeypatch) -> None:
         backends_path=ROOT / "config" / "router-backends.yaml",
         eval_set_path=None,
     )
-    t4 = next(m for m in cfg["providers"]["models"] if m["name"] == "tier4")
+    t4 = next(m for m in cfg["providers"]["models"] if m["name"] == "claude-sonnet-4-5")
     assert t4["api_format"] == "anthropic"
     ref = t4["backend_refs"][0]
     assert ref["provider"] == "anthropic"
@@ -533,11 +579,20 @@ def test_router_exemplars_build_projections_shape() -> None:
     band_to_decision = {
         d["rules"]["conditions"][0]["name"]: d for d in band_only
     }
+    # The model-card `name:` is the upstream model identifier
+    # (see test_model_card_name_is_upstream_model_identifier). Decisions
+    # reference that same identifier — so we resolve tier_id → model name
+    # via the model-card map rather than hardcoding "tier3" etc.
+    backends_yaml = yaml.safe_load((ROOT / "config" / "router-backends.yaml").read_text())
+    upstream_name_for_tier = {
+        tier_id: backends_yaml["backends"][tier_id]["model"]
+        for tier_id in ("tier1", "tier2", "tier3", "tier4", "tier5")
+    }
     for tier_id in ("tier1", "tier2", "tier3", "tier4", "tier5"):
         band_name = f"{tier_id}_band"
         assert band_name in band_to_decision, f"no decision conditioning on {band_name}"
         d = band_to_decision[band_name]
-        assert d["modelRefs"][0]["model"] == tier_id
+        assert d["modelRefs"][0]["model"] == upstream_name_for_tier[tier_id]
         assert d["rules"]["conditions"][0]["type"] == "projection"
         # vllm-sr's schema validator requires `description` on every decision.
         assert d.get("description"), f"decision for {tier_id} missing description"
@@ -557,15 +612,61 @@ def test_router_exemplars_build_projections_shape() -> None:
             f"lane {d['name']!r} has only projection conditions — needs a qualifier"
         )
 
-    # Tier alignment with config/tiers/.
-    router_tier_names = {m["name"] for m in cfg["providers"]["models"]}
-    harness_router_aliases = {
-        t.router_alias for t in load_models(ROOT / "config" / "tiers").tiers
+    # Model card alignment with router-backends.yaml. The model card
+    # `name:` is the upstream model identifier (env-resolved at build),
+    # so without env set we expect it to mirror the YAML `model:` values
+    # exactly. End-to-end TierLookup alignment is exercised separately
+    # by test_tier_model_id_round_trips_through_router_header below.
+    router_card_names = {m["name"] for m in cfg["providers"]["models"]}
+    backends_models = {
+        backends_yaml["backends"][t]["model"]
+        for t in ("tier1", "tier2", "tier3", "tier4", "tier5")
     }
-    missing = router_tier_names - harness_router_aliases
-    assert not missing, (
-        f"router-config.yaml declares tiers {sorted(missing)} with no matching "
-        f"router_alias in config/tiers/; TierLookup will record them as unknown_tier"
+    assert router_card_names == backends_models, (
+        f"router config model cards ({sorted(router_card_names)}) must mirror "
+        f"the router-backends.yaml model: values ({sorted(backends_models)})"
+    )
+
+
+def test_tier_model_id_round_trips_through_router_header(monkeypatch) -> None:
+    """End-to-end alignment: with env slot 1 set for every tier, the
+    compiled router config's model card names must equal what
+    `TierConfig.model_id` returns for each tier. This is what makes
+    x-vsr-selected-model → tier lookup work in production.
+
+    Anthropic backend regression: previously the router-side alias
+    (`tier5`) was both the compiled name AND TierConfig.model_id —
+    technically aligned, but the alias leaked into the Anthropic body
+    and produced 4xx errors upstream. Now both sides use the real
+    upstream identifier (e.g. `claude-opus-4-7`).
+    """
+    monkeypatch.setenv("TIER1_1_URL", "http://localhost:8001/v1")
+    monkeypatch.setenv("TIER1_1_MODEL", "Qwen3-1.7B")
+    monkeypatch.setenv("TIER2_1_URL", "http://localhost:8002/v1")
+    monkeypatch.setenv("TIER2_1_MODEL", "Qwen3-30B-A3B")
+    monkeypatch.setenv("TIER3_1_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("TIER3_1_MODEL", "gpt-5.4-mini")
+    monkeypatch.setenv("TIER3_1_API_KEY", "sk-test")
+    monkeypatch.setenv("TIER4_1_URL", "https://api.anthropic.com/v1")
+    monkeypatch.setenv("TIER4_1_MODEL", "claude-sonnet-4-5")
+    monkeypatch.setenv("TIER4_1_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("TIER5_1_URL", "https://api.anthropic.com/v1")
+    monkeypatch.setenv("TIER5_1_MODEL", "claude-opus-4-7")
+    monkeypatch.setenv("TIER5_1_API_KEY", "sk-ant-test")
+
+    from benchmark.build_router_config import build
+    cfg = build(
+        exemplars_path=ROOT / "config" / "router-exemplars.yaml",
+        backends_path=ROOT / "config" / "router-backends.yaml",
+        eval_set_path=None,
+    )
+    router_card_names = {m["name"] for m in cfg["providers"]["models"]}
+    harness_model_ids = {
+        t.model_id for t in load_models(ROOT / "config" / "tiers").tiers
+    }
+    assert router_card_names == harness_model_ids, (
+        f"router model cards {sorted(router_card_names)} must equal "
+        f"harness tier.model_id set {sorted(harness_model_ids)}"
     )
 
 

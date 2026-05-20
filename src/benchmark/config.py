@@ -84,7 +84,22 @@ class TierConfig(BaseModel):
 
     @property
     def model_id(self) -> str:
-        """Back-compat convenience for TierLookup (router header → tier)."""
+        """The model name the router emits in x-vsr-selected-model.
+
+        The compiled router config names each model card after the
+        upstream model identifier (TIER{N}_1_MODEL), not the tier alias —
+        this is required because vllm-sr's Anthropic adapter passes the
+        model card's `name:` straight into the Anthropic request body,
+        bypassing `external_model_ids` (see
+        processor_req_body_anthropic.go:64).
+
+        So the header value the harness sees is the same upstream name
+        the env points at. When env slot 1 isn't set (e.g. unit tests
+        without monkeypatched env), fall back to `router_alias` so the
+        old YAML-default ("tier1"…"tier5") path still resolves.
+        """
+        if self.models:
+            return self.models[0].served_model_name
         return self.router_alias
 
     def resolved_models(self) -> list[TierModel]:
