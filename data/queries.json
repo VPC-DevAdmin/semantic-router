@@ -9947,30 +9947,6 @@
       "notes": "antonym"
     },
     {
-      "id": "q00408",
-      "prompt": "Translate 'hello' to Spanish.",
-      "expected_answers": [
-        {
-          "answer": "Hola",
-          "model": "Opus 4.7",
-          "provider": "Anthropic"
-        },
-        {
-          "answer": "Hello translates to Spanish as “hola.”",
-          "model": "GPT-5.5",
-          "provider": "OpenAI"
-        }
-      ],
-      "expected_min_tier": 1,
-      "specializations": [
-        "general"
-      ],
-      "domain_tags": [
-        "language_writing"
-      ],
-      "notes": "common word translation"
-    },
-    {
       "id": "q00409",
       "prompt": "What does 'CPU' stand for?",
       "expected_answers": [
@@ -10427,30 +10403,6 @@
       "notes": "basic biology"
     },
     {
-      "id": "q00428",
-      "prompt": "What is the freezing point of water in Fahrenheit?",
-      "expected_answers": [
-        {
-          "answer": "32°F",
-          "model": "Opus 4.7",
-          "provider": "Anthropic"
-        },
-        {
-          "answer": "Water freezes at 32°F under standard pressure.",
-          "model": "GPT-5.5",
-          "provider": "OpenAI"
-        }
-      ],
-      "expected_min_tier": 1,
-      "specializations": [
-        "general"
-      ],
-      "domain_tags": [
-        "science"
-      ],
-      "notes": "basic fact"
-    },
-    {
       "id": "q00429",
       "prompt": "Translate 'thank you' to French.",
       "expected_answers": [
@@ -10737,30 +10689,6 @@
         "language_writing"
       ],
       "notes": "irregular plural"
-    },
-    {
-      "id": "q00441",
-      "prompt": "Who invented the telephone?",
-      "expected_answers": [
-        {
-          "answer": "Alexander Graham Bell is most commonly credited.",
-          "model": "Opus 4.7",
-          "provider": "Anthropic"
-        },
-        {
-          "answer": "Alexander Graham Bell is most commonly credited with inventing the telephone, though the historical development involved multiple inventors and patent disputes.",
-          "model": "GPT-5.5",
-          "provider": "OpenAI"
-        }
-      ],
-      "expected_min_tier": 1,
-      "specializations": [
-        "general"
-      ],
-      "domain_tags": [
-        "history_geography"
-      ],
-      "notes": "common attribution"
     },
     {
       "id": "q00442",
