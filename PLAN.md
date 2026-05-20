@@ -40,14 +40,13 @@ tier label the router emits, `endpoint` is the actual backend.
 
 - `id` (e.g. `q00001`) — unique
 - `prompt` — the only thing the router sees
-- one or more reference answers, in either form (both may coexist):
-  - `expected_answer: "..."` — legacy single; treated as the `upstream`
-    gold (model_id = `"upstream"`, provider = null).
-  - `expected_answers: [{ answer, model, provider? }, …]` — multiple
-    golds. `model` is required and is the per-query unique key that
-    becomes `gold_answers.model_id` and `demo.json`'s `model`;
-    `provider` is an optional label (Anthropic / OpenAI / Google).
-    `model_id` must be unique within the query.
+- `expected_answers: [{ answer, model, provider? }, …]` — one or more
+  reference answers, ALWAYS a list (a single gold is a one-entry list).
+  `model` is required and is the per-query unique key that becomes
+  `gold_answers.model_id` and `demo.json`'s `model`. `provider` is an
+  optional label (Anthropic / OpenAI / Google). `model_id` must be
+  unique within the query. Extra fields are rejected (the loader
+  validates with `extra=forbid`).
 - `expected_min_tier` — the lowest tier we believe should answer this well
 - `specializations` — `general | coding | creative_writing | math | reasoning`
 - `domain_tags` — free-form
@@ -181,8 +180,8 @@ OpenAI / Google vs. Anthropic. **Comparisons are always routed-vs-top,
 never top-vs-top:** queries the router sends to the top tier are skipped
 by `make answers` (no model calls); their per-provider answers ARE the
 gold, produced by `make update-gold` (which calls every top-tier model)
-and the upstream `expected_answer`. So a top-tier-routed query has
-`expected_answers[]` populated and `routed_answers: []`.
+and the `expected_answers` declared in queries.json. So a top-tier-routed
+query has `expected_answers[]` populated and `routed_answers: []`.
 (Pre-multi-model the shape was `responses.{gold,routed}` with a single
 answer each — superseded.)
 
@@ -205,7 +204,7 @@ semantic-router/
 │   ├── router-backends.yaml      # flat per-tier endpoints for the exemplar builder
 │   └── router-config.yaml        # GENERATED (gitignored) — what `vllm-sr serve --config` reads
 ├── data/
-│   └── queries.json              # 110 queries with `expected_answer` gold
+│   └── queries.json              # 110 queries with `expected_answers[]` gold
 ├── src/benchmark/
 │   ├── cli.py                    # Typer entrypoint
 │   ├── config.py                 # pydantic-validated config loaders (scans config/tiers/)
@@ -256,7 +255,7 @@ output artifact.
 
 ```
 queries          (query_id PK, prompt, prompt_hash, expected_min_tier,
-                  specializations, domain_tags, gold_answer, gold_model, ...)
+                  specializations, domain_tags, notes, attachments_json)
 runs             (run_id PK, started_at, finished_at, status, notes)
 pass1_results    (run_id, query_id PK, router_selected_tier,
                   raw_routing_metadata, status, ...)
@@ -271,12 +270,10 @@ gold_answers     (query_id, model_id PK, provider, answer,
 router picks one tier and `make answers` calls **every model that tier
 fronts**, so a routed query produces one row per model. `gold_answers`
 holds the per-provider expected set — seeded from queries.json at
-`make load` (one row per declared answer; the legacy `expected_answer`
-lands as the `upstream` row), with additional rows from `make update-gold`
-and `make import-answers`.
-`Query.gold_answer` is kept as a back-compat single-value mirror of the
-slot-0 / upstream gold. **Schema changed for multi-model: a fresh DB or
-`make clean-results` + reseed is required (no migration script).**
+`make load` (one row per `expected_answers` entry), with additional rows
+from `make update-gold` and `make import-answers`. **Schema changed: a
+fresh DB or `make clean-results` + reseed is required (no migration
+script).**
 
 **Resume rule:** workers select rows where `status IN ('pending', 'error')`
 for the active run. Per-row session commits make killing the process

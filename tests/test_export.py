@@ -16,12 +16,16 @@ from ._helpers import bootstrap_db, make_models_yaml, make_router_yaml
 QUERIES = [
     {
         "id": "q1", "prompt": "easy",
-        "expected_answer": "Paris.",
+        "expected_answers": [
+            {"answer": "Paris.", "model": "Opus", "provider": "Anthropic"},
+        ],
         "expected_min_tier": 1, "specializations": ["general"],
     },
     {
         "id": "q2", "prompt": "harder",
-        "expected_answer": "Long proof.",
+        "expected_answers": [
+            {"answer": "Long proof.", "model": "Opus", "provider": "Anthropic"},
+        ],
         "expected_min_tier": 3, "specializations": ["coding"],
     },
 ]
@@ -88,10 +92,9 @@ def test_export_basic_multimodel_shape(tmp_path: Path) -> None:
     # Per-query routing time is surfaced (set by _add_pass1).
     assert q1["routing_metadata"]["latency_ms"] == 20
 
-    # Expected answers: the upstream gold seeded at load.
+    # Expected answers: the single gold declared in queries.json.
     assert q1["expected_answers"] == [
-        {"provider": None, "model": "upstream",
-         "answer": "Paris."},
+        {"provider": "Anthropic", "model": "Opus", "answer": "Paris."},
     ]
 
     # Both routed-tier models present, ordered by slot.
@@ -121,7 +124,7 @@ def test_export_missing_routing_is_null(tmp_path: Path) -> None:
     assert q1["routed_tier"] is None
     assert q1["routing_metadata"] is None
     assert q1["routed_answers"] == []
-    # Upstream gold still present even with no routing.
+    # Declared gold still present even with no routing.
     assert q1["expected_answers"][0]["answer"] == "Paris."
     # Answer still surfaces in the per-tier map.
     assert q1["all_tier_answers"]["tier2"][0]["model"] == "m2"
@@ -149,10 +152,11 @@ def test_export_routed_tier_with_error_model(tmp_path: Path) -> None:
 
 def test_export_per_provider_expected_answers(tmp_path: Path) -> None:
     db, rid = _setup(tmp_path)
-    # Add an update-gold provider row alongside the upstream one.
+    # Add a second provider's gold alongside the file-declared "Opus" one
+    # (e.g. as would be added by `make update-gold` or import-answers).
     with session_scope(db) as s:
         s.add(GoldAnswer(
-            query_id="q1", model_id="claude-opus-4-7", provider="Anthropic",
+            query_id="q1", model_id="gpt-5", provider="OpenAI",
             answer="Paris, the capital of France.",
             generated_at=datetime.now(UTC),
         ))
@@ -160,12 +164,12 @@ def test_export_per_provider_expected_answers(tmp_path: Path) -> None:
     out = tmp_path / "demo.json"
     export_demo_json(db, rid, out)
     q1 = next(e for e in json.loads(out.read_text()) if e["id"] == "q1")
-    # Sorted by model_id: "claude-opus-4-7" before "upstream".
+    # Sorted alphabetically by model_id: "Opus" (capital O = 79 in ASCII)
+    # comes before "gpt-5" (lowercase g = 103).
     assert q1["expected_answers"] == [
-        {"provider": "Anthropic",
-         "model": "claude-opus-4-7", "answer": "Paris, the capital of France."},
-        {"provider": None, "model": "upstream",
-         "answer": "Paris."},
+        {"provider": "Anthropic", "model": "Opus", "answer": "Paris."},
+        {"provider": "OpenAI",    "model": "gpt-5",
+         "answer": "Paris, the capital of France."},
     ]
 
 

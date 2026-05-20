@@ -201,15 +201,20 @@ class Attachment(BaseModel):
 class ExpectedAnswer(BaseModel):
     """One gold/reference answer for a query.
 
-    A query can carry several (e.g. an upstream reference plus a
-    human-reviewed one, or one per provider). Each becomes a row in the
-    `gold_answers` table and a `demo.json` `expected_answers[]` entry.
+    A query can carry several (e.g. one per provider). Each becomes a
+    row in the `gold_answers` table and a `demo.json` `expected_answers[]`
+    entry.
 
       answer    the reference text (required)
       model     per-query unique key (→ gold_answers.model_id and
                 demo.json `model`) — required
       provider  optional label (Anthropic / OpenAI / Google) → demo.json
+
+    Extra fields are rejected — keeps queries.json strictly conformant
+    so a downstream loader can rely on the shape.
     """
+    model_config = {"extra": "forbid"}
+
     answer: str
     model: str
     provider: str | None = None
@@ -220,12 +225,19 @@ class ExpectedAnswer(BaseModel):
 
 
 class QuerySpec(BaseModel):
+    """One curated benchmark query.
+
+    Extra fields are rejected — a stray legacy `expected_answer` (or a
+    typo) raises at load time rather than being silently ignored.
+    """
+    model_config = {"extra": "forbid"}
+
     id: str
     prompt: str
-    # Legacy single gold (kept working): equivalent to one
-    # expected_answers entry with model="upstream".
-    expected_answer: str | None = None
-    # New: multiple golds, each with source/provider/model.
+    # One or more gold/reference answers. A single-gold query is just a
+    # one-entry list — there is no separate scalar form. `model` is the
+    # per-query unique key (becomes gold_answers.model_id and demo.json
+    # `model`).
     expected_answers: list[ExpectedAnswer] = Field(default_factory=list)
     expected_min_tier: int = Field(ge=1, le=5)
     specializations: list[str]
@@ -246,26 +258,15 @@ class QuerySpec(BaseModel):
     @model_validator(mode="after")
     def _check_golds_unique(self) -> QuerySpec:
         seen: set[str] = set()
-        for g in self.golds():
+        for g in self.expected_answers:
             if g.model_id in seen:
                 raise ValueError(
                     f"query {self.id}: duplicate gold model id "
                     f"{g.model_id!r} — each expected answer needs a unique "
-                    f"`model` (or `source`) within the query."
+                    f"`model` within the query."
                 )
             seen.add(g.model_id)
         return self
-
-    def golds(self) -> list[ExpectedAnswer]:
-        """The unified gold list: legacy `expected_answer` (as the
-        `upstream` entry) followed by every `expected_answers` item."""
-        out: list[ExpectedAnswer] = []
-        if self.expected_answer:
-            out.append(
-                ExpectedAnswer(answer=self.expected_answer, model="upstream")
-            )
-        out.extend(self.expected_answers)
-        return out
 
 
 class QuerySet(BaseModel):

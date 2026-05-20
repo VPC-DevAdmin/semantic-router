@@ -47,9 +47,9 @@ class Query(Base):
     specializations: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     domain_tags: Mapped[list[str] | None] = mapped_column(JSON)
     notes: Mapped[str | None] = mapped_column(Text)
-    gold_answer: Mapped[str | None] = mapped_column(Text)
-    gold_model: Mapped[str | None] = mapped_column(String)
-    gold_generated_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Per-provider gold lives in the gold_answers table (keyed by
+    # (query_id, model_id)). There is no longer a single-value gold
+    # mirror on Query — use the gold_answers join instead.
 
 
 class Run(Base):

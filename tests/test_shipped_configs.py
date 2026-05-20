@@ -146,7 +146,8 @@ def test_router_yaml_parses() -> None:
 def test_queries_json_parses() -> None:
     q = load_queries(ROOT / "data" / "queries.json")
     assert len(q.queries) >= 100
-    assert all(qq.expected_answer for qq in q.queries), "every shipped query should have gold"
+    assert all(qq.expected_answers for qq in q.queries), \
+        "every shipped query should have at least one expected_answers entry"
 
 
 # ─────────────────────────────────────────────────────────────────────────

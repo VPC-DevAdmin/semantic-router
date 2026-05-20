@@ -9,8 +9,7 @@ gold per provider.
 Separate from `make answers`:
   • `make answers` collects the routed tier's answers (tier_answers).
   • `make update-gold` PRODUCES gold (calls the top tier, writes
-    gold_answers, and mirrors the slot-0 model into Query.gold_answer
-    for back-compat).
+    per-model rows into gold_answers).
 
 Destructive (overwrites existing per-model gold), so the CLI requires
 explicit scope.
@@ -27,10 +26,6 @@ from sqlalchemy import select
 from .config import ModelsConfig, TierConfig
 from .db import GoldAnswer, Query, session_scope
 from .tiers import client_from_model
-
-# Written to Query.gold_model (back-compat single-gold field) so a
-# regenerated gold is distinguishable from the upstream-import marker.
-REGEN_GOLD_MARKER = "regenerated via update-gold (top tier)"
 
 
 @dataclass
@@ -98,8 +93,7 @@ async def update_gold_answers(
 
     `query_ids` is explicit (no implicit "all" here — the caller decides
     scope). Unknown ids are reported, not silently dropped. Each
-    top-tier model's response becomes a `gold_answers` row; the slot-0
-    model also refreshes `Query.gold_answer` for back-compat.
+    top-tier model's response becomes a `gold_answers` row.
     """
     tier = _top_tier(models)
     tier_models = tier.resolved_models()
@@ -136,13 +130,6 @@ async def update_gold_answers(
                 _upsert_gold(
                     session, qid, m.served_model_name, m.provider, text, now
                 )
-                if m.slot == 0:
-                    q = session.execute(
-                        select(Query).where(Query.query_id == qid)
-                    ).scalar_one()
-                    q.gold_answer = text
-                    q.gold_model = f"{REGEN_GOLD_MARKER}: {m.served_model_name}"
-                    q.gold_generated_at = now
             result.updated.append((qid, m.served_model_name))
 
     await asyncio.gather(

@@ -9,16 +9,20 @@ import pytest
 from sqlalchemy import select
 
 from benchmark import update_gold as ug
-from benchmark.db import GoldAnswer, Query, session_scope
+from benchmark.db import GoldAnswer, session_scope
 from benchmark.tiers import ChatResult
 
 from ._helpers import bootstrap_db, make_models
 
 QUERIES = [
     {"id": "q1", "prompt": "what is 2+2", "expected_min_tier": 1,
-     "specializations": ["general"], "expected_answer": "old gold 1"},
+     "specializations": ["general"],
+     "expected_answers": [{"answer": "old gold 1", "model": "Opus",
+                            "provider": "Anthropic"}]},
     {"id": "q2", "prompt": "explain entropy", "expected_min_tier": 3,
-     "specializations": ["general"], "expected_answer": "old gold 2"},
+     "specializations": ["general"],
+     "expected_answers": [{"answer": "old gold 2", "model": "Opus",
+                            "provider": "Anthropic"}]},
 ]
 
 
@@ -61,20 +65,13 @@ async def test_update_gold_writes_per_model_gold(tmp_path: Path, monkeypatch) ->
             .where(GoldAnswer.model_id == "tier5")
         ).scalar_one()
         assert g.answer == "FRESH GOLD :: what is 2+2"
-        # The upstream gold row is still there, untouched.
-        ups = s.execute(
+        # The file-declared Opus gold row is still there, untouched.
+        opus = s.execute(
             select(GoldAnswer)
             .where(GoldAnswer.query_id == "q1")
-            .where(GoldAnswer.model_id == "upstream")
+            .where(GoldAnswer.model_id == "Opus")
         ).scalar_one()
-        assert ups.answer == "old gold 1"
-        # slot-0 model also refreshed the back-compat Query.gold_answer.
-        q1 = s.execute(select(Query).where(Query.query_id == "q1")).scalar_one()
-        assert q1.gold_answer == "FRESH GOLD :: what is 2+2"
-        assert q1.gold_model.startswith(ug.REGEN_GOLD_MARKER)
-        # q2 untouched.
-        q2 = s.execute(select(Query).where(Query.query_id == "q2")).scalar_one()
-        assert q2.gold_answer == "old gold 2"
+        assert opus.answer == "old gold 1"
 
 
 @pytest.mark.asyncio
@@ -121,7 +118,7 @@ async def test_update_gold_errors_keep_old_gold(tmp_path: Path, monkeypatch) -> 
         rows = s.execute(
             select(GoldAnswer).where(GoldAnswer.query_id == "q2")
         ).scalars().all()
-        assert {r.model_id for r in rows} == {"upstream"}
+        assert {r.model_id for r in rows} == {"Opus"}
         assert rows[0].answer == "old gold 2"
 
 
@@ -140,4 +137,5 @@ async def test_update_gold_empty_response_is_error(tmp_path: Path, monkeypatch) 
         rows = s.execute(
             select(GoldAnswer).where(GoldAnswer.query_id == "q1")
         ).scalars().all()
-        assert {r.model_id for r in rows} == {"upstream"}  # no update-gold row
+        # File-declared Opus row preserved; no new tier5 row.
+        assert {r.model_id for r in rows} == {"Opus"}

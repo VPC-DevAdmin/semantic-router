@@ -215,7 +215,8 @@ def test_seed_skips_top_tier_routed_queries(tmp_path: Path) -> None:
     update-gold / upstream)."""
     db = bootstrap_db(tmp_path, [
         {"id": "g5", "prompt": "frontier", "expected_min_tier": 5,
-         "specializations": ["general"], "expected_answer": "GOLD for g5"},
+         "specializations": ["general"],
+         "expected_answers": [{"answer": "GOLD for g5", "model": "Opus"}]},
     ])
     rid = create_run(
         db, router_config_path=make_router_yaml(tmp_path),
