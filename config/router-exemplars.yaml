@@ -144,13 +144,14 @@ complexity_signals:
         - "Maximize a constrained function via Lagrange multipliers."
     easy:
       candidates:
-        # Factual lookups — non-math kept SEPARATE from arithmetic
-        # below. Earlier we stripped ALL math from easy because
-        # bank-wide math exemplars ("What is the square root of 144?")
-        # were semantically anchoring rigorous proof prompts toward
-        # easy. Re-adding only TIGHT single-digit arithmetic — those
-        # are unambiguous T1 and semantically distant from proof
-        # archetypes via embedding cluster separation.
+        # Factual lookups — purposely NON-math. The contrastive
+        # classifier compares hard vs easy in embedding space; ANY
+        # math-flavored easy exemplar (including single-digit
+        # arithmetic) slightly raises easy_score for math-flavored
+        # proofs via shared vocabulary, and the contrastive margin
+        # is razor-thin (range ~[-0.32, +0.11]) — even a small bump
+        # flips proofs from :hard back to :medium. Trivial arithmetic
+        # is anchored at T1 via the `trivial_lookup` detractor instead.
         - "Which artist painted the Sistine Chapel ceiling?"
         - "What is the chemical symbol for sodium?"
         - "Who wrote 'The Great Gatsby'?"
@@ -164,15 +165,6 @@ complexity_signals:
         - "What is a peninsula?"
         - "What does the acronym HTML stand for?"
         - "How do you say 'thank you' in French?"
-        # Trivial single-digit arithmetic. Without these, prompts like
-        # "What is 9 multiplied by 7?" or "What is 100 divided by 4?"
-        # have NO easy anchor and start matching the proof archetypes
-        # in :hard (round-4 misroute pattern: 10 trivial-arithmetic
-        # queries promoted to T4).
-        - "What is 7 plus 4?"
-        - "What is 12 divided by 3?"
-        - "What is half of 20?"
-        - "What is 6 times 5?"
 
 # ═════════════════════════════════════════════════════════════════════════
 # Embedding signals — continuous semantic similarity
@@ -309,17 +301,13 @@ embedding_signals:
       - "Diagnose what's actually happening at a 400-person scaleup that has just lost three senior engineers in two months. Leadership disagrees on cause. Engage with this as organizational analysis with specific signals to trust, not as a strategy framework."
       # Constructive ethical framework (not synthesis)
       - "Construct an original ethical framework that takes seriously both the effective-altruist and the communitarian critiques rather than synthesizing them. Test your frame against the canonical thought experiments each tradition has used."
-      # Long-form generative writing under structural constraints —
-      # sonnet form, pastiche of named author, sustained-voice dialogue.
-      # Distinct from "summarize this paragraph" by virtue of GENERATING
-      # content under explicit form/length/voice constraints rather than
-      # condensing existing text. Restores T5 capability for q00709/
-      # q00710/q00712-shape prompts without re-introducing the round-2
-      # paragraph-analysis match (those exemplars were "Write a literary
-      # essay analyzing ..." which semantically resembled summarize).
-      - "Write a sonnet in strict Shakespearean form on a specified topic, sustaining iambic pentameter and the volta turn at line nine."
-      - "Write a short story of approximately 400 words in the style of a named author, sustaining their characteristic voice and structural mannerisms throughout."
-      - "Write an extended dialogue between two characters in a high-stakes emotional situation, sustaining distinct voices across roughly 400 words without exposition or stage direction."
+      # NOTE: long-form generative writing archetypes (sonnet, story
+      # pastiche, sustained-voice dialogue) were tried here but
+      # measurably pulled "Summarize this paragraph: ..." and similar
+      # condensation prompts above the tier4_band cutoff, re-creating
+      # the q00111 → T5 misroute. Creative writing T5 catchment is
+      # left as future work — likely a separate signal or stricter
+      # lane condition rather than additions to this bank.
 
   # ─────────────────────────────────────────────────────────────────────
   # ARGUMENTATIVE CONSTRUCTION — judgment-and-commitment T4 catcher
