@@ -115,18 +115,19 @@ class TierConfig(BaseModel):
         return self.router_alias
 
     def resolved_models(self) -> list[TierModel]:
-        """The tier's callable models, always at least one.
+        """The tier's callable models — always at least one.
 
-        If `models` was populated (via env-override loading) it is
-        returned as-is. Otherwise a single slot-0 model is synthesized
-        from the legacy single-model fields so directly-constructed
-        TierConfigs (tests, programmatic use) still work.
+        If `models` was populated (by env-override loading) it is
+        returned as-is. Otherwise a single slot-1 model is synthesized
+        from the tier YAML's `endpoint` / `served_model_name` defaults
+        so directly-constructed TierConfigs (tests, programmatic use)
+        still resolve to a usable model.
         """
         if self.models:
             return self.models
         return [
             TierModel(
-                slot=0,
+                slot=1,
                 url=self.endpoint.url,
                 served_model_name=self.served_model_name,
                 api_key_env=self.endpoint.api_key_env,
@@ -333,27 +334,22 @@ def _bool_env(name: str, raw: str) -> bool:
     return flag
 
 
+SLOT_SUFFIXES = (
+    "URL", "MODEL", "API_KEY", "PROVIDER", "TIMEOUT", "MAX_TOKENS", "THINKING",
+)
+
+
 def _slot_var(n: int, i: int, suffix: str) -> str:
-    """Env var name for tier `n` slot `i` (slot 0 = bare `TIER{n}_{suffix}`)."""
-    return f"TIER{n}_{suffix}" if i == 0 else f"TIER{n}_{i}_{suffix}"
+    """Env var name for tier `n` slot `i` (i ≥ 1)."""
+    return f"TIER{n}_{i}_{suffix}"
 
 
-def _build_tier_model(
-    tier: TierConfig,
-    i: int,
-    *,
-    slot0_url: str,
-    slot0_key_env: str | None,
-    slot0_timeout: int,
-    slot0_max_tokens: int | None,
-    slot0_extra: dict | None,
-) -> TierModel | None:
+def _build_tier_model(tier: TierConfig, i: int) -> TierModel | None:
     """Assemble one TierModel for slot `i` from `TIER{n}_{i}_*` env vars.
 
-    Slot 0 always exists (built from YAML + bare env by the caller, with
-    slot0_* already resolved). For i >= 1 the slot exists iff its MODEL
-    (or URL) is set; URL falls back to slot 0's so you can run the same
-    endpoint with a different model name without repeating the URL.
+    The slot exists iff its MODEL (or URL) is set. URL falls back to the
+    tier YAML's `endpoint.url` so you can run the same endpoint with a
+    different model name without repeating the URL. MODEL is required.
     Returns None when slot `i` is absent (signals end of discovery).
     """
     n = tier.level
@@ -363,35 +359,30 @@ def _build_tier_model(
 
     url = g("URL")
     model = g("MODEL")
-    if i >= 1:
-        if not url and not model:
-            return None  # gap → discovery stops here
-        if not model:
-            raise ValueError(
-                f"{_slot_var(n, i, 'URL')} is set but "
-                f"{_slot_var(n, i, 'MODEL')} is not — a model slot needs "
-                f"a model name (the URL alone can't identify a model)."
-            )
-        url = url or slot0_url
-    else:
-        url = url or slot0_url
-        model = model or tier.served_model_name
+    if not url and not model:
+        return None  # gap → discovery stops here
+    if not model:
+        raise ValueError(
+            f"{_slot_var(n, i, 'URL')} is set but "
+            f"{_slot_var(n, i, 'MODEL')} is not — a model slot needs "
+            f"a model name (the URL alone can't identify a model)."
+        )
+    url = url or tier.endpoint.url
 
-    key_env: str | None = slot0_key_env
-    if g("API_KEY"):
-        key_env = _slot_var(n, i, "API_KEY")
+    key_env = _slot_var(n, i, "API_KEY") if g("API_KEY") else tier.endpoint.api_key_env
+    provider = g("PROVIDER") or None
 
-    provider = g("PROVIDER") or (tier.provider if i == 0 else None) or None
+    timeout = (
+        _int_env(_slot_var(n, i, "TIMEOUT"), g("TIMEOUT"), "seconds")
+        if g("TIMEOUT") else tier.timeout_s
+    )
+    max_tokens = (
+        _int_env(_slot_var(n, i, "MAX_TOKENS"), g("MAX_TOKENS"))
+        if g("MAX_TOKENS") else tier.max_tokens
+    )
 
-    timeout = slot0_timeout
-    if g("TIMEOUT"):
-        timeout = _int_env(_slot_var(n, i, "TIMEOUT"), g("TIMEOUT"), "seconds")
-
-    max_tokens = slot0_max_tokens
-    if g("MAX_TOKENS"):
-        max_tokens = _int_env(_slot_var(n, i, "MAX_TOKENS"), g("MAX_TOKENS"))
-
-    extra = dict(slot0_extra) if isinstance(slot0_extra, dict) else None
+    yaml_extra = getattr(tier.backend, "extra_body", None)
+    extra = dict(yaml_extra) if isinstance(yaml_extra, dict) else None
     if g("THINKING"):
         extra = _with_thinking(extra, _bool_env(_slot_var(n, i, "THINKING"), g("THINKING")))
 
@@ -408,100 +399,51 @@ def _build_tier_model(
 
 
 def apply_tier_env_overrides(tier: TierConfig) -> TierConfig:
-    """Override per-tier settings from `TIER{N}_*` env vars.
+    """Discover callable model slots for `tier` from `TIER{N}_{i}_*` env vars.
 
-    Lets `.env` be the single user-facing place to flip per-tier settings
-    without editing YAMLs. Env vars per tier level N:
+    All slots are indexed: `TIER{N}_1_URL/MODEL/API_KEY/PROVIDER/TIMEOUT/
+    MAX_TOKENS/THINKING`, `TIER{N}_2_*`, … `i` starts at 1 — there is no
+    bare/slot-0 form. Slots must be contiguous; discovery stops at the
+    first missing slot.
 
-      TIER{N}_URL         → tier.endpoint.url
-      TIER{N}_MODEL       → tier.served_model_name
-      TIER{N}_API_KEY     → tier.endpoint.api_key_env = "TIER{N}_API_KEY"
-                            (the actual key value stays in the env var; this
-                             field just records its NAME for downstream
-                             readers to look up via os.environ.)
-      TIER{N}_TIMEOUT     → tier.timeout_s (seconds)
-      TIER{N}_MAX_TOKENS  → tier.max_tokens (per-tier generation cap)
-      TIER{N}_THINKING    → backend.extra_body.chat_template_kwargs
-                            .enable_thinking (Qwen3 local tiers)
-      TIER{N}_PROVIDER    → tier.provider (label surfaced in demo.json)
+    Per-slot semantics:
+      • MODEL — required.
+      • URL — falls back to the tier YAML's `endpoint.url` (same endpoint,
+        different model name).
+      • API_KEY — env var NAME is recorded on the slot; the actual key
+        lives in os.environ.
+      • PROVIDER — optional label, surfaces verbatim in demo.json.
+      • TIMEOUT / MAX_TOKENS — per-slot overrides; else inherit the tier
+        YAML's `timeout_s` / `max_tokens`.
+      • THINKING (true/false) — flips Qwen3's chat_template_kwargs
+        .enable_thinking inside the slot's extra_body (vendor reasoning
+        controls go in the tier YAML's backend.extra_body instead).
 
-    MULTIPLE MODELS PER TIER. The bare `TIER{N}_*` vars define slot 0.
-    Additional models are indexed: `TIER{N}_1_URL/MODEL/API_KEY/PROVIDER/
-    TIMEOUT/MAX_TOKENS/THINKING`, `TIER{N}_2_*`, … Slots must be
-    contiguous from 1; discovery stops at the first missing slot. A slot's
-    URL falls back to slot 0's (same endpoint, different model name);
-    MODEL is required for slots ≥ 1. All callable models land in
-    `tier.models`; `served_model_name` must be unique within the tier
-    (it's a DB key and a demo.json key).
+    `served_model_name` must be unique within a tier — it's the per-tier
+    key in the DB and in demo.json.
 
-    The TIMEOUT/MAX_TOKENS/THINKING knobs exist so a slow local tier can
-    be told to take longer and produce a more complete answer rather than
-    being tuned for speed — "good at low tier" so the user doesn't just
-    resubmit higher.
-
-    Empty or unset env vars are ignored (the YAML default wins). The
-    legacy single-model fields (endpoint, served_model_name, timeout_s,
-    max_tokens, backend.extra_body) are still mutated to slot 0's values
-    for back-compat with single-model callers.
+    If a stale bare `TIER{N}_*` env var is set (the old single-model
+    form, no longer supported), we raise with a migration hint so it
+    doesn't silently no-op.
 
     Mutates and returns the same TierConfig.
     """
     n = tier.level
 
-    # ---- slot 0: legacy single-model fields (back-compat) ----
-    url = os.environ.get(f"TIER{n}_URL", "").strip()
-    if url:
-        tier.endpoint.url = url
+    # Reject any bare TIER{N}_<suffix> — slots are indexed only.
+    for suffix in SLOT_SUFFIXES:
+        if os.environ.get(f"TIER{n}_{suffix}", "").strip():
+            raise ValueError(
+                f"TIER{n}_{suffix} is not a supported env var. Slots are "
+                f"indexed from 1 — use TIER{n}_1_{suffix} (slot 1), "
+                f"TIER{n}_2_{suffix} (slot 2), and so on. There is no "
+                f"bare/slot-0 form."
+            )
 
-    model = os.environ.get(f"TIER{n}_MODEL", "").strip()
-    if model:
-        tier.served_model_name = model
-
-    # For the key: only set api_key_env if the env var has a non-empty value.
-    # That way a blank TIER3_API_KEY= in .env doesn't override a YAML that
-    # explicitly references a different env var.
-    if os.environ.get(f"TIER{n}_API_KEY", "").strip():
-        tier.endpoint.api_key_env = f"TIER{n}_API_KEY"
-
-    timeout_raw = os.environ.get(f"TIER{n}_TIMEOUT", "").strip()
-    if timeout_raw:
-        tier.timeout_s = _int_env(f"TIER{n}_TIMEOUT", timeout_raw, "seconds")
-
-    max_tokens_raw = os.environ.get(f"TIER{n}_MAX_TOKENS", "").strip()
-    if max_tokens_raw:
-        tier.max_tokens = _int_env(f"TIER{n}_MAX_TOKENS", max_tokens_raw)
-
-    provider_raw = os.environ.get(f"TIER{n}_PROVIDER", "").strip()
-    if provider_raw:
-        tier.provider = provider_raw
-
-    thinking_raw = os.environ.get(f"TIER{n}_THINKING", "").strip()
-    if thinking_raw:
-        _set_qwen_thinking(tier, _bool_env(f"TIER{n}_THINKING", thinking_raw))
-
-    # ---- build the callable-model list (slot 0 + indexed slots) ----
-    slot0_extra = getattr(tier.backend, "extra_body", None)
-    slot0 = _build_tier_model(
-        tier,
-        0,
-        slot0_url=tier.endpoint.url,
-        slot0_key_env=tier.endpoint.api_key_env,
-        slot0_timeout=tier.timeout_s,
-        slot0_max_tokens=tier.max_tokens,
-        slot0_extra=slot0_extra,
-    )
-    models: list[TierModel] = [slot0]  # slot 0 always present
+    models: list[TierModel] = []
     i = 1
     while True:
-        m = _build_tier_model(
-            tier,
-            i,
-            slot0_url=tier.endpoint.url,
-            slot0_key_env=tier.endpoint.api_key_env,
-            slot0_timeout=tier.timeout_s,
-            slot0_max_tokens=tier.max_tokens,
-            slot0_extra=slot0_extra,
-        )
+        m = _build_tier_model(tier, i)
         if m is None:
             break
         models.append(m)

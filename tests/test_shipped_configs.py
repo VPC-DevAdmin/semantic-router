@@ -17,45 +17,43 @@ ROOT = Path(__file__).parent.parent
 
 
 def test_tier_env_overrides_win_over_yaml(monkeypatch) -> None:
-    """`.env`-style overrides should beat YAML defaults for every tier."""
-    monkeypatch.setenv("TIER4_URL", "https://test.example.com/v1")
-    monkeypatch.setenv("TIER4_MODEL", "claude-test-model-id")
-    monkeypatch.setenv("TIER4_API_KEY", "test-key-value")
+    """`.env`-style indexed slots produce per-tier callable models."""
+    monkeypatch.setenv("TIER4_1_URL", "https://test.example.com/v1")
+    monkeypatch.setenv("TIER4_1_MODEL", "claude-test-model-id")
+    monkeypatch.setenv("TIER4_1_API_KEY", "test-key-value")
+    monkeypatch.setenv("TIER4_1_PROVIDER", "TestProvider")
     m = load_models(ROOT / "config" / "tiers")
     t4 = m.by_level(4)
-    assert t4.endpoint.url == "https://test.example.com/v1"
-    assert t4.served_model_name == "claude-test-model-id"
-    # api_key_env should be set to the env-var NAME, not the value itself.
-    # Downstream readers do os.environ[api_key_env] to get the real key.
-    assert t4.endpoint.api_key_env == "TIER4_API_KEY"
+    s1 = t4.models[0]
+    assert (s1.slot, s1.url, s1.served_model_name) == (
+        1, "https://test.example.com/v1", "claude-test-model-id",
+    )
+    # api_key_env is the env-var NAME, not the value.
+    assert s1.api_key_env == "TIER4_1_API_KEY"
+    assert s1.provider == "TestProvider"
 
 
 def test_tier_env_overrides_ignore_blank(monkeypatch) -> None:
-    """Empty `TIER{N}_*` env vars should NOT override the YAML defaults.
-
-    Otherwise shipping `TIER3_URL=` in `.env.example` would silently
-    blank out tier3.yaml's url.
-    """
-    # Capture the YAML default before any override is applied.
-    baseline = load_models(ROOT / "config" / "tiers").by_level(4)
-    yaml_url = baseline.endpoint.url
-    yaml_model = baseline.served_model_name
-
-    monkeypatch.setenv("TIER4_URL", "")
-    monkeypatch.setenv("TIER4_MODEL", "   ")  # whitespace-only also ignored
-    monkeypatch.setenv("TIER4_API_KEY", "")
+    """Empty `TIER{N}_{i}_*` env vars should NOT discover a slot — the
+    tier falls back to its YAML defaults (so a blank line in .env.example
+    can't silently misconfigure a tier)."""
+    monkeypatch.setenv("TIER4_1_URL", "")
+    monkeypatch.setenv("TIER4_1_MODEL", "   ")  # whitespace-only also ignored
+    monkeypatch.setenv("TIER4_1_API_KEY", "")
     m = load_models(ROOT / "config" / "tiers")
     t4 = m.by_level(4)
-    assert t4.endpoint.url == yaml_url
-    assert t4.served_model_name == yaml_model
+    # No env slots → models stays empty; resolved_models() synthesizes
+    # one from the YAML defaults.
+    assert t4.models == []
+    assert t4.resolved_models()[0].url == t4.endpoint.url
 
 
 def test_openai_https_backend_emits_provider_openai(monkeypatch, tmp_path) -> None:
     """An HTTPS non-Anthropic backend should emit `provider: openai`
     with Bearer auth headers, not the `protocol: http` localhost shape."""
-    monkeypatch.setenv("TIER3_URL", "https://api.openai.com/v1")
-    monkeypatch.setenv("TIER3_MODEL", "gpt-5-mini")
-    monkeypatch.setenv("TIER3_API_KEY", "sk-test")
+    monkeypatch.setenv("TIER3_1_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("TIER3_1_MODEL", "gpt-5-mini")
+    monkeypatch.setenv("TIER3_1_API_KEY", "sk-test")
     from benchmark.build_router_config import build
     cfg = build(
         exemplars_path=ROOT / "config" / "router-exemplars.yaml",
@@ -70,7 +68,7 @@ def test_openai_https_backend_emits_provider_openai(monkeypatch, tmp_path) -> No
     assert ref["provider"] == "openai"
     assert ref["auth_header"] == "Authorization"
     assert ref["auth_prefix"] == "Bearer"
-    assert ref["api_key_env"] == "TIER3_API_KEY"
+    assert ref["api_key_env"] == "TIER3_1_API_KEY"
     # Should NOT carry the localhost-style fields.
     assert "endpoint" not in ref
     assert "protocol" not in ref
@@ -81,10 +79,10 @@ def test_google_oai_compat_backend_emits_provider_openai(monkeypatch) -> None:
     same `provider: openai` + Bearer-auth path as OpenAI itself, since
     Google designed that endpoint to be OAI-format-equivalent."""
     monkeypatch.setenv(
-        "TIER3_URL", "https://generativelanguage.googleapis.com/v1beta/openai"
+        "TIER3_1_URL", "https://generativelanguage.googleapis.com/v1beta/openai"
     )
-    monkeypatch.setenv("TIER3_MODEL", "gemini-2.5-flash")
-    monkeypatch.setenv("TIER3_API_KEY", "AIza-test")
+    monkeypatch.setenv("TIER3_1_MODEL", "gemini-2.5-flash")
+    monkeypatch.setenv("TIER3_1_API_KEY", "AIza-test")
     from benchmark.build_router_config import build
     cfg = build(
         exemplars_path=ROOT / "config" / "router-exemplars.yaml",
@@ -99,16 +97,16 @@ def test_google_oai_compat_backend_emits_provider_openai(monkeypatch) -> None:
     assert ref["provider"] == "openai"
     assert ref["auth_header"] == "Authorization"
     assert ref["auth_prefix"] == "Bearer"
-    assert ref["api_key_env"] == "TIER3_API_KEY"
+    assert ref["api_key_env"] == "TIER3_1_API_KEY"
 
 
 def test_anthropic_backend_still_takes_anthropic_path(monkeypatch) -> None:
     """Sanity: anthropic.com URLs route through the Anthropic adapter,
     not the generic openai HTTPS path. The Anthropic adapter handles the
     OAI→Anthropic shape translation."""
-    monkeypatch.setenv("TIER4_URL", "https://api.anthropic.com/v1")
-    monkeypatch.setenv("TIER4_MODEL", "claude-sonnet-4-5")
-    monkeypatch.setenv("TIER4_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("TIER4_1_URL", "https://api.anthropic.com/v1")
+    monkeypatch.setenv("TIER4_1_MODEL", "claude-sonnet-4-5")
+    monkeypatch.setenv("TIER4_1_API_KEY", "sk-ant-test")
     from benchmark.build_router_config import build
     cfg = build(
         exemplars_path=ROOT / "config" / "router-exemplars.yaml",

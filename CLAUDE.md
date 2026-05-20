@@ -51,7 +51,7 @@ external judging workflow.
 - **`config/tiers/tierN.yaml`** — single source of truth for each tier's
   direct-call identity (slot-0 / default model): metadata, router_alias +
   served_model_name, endpoint, backend. A tier can front MULTIPLE models
-  — the bare `TIER{N}_*` env vars are slot 0, indexed `TIER{N}_{i}_*`
+  — indexed env slots `TIER{N}_{i}_*` (i starts at 1; there is no bare/slot-0 form)
   add more (each with an optional `TIER{N}_{i}_PROVIDER` label). The
   router picks one tier; `make answers` calls EVERY model that tier
   fronts. See `.env.example` for the indexed-slot scheme.
@@ -150,9 +150,10 @@ End-to-end mock pipeline works: `make setup` → `make load` →
 semantic only.
 
 **Multi-model tiers (current):** each non-top tier can front several
-models (slot 0 = bare `TIER{N}_*`, indexed `TIER{N}_{i}_*` for more,
-optional `PROVIDER` label). `make answers` calls EVERY model in the
-routed tier — one `tier_answers` row per (run, query, tier, model),
+models via indexed env slots — `TIER{N}_1_*`, `TIER{N}_2_*`, … (i starts
+at 1; no bare/slot-0 form, the loader raises on stale single-model
+vars). Each slot takes an optional `PROVIDER` label. `make answers`
+calls EVERY model in the routed tier — one `tier_answers` row per (run, query, tier, model),
 PK `(run_id, query_id, tier_level, model_id)`. **Top-tier shortcut:**
 the top tier is the gold reference (every comparison is routed-vs-top,
 never top-vs-top), so queries routed to the top tier are SKIPPED by

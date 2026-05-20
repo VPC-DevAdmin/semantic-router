@@ -293,64 +293,80 @@ def test_env_bool(raw: str, expected) -> None:
     assert _env_bool(raw) is expected
 
 
-def test_env_override_timeout_and_max_tokens(monkeypatch) -> None:
+def test_env_per_slot_timeout_and_max_tokens(monkeypatch) -> None:
     _clear_tier_env(monkeypatch, 1)
-    monkeypatch.setenv("TIER1_TIMEOUT", "600")
-    monkeypatch.setenv("TIER1_MAX_TOKENS", "4096")
+    monkeypatch.setenv("TIER1_1_MODEL", "m1")
+    monkeypatch.setenv("TIER1_1_TIMEOUT", "600")
+    monkeypatch.setenv("TIER1_1_MAX_TOKENS", "4096")
     t = apply_tier_env_overrides(_tier(1, timeout_s=180))
-    assert t.timeout_s == 600
-    assert t.max_tokens == 4096
+    assert t.models[0].timeout_s == 600
+    assert t.models[0].max_tokens == 4096
 
 
-def test_env_override_unset_keeps_yaml_defaults(monkeypatch) -> None:
+def test_env_unset_keeps_yaml_defaults(monkeypatch) -> None:
+    """No env slots → tier.models stays empty; resolved_models()
+    synthesizes one slot-1 model from the YAML defaults."""
     _clear_tier_env(monkeypatch, 2)
     t = apply_tier_env_overrides(_tier(2, timeout_s=300))
-    assert t.timeout_s == 300
-    assert t.max_tokens is None  # no TIER2_MAX_TOKENS → stays unset
+    assert t.models == []
+    m = t.resolved_models()[0]
+    assert (m.slot, m.timeout_s, m.max_tokens) == (1, 300, None)
 
 
-def test_env_override_timeout_non_integer_raises(monkeypatch) -> None:
+def test_env_timeout_non_integer_raises(monkeypatch) -> None:
     _clear_tier_env(monkeypatch, 1)
-    monkeypatch.setenv("TIER1_TIMEOUT", "fast")
-    with pytest.raises(ValueError, match="TIER1_TIMEOUT must be an integer"):
+    monkeypatch.setenv("TIER1_1_MODEL", "m1")
+    monkeypatch.setenv("TIER1_1_TIMEOUT", "fast")
+    with pytest.raises(ValueError, match="TIER1_1_TIMEOUT must be an integer"):
         apply_tier_env_overrides(_tier(1))
 
 
 def test_env_thinking_true_creates_extra_body(monkeypatch) -> None:
     _clear_tier_env(monkeypatch, 1)
-    monkeypatch.setenv("TIER1_THINKING", "true")
+    monkeypatch.setenv("TIER1_1_MODEL", "Qwen3-1.7B")
+    monkeypatch.setenv("TIER1_1_THINKING", "true")
     t = apply_tier_env_overrides(_tier(1))  # no extra_body in YAML
-    assert t.backend.model_dump()["extra_body"] == {
+    assert t.models[0].extra_body == {
         "chat_template_kwargs": {"enable_thinking": True}
     }
 
 
 def test_env_thinking_false_overrides_yaml_and_preserves_siblings(monkeypatch) -> None:
     _clear_tier_env(monkeypatch, 1)
-    monkeypatch.setenv("TIER1_THINKING", "false")
+    monkeypatch.setenv("TIER1_1_MODEL", "Qwen3-1.7B")
+    monkeypatch.setenv("TIER1_1_THINKING", "false")
     # YAML had enable_thinking=true plus an unrelated sibling key.
     t = _tier(1, extra_body={
         "chat_template_kwargs": {"enable_thinking": True, "other": 1},
         "top_p": 0.9,
     })
     apply_tier_env_overrides(t)
-    dumped = t.backend.model_dump()["extra_body"]
-    assert dumped["chat_template_kwargs"] == {"enable_thinking": False, "other": 1}
-    assert dumped["top_p"] == 0.9  # unrelated extra_body keys untouched
+    extra = t.models[0].extra_body
+    assert extra["chat_template_kwargs"] == {"enable_thinking": False, "other": 1}
+    assert extra["top_p"] == 0.9  # unrelated extra_body keys untouched
 
 
 def test_env_thinking_invalid_raises(monkeypatch) -> None:
     _clear_tier_env(monkeypatch, 1)
-    monkeypatch.setenv("TIER1_THINKING", "sometimes")
-    with pytest.raises(ValueError, match="TIER1_THINKING must be a boolean"):
+    monkeypatch.setenv("TIER1_1_MODEL", "m1")
+    monkeypatch.setenv("TIER1_1_THINKING", "sometimes")
+    with pytest.raises(ValueError, match="TIER1_1_THINKING must be a boolean"):
         apply_tier_env_overrides(_tier(1))
 
 
-# ---- multiple models per tier (indexed slots) ----
+# ---- multiple models per tier (indexed slots only — no slot 0) ----
 
-def test_resolved_models_synthesizes_slot0_when_models_empty() -> None:
+def test_bare_tier_env_var_raises_with_migration_hint(monkeypatch) -> None:
+    """A stale single-model TIER{N}_* env var must fail loud, not silently."""
+    _clear_tier_env(monkeypatch, 1)
+    monkeypatch.setenv("TIER1_MODEL", "leftover-bare-model")
+    with pytest.raises(ValueError, match="TIER1_MODEL is not a supported env var"):
+        apply_tier_env_overrides(_tier(1))
+
+
+def test_resolved_models_synthesizes_slot1_when_models_empty() -> None:
     """A directly-built TierConfig (tests/programmatic) yields exactly one
-    model derived from the legacy single-model fields."""
+    slot-1 model derived from the YAML defaults."""
     t = _tier(5, timeout_s=120)
     t.served_model_name = "claude-opus-x"
     t.provider = "Anthropic"
@@ -358,68 +374,49 @@ def test_resolved_models_synthesizes_slot0_when_models_empty() -> None:
     assert len(models) == 1
     m = models[0]
     assert (m.slot, m.served_model_name, m.provider, m.timeout_s) == (
-        0, "claude-opus-x", "Anthropic", 120,
+        1, "claude-opus-x", "Anthropic", 120,
     )
-
-
-def test_env_single_slot_back_compat(monkeypatch) -> None:
-    """Bare TIER{N}_* still works and produces exactly slot 0."""
-    _clear_tier_env(monkeypatch, 5)
-    monkeypatch.setenv("TIER5_URL", "https://api.anthropic.com/v1")
-    monkeypatch.setenv("TIER5_MODEL", "claude-opus-4-7")
-    monkeypatch.setenv("TIER5_API_KEY", "sk-ant-xxx")
-    monkeypatch.setenv("TIER5_PROVIDER", "Anthropic")
-    t = apply_tier_env_overrides(_tier(5))
-    assert len(t.models) == 1
-    m = t.models[0]
-    assert m.slot == 0
-    assert m.url == "https://api.anthropic.com/v1"
-    assert m.served_model_name == "claude-opus-4-7"
-    assert m.api_key_env == "TIER5_API_KEY"
-    assert m.provider == "Anthropic"
-    # Legacy fields still mirror slot 0.
-    assert t.served_model_name == "claude-opus-4-7"
-    assert t.provider == "Anthropic"
 
 
 def test_env_indexed_slots_with_providers(monkeypatch) -> None:
     """Indexed slots add models; each carries its optional provider label;
-    a slot's URL falls back to slot 0's when omitted."""
+    a slot's URL falls back to the tier YAML's endpoint.url when omitted."""
     _clear_tier_env(monkeypatch, 5)
-    monkeypatch.setenv("TIER5_URL", "https://api.anthropic.com/v1")
-    monkeypatch.setenv("TIER5_MODEL", "claude-opus-4-7")
-    monkeypatch.setenv("TIER5_PROVIDER", "Anthropic")
-    monkeypatch.setenv("TIER5_1_URL", "https://api.openai.com/v1")
-    monkeypatch.setenv("TIER5_1_MODEL", "gpt-5")
-    monkeypatch.setenv("TIER5_1_API_KEY", "sk-openai")
-    monkeypatch.setenv("TIER5_1_PROVIDER", "OpenAI")
-    # Slot 2: same Anthropic endpoint (URL omitted → falls back to slot 0),
-    # different model, no provider label.
-    monkeypatch.setenv("TIER5_2_MODEL", "claude-sonnet-4-5")
+    monkeypatch.setenv("TIER5_1_URL", "https://api.anthropic.com/v1")
+    monkeypatch.setenv("TIER5_1_MODEL", "claude-opus-4-7")
+    monkeypatch.setenv("TIER5_1_API_KEY", "sk-ant-xxx")
+    monkeypatch.setenv("TIER5_1_PROVIDER", "Anthropic")
+    monkeypatch.setenv("TIER5_2_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("TIER5_2_MODEL", "gpt-5")
+    monkeypatch.setenv("TIER5_2_API_KEY", "sk-openai")
+    monkeypatch.setenv("TIER5_2_PROVIDER", "OpenAI")
+    # Slot 3: URL omitted → falls back to the tier YAML's endpoint.url
+    # (http://localhost:8805/v1 from `_tier(5)`'s helper).
+    monkeypatch.setenv("TIER5_3_MODEL", "claude-sonnet-4-5")
 
     t = apply_tier_env_overrides(_tier(5))
     assert [(m.slot, m.served_model_name, m.provider, m.url) for m in t.models] == [
-        (0, "claude-opus-4-7", "Anthropic", "https://api.anthropic.com/v1"),
-        (1, "gpt-5", "OpenAI", "https://api.openai.com/v1"),
-        (2, "claude-sonnet-4-5", None, "https://api.anthropic.com/v1"),
+        (1, "claude-opus-4-7", "Anthropic", "https://api.anthropic.com/v1"),
+        (2, "gpt-5", "OpenAI", "https://api.openai.com/v1"),
+        (3, "claude-sonnet-4-5", None, "http://localhost:8005/v1"),
     ]
-    assert t.models[1].api_key_env == "TIER5_1_API_KEY"
+    assert t.models[0].api_key_env == "TIER5_1_API_KEY"
+    assert t.models[1].api_key_env == "TIER5_2_API_KEY"
 
 
 def test_env_indexed_slots_stop_at_gap(monkeypatch) -> None:
     """Discovery stops at the first missing slot — a gap ends the list."""
     _clear_tier_env(monkeypatch, 3)
-    monkeypatch.setenv("TIER3_MODEL", "m0")
     monkeypatch.setenv("TIER3_1_MODEL", "m1")
-    # no slot 2
-    monkeypatch.setenv("TIER3_3_MODEL", "m3")  # unreachable: gap at 2
+    monkeypatch.setenv("TIER3_2_MODEL", "m2")
+    # no slot 3
+    monkeypatch.setenv("TIER3_4_MODEL", "m4")  # unreachable: gap at 3
     t = apply_tier_env_overrides(_tier(3))
-    assert [m.served_model_name for m in t.models] == ["m0", "m1"]
+    assert [m.served_model_name for m in t.models] == ["m1", "m2"]
 
 
 def test_env_slot_url_without_model_raises(monkeypatch) -> None:
     _clear_tier_env(monkeypatch, 3)
-    monkeypatch.setenv("TIER3_MODEL", "m0")
     monkeypatch.setenv("TIER3_1_URL", "https://x/v1")  # URL but no MODEL
     with pytest.raises(ValueError, match="TIER3_1_MODEL is not"):
         apply_tier_env_overrides(_tier(3))
@@ -427,29 +424,29 @@ def test_env_slot_url_without_model_raises(monkeypatch) -> None:
 
 def test_env_duplicate_model_name_within_tier_raises(monkeypatch) -> None:
     _clear_tier_env(monkeypatch, 3)
-    monkeypatch.setenv("TIER3_MODEL", "dup")
     monkeypatch.setenv("TIER3_1_MODEL", "dup")
+    monkeypatch.setenv("TIER3_2_MODEL", "dup")
     with pytest.raises(ValueError, match="duplicate model name 'dup'"):
         apply_tier_env_overrides(_tier(3))
 
 
-def test_env_slot_per_slot_thinking_and_budget(monkeypatch) -> None:
-    """Per-slot TIMEOUT/MAX_TOKENS/THINKING override slot-0 inheritance."""
+def test_env_per_slot_thinking_and_budget(monkeypatch) -> None:
+    """Per-slot TIMEOUT/MAX_TOKENS/THINKING; slots inherit YAML defaults
+    independently."""
     _clear_tier_env(monkeypatch, 1)
-    monkeypatch.setenv("TIER1_MODEL", "Qwen3-1.7B")
-    monkeypatch.setenv("TIER1_TIMEOUT", "300")
-    monkeypatch.setenv("TIER1_1_MODEL", "Qwen3-1.7B-think")
-    monkeypatch.setenv("TIER1_1_THINKING", "true")
-    monkeypatch.setenv("TIER1_1_MAX_TOKENS", "8192")
-    # slot 1 omits TIMEOUT → inherits slot 0's 300
-    t = apply_tier_env_overrides(_tier(1))
-    s0, s1 = t.models
-    assert s0.served_model_name == "Qwen3-1.7B"
-    assert s1.timeout_s == 300            # inherited from slot 0
-    assert s1.max_tokens == 8192          # per-slot override
-    assert s1.extra_body["chat_template_kwargs"]["enable_thinking"] is True
-    # slot 0 unaffected by slot 1's thinking flag
-    assert (s0.extra_body or {}).get("chat_template_kwargs", {}).get(
+    monkeypatch.setenv("TIER1_1_MODEL", "Qwen3-1.7B")
+    monkeypatch.setenv("TIER1_2_MODEL", "Qwen3-1.7B-think")
+    monkeypatch.setenv("TIER1_2_THINKING", "true")
+    monkeypatch.setenv("TIER1_2_MAX_TOKENS", "8192")
+    # YAML timeout_s = 300 — slot 2 omits TIMEOUT → inherits from YAML
+    t = apply_tier_env_overrides(_tier(1, timeout_s=300))
+    s1, s2 = t.models
+    assert s1.served_model_name == "Qwen3-1.7B"
+    assert s2.timeout_s == 300            # inherited from YAML
+    assert s2.max_tokens == 8192          # per-slot override
+    assert s2.extra_body["chat_template_kwargs"]["enable_thinking"] is True
+    # slot 1 unaffected by slot 2's thinking flag
+    assert (s1.extra_body or {}).get("chat_template_kwargs", {}).get(
         "enable_thinking"
     ) is not True
 

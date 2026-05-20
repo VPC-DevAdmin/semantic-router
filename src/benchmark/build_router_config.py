@@ -189,14 +189,19 @@ def _validate_exemplars(ex: dict, eval_prompts: set[str] | None = None) -> None:
 
 
 def _apply_backend_env_overrides(be: dict) -> None:
-    """Same env-override layer used by config.apply_tier_env_overrides, but
-    for the router-backends.yaml schema.
+    """Apply `TIER{N}_1_*` env overrides to the router-backends.yaml schema.
 
-    For each tier id `tier{N}`, TIER{N}_URL / TIER{N}_MODEL / TIER{N}_API_KEY
-    override base_url / model / api_key_env if set and non-empty. .env is
-    the single user-facing place for per-tier endpoint config.
+    The router only needs ONE endpoint per tier (it doesn't fan out —
+    multi-model fan-out happens at `make answers`). Slot 1 is the
+    canonical "this is the endpoint the router uses to reach tier N"
+    entry; TIER{N}_1_URL / TIER{N}_1_MODEL / TIER{N}_1_API_KEY override
+    base_url / model / api_key_env for that tier in router-backends.yaml.
+
+    Bare `TIER{N}_*` env vars (the old single-model form, no longer
+    supported) raise with a migration hint.
     """
     backends = be.get("backends") or {}
+    legacy_suffixes = ("URL", "MODEL", "API_KEY")
     for tier_id, cfg in backends.items():
         if not (isinstance(tier_id, str) and tier_id.startswith("tier")):
             continue
@@ -205,17 +210,26 @@ def _apply_backend_env_overrides(be: dict) -> None:
             continue
         n = suffix
 
-        url = os.environ.get(f"TIER{n}_URL", "").strip()
+        # Reject any bare TIER{n}_<suffix> — slots are indexed only.
+        for s in legacy_suffixes:
+            if os.environ.get(f"TIER{n}_{s}", "").strip():
+                raise ValueError(
+                    f"TIER{n}_{s} is not supported. Use TIER{n}_1_{s} "
+                    f"(slot 1) — env slots are indexed from 1, with no "
+                    f"bare/slot-0 form."
+                )
+
+        url = os.environ.get(f"TIER{n}_1_URL", "").strip()
         if url:
             cfg["base_url"] = url
 
-        model = os.environ.get(f"TIER{n}_MODEL", "").strip()
+        model = os.environ.get(f"TIER{n}_1_MODEL", "").strip()
         if model:
             cfg["model"] = model
 
-        key = os.environ.get(f"TIER{n}_API_KEY", "").strip()
+        key = os.environ.get(f"TIER{n}_1_API_KEY", "").strip()
         if key:
-            cfg["api_key_env"] = f"TIER{n}_API_KEY"
+            cfg["api_key_env"] = f"TIER{n}_1_API_KEY"
 
 
 def _validate_backends(be: dict, declared_tier_ids: set[str]) -> None:

@@ -175,7 +175,9 @@ def import_answers_file(
                         query_id=qid,
                         tier_level=tier_level,
                         model_id=model_id,
-                        model_slot=0,
+                        # Imported rows aren't from an env slot; use 1 as
+                        # a neutral default (no slot 0 in the new scheme).
+                        model_slot=1,
                         provider=provider,
                         tier_name=tier_name,
                         response_text=body,

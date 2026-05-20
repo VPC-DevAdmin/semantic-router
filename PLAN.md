@@ -426,8 +426,10 @@ not `/v1/chat/completions`. Replaced with `tools/oai_mock.py`.
 ### Done
 
 - ~~**Multi-model tiers.**~~ A non-top tier fronts N provider models
-  (slot 0 = bare `TIER{N}_*`, indexed `TIER{N}_{i}_*`, optional
-  `PROVIDER`). `make answers` calls every model in the routed tier but
+  via indexed env slots `TIER{N}_{i}_*` (i ≥ 1; no bare/slot-0 form,
+  the loader raises on stale single-model vars). Each slot takes an
+  optional `PROVIDER` label. `make answers` calls every model in the
+  routed tier but
   SKIPS top-tier-routed queries (the top tier is the gold reference —
   routed-vs-top, never top-vs-top). `gold_answers` holds the
   per-provider expected set (upstream + update-gold + import);
