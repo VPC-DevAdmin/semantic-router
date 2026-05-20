@@ -134,7 +134,7 @@ def start_local_engines(
     tiers_dir: Path = DEFAULT_TIERS_DIR,
     library_path: Path = DEFAULT_LOCAL_MODELS_PATH,
     *,
-    run: Callable[[list[str]], object] | None = None,
+    run: Callable[..., object] | None = None,
     vendor: str | None = None,
 ) -> None:
     """For every env slot pointing at localhost: stop any pre-existing
@@ -165,8 +165,10 @@ def start_local_engines(
         recipe = _resolve_recipe(library, m)
         spec = recipe.for_vendor(cpu_vendor)
         ctx = _build_context(m, port, recipe)
-        # Idempotent: stop any container left over with the same name.
-        runner([_render(a, ctx) for a in spec.stop])
+        # Idempotent pre-stop — `docker stop` exits non-zero when the
+        # container doesn't exist, but for our purposes that's "good,
+        # nothing to clean up" rather than a failure.
+        runner([_render(a, ctx) for a in spec.stop], check=False)
         runner([_render(a, ctx) for a in spec.start])
         console.print(
             f"  [green]launched[/] {ctx['container_name']} "
@@ -178,10 +180,14 @@ def stop_local_engines(
     tiers_dir: Path = DEFAULT_TIERS_DIR,
     library_path: Path = DEFAULT_LOCAL_MODELS_PATH,
     *,
-    run: Callable[[list[str]], object] | None = None,
+    run: Callable[..., object] | None = None,
     vendor: str | None = None,
 ) -> None:
-    """Symmetric: same env walk, run each recipe's `stop` argv."""
+    """Symmetric: same env walk, run each recipe's `stop` argv.
+
+    Tolerant of already-stopped containers — `docker stop <nonexistent>`
+    returns non-zero, but for `make stop_LLM` that's a no-op success.
+    """
     runner = run or _run
     if not library_path.exists():
         return  # nothing to stop if no library was ever defined
@@ -194,7 +200,7 @@ def stop_local_engines(
             continue  # nothing to stop for an unrecognised model
         spec = recipe.for_vendor(cpu_vendor)
         ctx = _build_context(m, port, recipe)
-        runner([_render(a, ctx) for a in spec.stop])
+        runner([_render(a, ctx) for a in spec.stop], check=False)
         console.print(
             f"  [yellow]stopped[/] {ctx['container_name']} "
             f"({m.served_model_name})"

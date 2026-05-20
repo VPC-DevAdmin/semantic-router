@@ -159,6 +159,63 @@ def test_vendor_block_missing_raises(monkeypatch, library_file) -> None:
         start_llm.start_local_engines(library_path=library_file, vendor="intel")
 
 
+def test_idempotent_pre_stop_tolerates_nonexistent_container(
+    monkeypatch, library_file
+) -> None:
+    """The pre-stop before `docker run` must tolerate failure (the
+    container may not exist yet — `docker stop` returns non-zero in
+    that case, which we treat as 'good, nothing to clean up'). The
+    actual `docker run` start command, in contrast, must be check=True
+    so a real launch failure surfaces."""
+    captured: list[tuple[list[str], bool]] = []
+
+    def fake(cmd, *a, **kw):
+        captured.append((cmd, kw.get("check", True)))
+
+    monkeypatch.setattr(start_llm, "_run", fake)
+    _patch_models(monkeypatch, ModelsConfig(tiers=[
+        _tier(1, [TierModel(
+            slot=1, url="http://localhost:8001/v1",
+            served_model_name="Qwen3-1.7B",
+        )]),
+    ]))
+    start_llm.start_local_engines(library_path=library_file, vendor="amd")
+
+    # Two calls: stop then start. Stop must be check=False; start check=True.
+    assert len(captured) == 2
+    stop_cmd, stop_check = captured[0]
+    start_cmd, start_check = captured[1]
+    assert stop_cmd[:2] == ["docker", "stop"]
+    assert stop_check is False, "pre-stop must tolerate nonexistent container"
+    assert start_cmd[:2] == ["docker", "run"]
+    assert start_check is True, "the actual launch should fail loud"
+
+
+def test_stop_local_engines_tolerates_already_stopped(
+    monkeypatch, library_file
+) -> None:
+    """`make stop_LLM` against an already-stopped container is a no-op
+    success, not an error."""
+    captured: list[tuple[list[str], bool]] = []
+
+    def fake(cmd, *a, **kw):
+        captured.append((cmd, kw.get("check", True)))
+
+    monkeypatch.setattr(start_llm, "_run", fake)
+    _patch_models(monkeypatch, ModelsConfig(tiers=[
+        _tier(1, [TierModel(
+            slot=1, url="http://localhost:8001/v1",
+            served_model_name="Qwen3-1.7B",
+        )]),
+    ]))
+    start_llm.stop_local_engines(library_path=library_file, vendor="amd")
+
+    assert len(captured) == 1
+    cmd, check = captured[0]
+    assert cmd[:2] == ["docker", "stop"]
+    assert check is False, "stop_local_engines must tolerate nonexistent containers"
+
+
 def test_stop_runs_recipe_stop_commands(monkeypatch, library_file) -> None:
     runs = _capture_runs(monkeypatch)
     _patch_models(monkeypatch, ModelsConfig(tiers=[
