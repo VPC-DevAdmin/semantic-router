@@ -111,6 +111,19 @@ class OAIClient:
         try:
             async with httpx.AsyncClient(timeout=self._timeout_s) as client:
                 resp = await client.post(url, headers=self._headers(), json=body)
+                # OpenAI's gpt-5-nano (and possibly others in the reasoning
+                # line) reject any temperature override — only the default
+                # (1.0) is supported and a non-default value 400s. Retry
+                # once without temperature so the caller doesn't have to
+                # special-case it per model.
+                if (
+                    resp.status_code == 400
+                    and "temperature" in body
+                    and "temperature" in resp.text.lower()
+                    and "does not support" in resp.text.lower()
+                ):
+                    body.pop("temperature")
+                    resp = await client.post(url, headers=self._headers(), json=body)
         except httpx.TimeoutException as e:
             # ConnectTimeout subclasses both TimeoutException and ConnectError;
             # catching TimeoutException first reports it as the timeout it is.

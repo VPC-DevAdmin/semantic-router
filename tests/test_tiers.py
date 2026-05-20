@@ -78,6 +78,56 @@ async def test_text_only_request_shape(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_openai_retries_without_temperature_on_unsupported_value(monkeypatch):
+    """OpenAI's gpt-5-nano rejects temperature overrides — retry without
+    `temperature` should succeed and the caller never has to special-case."""
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append(body)
+        if "temperature" in body:
+            return httpx.Response(
+                400,
+                json={"error": {
+                    "message": "Unsupported value: 'temperature' does not "
+                               "support 0.0 with this model. Only the "
+                               "default (1) value is supported.",
+                    "type": "invalid_request_error",
+                    "param": "temperature",
+                    "code": "unsupported_value",
+                }},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-5-nano",
+                "choices": [{"message": {"content": "pong"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    real_init = httpx.AsyncClient.__init__
+
+    def patched_init(self, *args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", patched_init)
+
+    client = OAIClient(
+        endpoint="https://api.openai.com/v1",
+        model_id="gpt-5-nano", api_key="sk-test", timeout_s=5.0,
+    )
+    result = await client.chat("ping", max_tokens=16, temperature=0.0)
+    # Two POSTs: first with temperature (400), second without (200).
+    assert len(calls) == 2
+    assert "temperature" in calls[0]
+    assert "temperature" not in calls[1]
+    assert result.content == "pong"
+
+
+@pytest.mark.asyncio
 async def test_openai_endpoint_uses_max_completion_tokens(monkeypatch):
     """OpenAI's GPT-5 / o-series reject `max_tokens`; we must send
     `max_completion_tokens` instead for any api.openai.com endpoint."""
