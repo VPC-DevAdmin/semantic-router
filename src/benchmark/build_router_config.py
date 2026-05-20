@@ -392,6 +392,15 @@ def _emit_provider_model(tier_id: str, cfg: dict) -> dict:
     return {
         "name": tier_id,
         "provider_model_id": cfg["model"],
+        # external_model_ids is what actually triggers the router's outgoing
+        # model-name substitution (helper.go:ResolveExternalModelID). Without
+        # it, the router forwards the router-side alias (`tier3`) verbatim
+        # and OpenAI/Anthropic 404 with "model not found".
+        # The key is the backend endpoint's `type:`, defaulting to "vllm"
+        # when we don't set it on the ref.
+        # `provider_model_id` above is documentation/pricing metadata only —
+        # the router does NOT read it for request rewriting.
+        "external_model_ids": {"vllm": cfg["model"]},
         "api_format": api_format,
         "backend_refs": [ref],
     }

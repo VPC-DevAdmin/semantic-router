@@ -84,6 +84,43 @@ def test_localhost_backend_url_translated_to_host_docker_internal(monkeypatch) -
     assert "host.docker.internal" not in ref_for("tier3")
 
 
+def test_external_model_ids_emitted_for_every_tier(monkeypatch) -> None:
+    """`external_model_ids: {vllm: <real model>}` is what makes vllm-sr
+    rewrite the outgoing `model:` field in the request body. Without it,
+    the router forwards the router-side alias (`tier3`) verbatim and
+    OpenAI/Anthropic 404 with "model `tier3` does not exist".
+
+    Source: src/semantic-router/pkg/config/helper.go:ResolveExternalModelID
+    — looks up modelConfig.ExternalModelIDs[endpointType]; endpointType
+    defaults to "vllm" when the backend_ref omits `type:`.
+
+    Regression for a 417/417 error pass where every tier3+ query 404'd.
+    """
+    monkeypatch.setenv("TIER1_1_URL", "http://localhost:8001/v1")
+    monkeypatch.setenv("TIER1_1_MODEL", "Qwen3-1.7B")
+    monkeypatch.setenv("TIER3_1_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("TIER3_1_MODEL", "gpt-5.4-mini")
+    monkeypatch.setenv("TIER3_1_API_KEY", "sk-test")
+    monkeypatch.setenv("TIER4_1_URL", "https://api.anthropic.com/v1")
+    monkeypatch.setenv("TIER4_1_MODEL", "claude-sonnet-4-5")
+    monkeypatch.setenv("TIER4_1_API_KEY", "sk-ant-test")
+
+    from benchmark.build_router_config import build
+    cfg = build(
+        exemplars_path=ROOT / "config" / "router-exemplars.yaml",
+        backends_path=ROOT / "config" / "router-backends.yaml",
+        eval_set_path=None,
+    )
+    by_name = {m["name"]: m for m in cfg["providers"]["models"]}
+
+    # Local HTTP backend: rewrite tier1 → Qwen3-1.7B.
+    assert by_name["tier1"]["external_model_ids"] == {"vllm": "Qwen3-1.7B"}
+    # HTTPS OpenAI: rewrite tier3 → gpt-5.4-mini.
+    assert by_name["tier3"]["external_model_ids"] == {"vllm": "gpt-5.4-mini"}
+    # Anthropic: rewrite tier4 → claude-sonnet-4-5.
+    assert by_name["tier4"]["external_model_ids"] == {"vllm": "claude-sonnet-4-5"}
+
+
 def test_build_module_loads_dotenv(tmp_path) -> None:
     """`python -m benchmark.build_router_config` (how the Makefile invokes
     the build) must load .env, otherwise `_apply_backend_env_overrides`
