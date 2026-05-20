@@ -121,18 +121,35 @@ complexity_signals:
         - "Prove that a stated inequality holds for all positive real values by reducing it to a canonical inequality such as Cauchy-Schwarz or AM-GM."
         - "Compute the maximum likelihood estimator for a probability parameter from sample data and construct an approximate confidence interval, justifying the asymptotic argument."
         - "Prove a combinatorial identity by a bijective argument or by induction on a structural parameter."
+        # SHORT proof / derivation archetypes — necessary because the
+        # contrastive classifier compares against the closest exemplar
+        # in embedding space, and short prompts can't get close to long
+        # ones. These match the length profile of "Prove √2 is
+        # irrational" (q00659) or "Solve T(n) = T(n/3) + T(2n/3) + n"
+        # (q00674). Generic shape, no eval-set overlap.
+        - "Prove an algebraic identity by induction."
+        - "Show that an infinite series diverges."
+        - "Prove a stated real number is irrational."
+        - "Solve a recurrence relation of given form."
+        - "Compute a multivariable integral over a bounded region."
+        - "Apply the central limit theorem to construct a confidence interval."
+        - "Maximize a constrained function via Lagrange multipliers."
     easy:
       candidates:
-        # Factual lookups
+        # Factual lookups — purposely NON-math. The contrastive
+        # classifier compares hard vs easy in embedding space; any
+        # math-flavored easy exemplar (e.g. "What is 15 plus 27?")
+        # semantically anchors proof/derivation prompts toward easy
+        # via shared math vocabulary, even though they're rigorous.
+        # That was the q00640/q00659/q00666 misroute pattern.
         - "Which artist painted the Sistine Chapel ceiling?"
         - "What is the chemical symbol for sodium?"
         - "Who wrote 'The Great Gatsby'?"
         - "What currency is used in Japan?"
         - "What is the largest organ in the human body?"
-        # Trivial calculations / conversions
-        - "What is 15 plus 27?"
-        - "How many feet are in a mile?"
-        - "What is the square root of 144?"
+        - "Name the capital city of Mongolia."
+        - "Who composed 'The Four Seasons'?"
+        - "In what year did the Berlin Olympics take place?"
         # Simple definitions
         - "Define photosynthesis."
         - "What is a peninsula?"
@@ -160,7 +177,7 @@ embedding_signals:
   # Short factual asks, definitions, simple conversions. When this fires,
   # it pulls request_difficulty DOWN, anchoring trivial queries in T1.
   - id: trivial_lookup
-    description: "Continuous similarity to short factual / lookup-shaped prompts."
+    description: "Continuous similarity to short factual / lookup-shaped prompts. Math-flavored exemplars deliberately omitted — they directly hit proof prompts (q00666 had this detractor fire on a Lagrange-multipliers prompt), which is the opposite of intent."
     threshold: 0.65
     weight: -0.20
     aggregation_method: max
@@ -168,15 +185,15 @@ embedding_signals:
       - "Which artist sculpted David?"
       - "What is the largest country by area?"
       - "What does the acronym CPU stand for?"
-      - "Convert 100 kilometers to miles."
       - "Define osmosis."
       - "What is the chemical formula for water?"
       - "Who invented the telephone?"
-      - "How many sides does a hexagon have?"
-      - "What is the freezing point of water in Fahrenheit?"
       - "In what year did the Berlin Wall fall?"
-      - "What is the speed of light in a vacuum?"
       - "Translate 'hello' to Spanish."
+      - "Who is the current monarch of the United Kingdom?"
+      - "What is the official language of Brazil?"
+      - "Name the deepest ocean on Earth."
+      - "What does the acronym DNA stand for?"
 
   # ─────────────────────────────────────────────────────────────────────
   # MODERATE COMPLEXITY — middle-tier promoter
@@ -218,14 +235,19 @@ embedding_signals:
   # T5-grade prompts.
   - id: frontier_synthesis
     description: "Continuous similarity to T5-grade frontier prompts."
-    # Tightened 0.65 → 0.70. The lane that fires on this signal uses
-    # vllm-sr's soft-match threshold (~0.50) for the boolean condition,
-    # but the strict threshold here still controls the matched_embeddings
-    # header and downstream gating. Higher threshold reduces marginal
-    # matches like q00111 "Summarize this paragraph..." which the
-    # previous paragraph-style exemplars below were pulling in.
+    # Threshold tightened 0.65 → 0.70. NOTE: the tier4_band→tier5 lane
+    # condition fires on vllm-sr's soft-match (~0.50), not this strict
+    # threshold, so threshold alone can't stop spurious lane firing.
+    #
+    # The structural fix is the WEIGHT (0.25 → 0.15): with weight 0.15
+    # a soft-match at 0.60 contributes only 0.09 to request_difficulty,
+    # so without other strong positive signals the score stays in
+    # tier3_band — and the lane condition `tier4_band` then fails, so
+    # the lane can't fire on borderline matches. Genuine T5 prompts
+    # (frontier strict match ≥ 0.70 + long_prompt) still clear into
+    # tier4_band and trigger the lane.
     threshold: 0.70
-    weight: 0.25
+    weight: 0.15
     aggregation_method: max
     candidates:
       # Position-taking with self-critique (replaces two paragraph-style
@@ -282,8 +304,14 @@ embedding_signals:
       - "What's the single most important risk in this plan? Pick one."
       - "Take a position on whether this technology will succeed. Defend it with specifics."
       - "Engage with the strongest objection to this argument and rebut it."
-      - "Walk this person through their decision as actual advice, not as a list of considerations."
-      - "Should this organization make this change? Recommend an action, not a framework."
+      # Replaced two discursive-shape exemplars ("Walk this person
+      # through their decision...", "Should this organization make this
+      # change?...") with sharper commit-shape archetypes. The previous
+      # phrasing was soft-matching short summarize prompts (q00102:
+      # "Summarize the main point of this sentence in fewer words: ..."
+      # → T4 via this signal).
+      - "Decide between two competing strategies and commit to one with a one-line justification."
+      - "Make a deployment call: ship now or wait two weeks. Pick one and defend it."
 
 # ═════════════════════════════════════════════════════════════════════════
 # Structure signals — mechanical / regex properties of the prompt
