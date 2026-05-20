@@ -281,6 +281,30 @@ def _is_https(base_url: str) -> bool:
     return base_url.lower().startswith("https://")
 
 
+def _apply_api_key(ref: dict, cfg: dict) -> None:
+    """Inline the resolved API key value into the backend ref, so the
+    router service doesn't need TIER{N}_{i}_API_KEY env vars propagated
+    into its docker container (which `vllm-sr serve`'s compose template
+    doesn't do by default).
+
+    Resolution order:
+      • `cfg.api_key_env` names an env var with a non-empty value →
+        write `ref.api_key = <value>` (router reads from config).
+      • `cfg.api_key_env` is set but the value is empty/missing → keep
+        `ref.api_key_env = <name>` so the router 401s with a clear
+        "no key" error rather than silently authing with nothing.
+      • No `api_key_env` at all (local HTTP backend) → no-op.
+    """
+    name = cfg.get("api_key_env")
+    if not name:
+        return
+    value = os.environ.get(name, "").strip()
+    if value:
+        ref["api_key"] = value
+    else:
+        ref["api_key_env"] = name
+
+
 def _emit_backend_ref_oai(cfg: dict) -> dict:
     """HTTP localhost OAI-compatible backend (e.g. vLLM-served local model).
 
@@ -298,8 +322,7 @@ def _emit_backend_ref_oai(cfg: dict) -> dict:
         "protocol": "http",
         "weight": 100,
     }
-    if "api_key_env" in cfg and cfg["api_key_env"]:
-        ref["api_key_env"] = cfg["api_key_env"]
+    _apply_api_key(ref, cfg)
     return ref
 
 
@@ -313,8 +336,7 @@ def _emit_backend_ref_anthropic(cfg: dict) -> dict:
         "provider": "anthropic",
         "weight": 100,
     }
-    if "api_key_env" in cfg and cfg["api_key_env"]:
-        ref["api_key_env"] = cfg["api_key_env"]
+    _apply_api_key(ref, cfg)
     return ref
 
 
@@ -322,7 +344,7 @@ def _emit_backend_ref_openai(cfg: dict) -> dict:
     """HTTPS OpenAI-compatible vendor backend (api.openai.com, OpenRouter,
     Fireworks, etc.). Mirrors the upstream canonical config.yaml shape:
     `provider: openai`, `base_url:` (with scheme), `auth_header` +
-    `auth_prefix` for Bearer auth, key sourced via `api_key_env`.
+    `auth_prefix` for Bearer auth, key resolved inline from env at build.
     """
     base = cfg["base_url"].rstrip("/")
     ref: dict[str, Any] = {
@@ -333,8 +355,7 @@ def _emit_backend_ref_openai(cfg: dict) -> dict:
         "auth_prefix": "Bearer",
         "weight": 100,
     }
-    if "api_key_env" in cfg and cfg["api_key_env"]:
-        ref["api_key_env"] = cfg["api_key_env"]
+    _apply_api_key(ref, cfg)
     return ref
 
 

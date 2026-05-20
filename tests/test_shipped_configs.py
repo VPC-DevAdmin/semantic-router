@@ -83,6 +83,49 @@ def test_localhost_backend_url_translated_to_host_docker_internal(monkeypatch) -
     assert "host.docker.internal" not in ref_for("tier3")
 
 
+def test_api_key_inlined_at_build_time(monkeypatch) -> None:
+    """The API key value (not just the env-var name) must be inlined into
+    the compiled router-config.yaml. `vllm-sr serve`'s compose template
+    does NOT propagate `TIER{N}_{i}_API_KEY` env vars into the router
+    container, so an `api_key_env: TIER3_1_API_KEY` ref resolves to an
+    empty value there and Envoy 401s. Resolve-and-inline at build time
+    fixes that — the router reads the literal key from its config."""
+    monkeypatch.setenv("TIER3_1_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("TIER3_1_MODEL", "gpt-5-mini")
+    monkeypatch.setenv("TIER3_1_API_KEY", "sk-build-time-resolved")
+
+    from benchmark.build_router_config import build
+    cfg = build(
+        exemplars_path=ROOT / "config" / "router-exemplars.yaml",
+        backends_path=ROOT / "config" / "router-backends.yaml",
+        eval_set_path=None,
+    )
+    t3 = next(m for m in cfg["providers"]["models"] if m["name"] == "tier3")
+    ref = t3["backend_refs"][0]
+    # The literal value, not the env-var name, is what the router reads.
+    assert ref["api_key"] == "sk-build-time-resolved"
+    assert "api_key_env" not in ref
+
+
+def test_api_key_falls_back_to_env_name_when_unset(monkeypatch) -> None:
+    """If the env var named by `api_key_env` is unset/empty at build
+    time, keep `api_key_env: <NAME>` in the ref. The router will 401
+    with a clear pointer at the missing variable instead of silently
+    using an empty key."""
+    monkeypatch.delenv("TIER3_1_API_KEY", raising=False)
+
+    from benchmark.build_router_config import _apply_api_key
+    ref: dict = {}
+    _apply_api_key(ref, {"api_key_env": "TIER3_1_API_KEY"})
+    assert ref == {"api_key_env": "TIER3_1_API_KEY"}
+    assert "api_key" not in ref
+
+    # No api_key_env at all (local HTTP) is a no-op.
+    ref2: dict = {}
+    _apply_api_key(ref2, {})
+    assert ref2 == {}
+
+
 def test_translate_host_unit() -> None:
     """Direct test of the URL rewrite — covers edge cases without
     going through the full router-config build."""
@@ -119,7 +162,11 @@ def test_openai_https_backend_emits_provider_openai(monkeypatch, tmp_path) -> No
     assert ref["provider"] == "openai"
     assert ref["auth_header"] == "Authorization"
     assert ref["auth_prefix"] == "Bearer"
-    assert ref["api_key_env"] == "TIER3_1_API_KEY"
+    # Key is resolved at build time and inlined as `api_key`,
+    # so the router service reads it from the config (its docker
+    # container doesn't have TIER{N}_{i}_API_KEY env vars).
+    assert ref["api_key"] == "sk-test" or ref["api_key"] == "AIza-test"
+    assert "api_key_env" not in ref
     # Should NOT carry the localhost-style fields.
     assert "endpoint" not in ref
     assert "protocol" not in ref
@@ -148,7 +195,11 @@ def test_google_oai_compat_backend_emits_provider_openai(monkeypatch) -> None:
     assert ref["provider"] == "openai"
     assert ref["auth_header"] == "Authorization"
     assert ref["auth_prefix"] == "Bearer"
-    assert ref["api_key_env"] == "TIER3_1_API_KEY"
+    # Key is resolved at build time and inlined as `api_key`,
+    # so the router service reads it from the config (its docker
+    # container doesn't have TIER{N}_{i}_API_KEY env vars).
+    assert ref["api_key"] == "sk-test" or ref["api_key"] == "AIza-test"
+    assert "api_key_env" not in ref
 
 
 def test_anthropic_backend_still_takes_anthropic_path(monkeypatch) -> None:
