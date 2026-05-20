@@ -144,12 +144,13 @@ complexity_signals:
         - "Maximize a constrained function via Lagrange multipliers."
     easy:
       candidates:
-        # Factual lookups — purposely NON-math. The contrastive
-        # classifier compares hard vs easy in embedding space; any
-        # math-flavored easy exemplar (e.g. "What is 15 plus 27?")
-        # semantically anchors proof/derivation prompts toward easy
-        # via shared math vocabulary, even though they're rigorous.
-        # That was the q00640/q00659/q00666 misroute pattern.
+        # Factual lookups — non-math kept SEPARATE from arithmetic
+        # below. Earlier we stripped ALL math from easy because
+        # bank-wide math exemplars ("What is the square root of 144?")
+        # were semantically anchoring rigorous proof prompts toward
+        # easy. Re-adding only TIGHT single-digit arithmetic — those
+        # are unambiguous T1 and semantically distant from proof
+        # archetypes via embedding cluster separation.
         - "Which artist painted the Sistine Chapel ceiling?"
         - "What is the chemical symbol for sodium?"
         - "Who wrote 'The Great Gatsby'?"
@@ -163,6 +164,15 @@ complexity_signals:
         - "What is a peninsula?"
         - "What does the acronym HTML stand for?"
         - "How do you say 'thank you' in French?"
+        # Trivial single-digit arithmetic. Without these, prompts like
+        # "What is 9 multiplied by 7?" or "What is 100 divided by 4?"
+        # have NO easy anchor and start matching the proof archetypes
+        # in :hard (round-4 misroute pattern: 10 trivial-arithmetic
+        # queries promoted to T4).
+        - "What is 7 plus 4?"
+        - "What is 12 divided by 3?"
+        - "What is half of 20?"
+        - "What is 6 times 5?"
 
 # ═════════════════════════════════════════════════════════════════════════
 # Embedding signals — continuous semantic similarity
@@ -202,6 +212,14 @@ embedding_signals:
       - "What is the official language of Brazil?"
       - "Name the deepest ocean on Earth."
       - "What does the acronym DNA stand for?"
+      # Tight single-digit arithmetic. Same logic as the easy-bank
+      # additions above: detracts "What is 9 × 7?"-shape prompts back
+      # to T1 without re-introducing math-vocabulary contamination
+      # that would pull rigorous proof prompts toward this detractor.
+      - "What is 7 plus 4?"
+      - "What is 12 divided by 3?"
+      - "What is half of 20?"
+      - "What is 6 times 5?"
 
   # ─────────────────────────────────────────────────────────────────────
   # MODERATE COMPLEXITY — middle-tier promoter
@@ -234,6 +252,15 @@ embedding_signals:
       - "Walk me through how to diagnose an event-driven Node.js backend with a slow memory leak under steady-state load."
       - "Explain what 'eventual consistency' actually means at the application level, with the operational implications that matter to developers."
       - "Walk through how a confusion matrix is computed for a multi-class classifier, including precision, recall, and F1 per class."
+      # Quantitative reasoning — probability, statistics, simple
+      # business arithmetic, percentage analysis. Captures the T3-grade
+      # quantitative-explanation archetypes that the prior bank missed
+      # (probability problems, hypothesis tests, business break-even,
+      # percentage decomposition).
+      - "Solve a probability problem involving combinatorics and conditional events over a finite sample space."
+      - "Run a hypothesis test on whether a sample proportion differs significantly from a stated baseline."
+      - "Compute a business break-even point given fixed costs, variable costs, and gross margin."
+      - "Analyze how a stated percentage shift in inputs propagates through a multi-component budget or scoring formula."
 
   # ─────────────────────────────────────────────────────────────────────
   # FRONTIER SYNTHESIS — promoter (positive weight)
@@ -282,6 +309,17 @@ embedding_signals:
       - "Diagnose what's actually happening at a 400-person scaleup that has just lost three senior engineers in two months. Leadership disagrees on cause. Engage with this as organizational analysis with specific signals to trust, not as a strategy framework."
       # Constructive ethical framework (not synthesis)
       - "Construct an original ethical framework that takes seriously both the effective-altruist and the communitarian critiques rather than synthesizing them. Test your frame against the canonical thought experiments each tradition has used."
+      # Long-form generative writing under structural constraints —
+      # sonnet form, pastiche of named author, sustained-voice dialogue.
+      # Distinct from "summarize this paragraph" by virtue of GENERATING
+      # content under explicit form/length/voice constraints rather than
+      # condensing existing text. Restores T5 capability for q00709/
+      # q00710/q00712-shape prompts without re-introducing the round-2
+      # paragraph-analysis match (those exemplars were "Write a literary
+      # essay analyzing ..." which semantically resembled summarize).
+      - "Write a sonnet in strict Shakespearean form on a specified topic, sustaining iambic pentameter and the volta turn at line nine."
+      - "Write a short story of approximately 400 words in the style of a named author, sustaining their characteristic voice and structural mannerisms throughout."
+      - "Write an extended dialogue between two characters in a high-stakes emotional situation, sustaining distinct voices across roughly 400 words without exposition or stage direction."
 
   # ─────────────────────────────────────────────────────────────────────
   # ARGUMENTATIVE CONSTRUCTION — judgment-and-commitment T4 catcher
