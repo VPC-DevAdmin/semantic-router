@@ -92,7 +92,17 @@ class OAIClient:
             "temperature": temperature,
         }
         if max_tokens is not None:
-            body["max_tokens"] = max_tokens
+            # OpenAI's GPT-5 / o-series reasoning models require
+            # `max_completion_tokens` instead of `max_tokens` (and
+            # reject the latter with HTTP 400). Older OpenAI models
+            # accept either, so it's safe to always use the new name
+            # against api.openai.com. Other providers still use
+            # `max_tokens` (Google's OAI-compat rejects unknown fields,
+            # so we can't just send both).
+            if "api.openai.com" in (self.endpoint or ""):
+                body["max_completion_tokens"] = max_tokens
+            else:
+                body["max_tokens"] = max_tokens
         if extra:
             body.update(extra)
 

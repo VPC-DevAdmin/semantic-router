@@ -453,7 +453,7 @@ async def test_run_smoke_probes_every_non_top_tier_model(monkeypatch) -> None:
     # Top tier not probed.
     assert {n for n, _ in seen} == {"t1a", "t1b", "t3a", "t3b"}
     # Tiny budget per probe (the contract).
-    assert all(tok == 16 for _, tok in seen)
+    assert all(tok == 64 for _, tok in seen)
     # Progress line names the model + provider.
     joined = "\n".join(lines)
     assert "t1a (P0)" in joined and " OK " in joined

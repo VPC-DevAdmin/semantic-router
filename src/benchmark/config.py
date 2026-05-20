@@ -383,8 +383,18 @@ def _build_tier_model(tier: TierConfig, i: int) -> TierModel | None:
         if g("MAX_TOKENS") else tier.max_tokens
     )
 
+    # The tier YAML's backend.extra_body is for the model the YAML's
+    # endpoint serves (typically a local Qwen3 vLLM container with its
+    # chat_template_kwargs + sampler knobs). It must NOT leak onto
+    # vendor slots in the same tier — OpenAI / Google reject unknown
+    # request-body fields. Only inherit when this slot is hitting the
+    # same URL the YAML configured.
     yaml_extra = getattr(tier.backend, "extra_body", None)
-    extra = dict(yaml_extra) if isinstance(yaml_extra, dict) else None
+    extra = (
+        dict(yaml_extra)
+        if url == tier.endpoint.url and isinstance(yaml_extra, dict)
+        else None
+    )
     if g("THINKING"):
         extra = _with_thinking(extra, _bool_env(_slot_var(n, i, "THINKING"), g("THINKING")))
 

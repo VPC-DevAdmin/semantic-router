@@ -126,9 +126,11 @@ class SmokeReport:
 
 
 # Smoke probe prompt + budget. Tiny enough that vendor cost is negligible,
-# benign enough that no safety filter will refuse to answer.
+# benign enough that no safety filter will refuse, but big enough that
+# reasoning models (Gemini 2.5+, OpenAI o-series, GPT-5) which spend
+# tokens on hidden reasoning still have headroom to emit visible output.
 _SMOKE_PROMPT = "Reply with the single word: pong."
-_SMOKE_MAX_TOKENS = 16
+_SMOKE_MAX_TOKENS = 64
 
 
 async def run_smoke(

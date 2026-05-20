@@ -69,10 +69,46 @@ async def test_text_only_request_shape(monkeypatch):
     assert captured["body"]["model"] == "m1"
     assert captured["body"]["temperature"] == 0.0
     assert captured["body"]["max_tokens"] == 128
+    # Non-OpenAI endpoints use `max_tokens`, not `max_completion_tokens`.
+    assert "max_completion_tokens" not in captured["body"]
     assert captured["body"]["messages"] == [{"role": "user", "content": "hi"}]
     assert result.content == "hello world"
     assert result.prompt_tokens == 7
     assert result.completion_tokens == 2
+
+
+@pytest.mark.asyncio
+async def test_openai_endpoint_uses_max_completion_tokens(monkeypatch):
+    """OpenAI's GPT-5 / o-series reject `max_tokens`; we must send
+    `max_completion_tokens` instead for any api.openai.com endpoint."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-5",
+                "choices": [{"message": {"content": "pong"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    real_init = httpx.AsyncClient.__init__
+
+    def patched_init(self, *args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", patched_init)
+
+    client = OAIClient(
+        endpoint="https://api.openai.com/v1",
+        model_id="gpt-5", api_key="sk-test", timeout_s=5.0,
+    )
+    await client.chat("ping", max_tokens=16)
+    assert captured["body"]["max_completion_tokens"] == 16
+    assert "max_tokens" not in captured["body"]
 
 
 def _patch_transport(monkeypatch, transport: httpx.MockTransport) -> None:
@@ -376,6 +412,34 @@ def test_resolved_models_synthesizes_slot1_when_models_empty() -> None:
     assert (m.slot, m.served_model_name, m.provider, m.timeout_s) == (
         1, "claude-opus-x", "Anthropic", 120,
     )
+
+
+def test_yaml_extra_body_does_not_leak_to_vendor_slots(monkeypatch) -> None:
+    """The tier YAML's backend.extra_body (Qwen3 chat_template_kwargs +
+    anti-loop sampler) must NOT inherit onto a vendor slot whose URL
+    differs from the YAML's — OpenAI / Google reject unknown fields."""
+    _clear_tier_env(monkeypatch, 1)
+    # Slot 1 hits the YAML's URL → inherits the Qwen3 extras.
+    monkeypatch.setenv("TIER1_1_URL", "http://localhost:8001/v1")
+    monkeypatch.setenv("TIER1_1_MODEL", "Qwen3-1.7B")
+    # Slot 2 hits OpenAI → must NOT inherit the Qwen3 extras.
+    monkeypatch.setenv("TIER1_2_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("TIER1_2_MODEL", "gpt-4o-mini")
+
+    t = _tier(1, extra_body={
+        "chat_template_kwargs": {"enable_thinking": False},
+        "top_k": 20,
+    })
+    # Make the YAML's endpoint.url match slot 1's URL.
+    t.endpoint.url = "http://localhost:8001/v1"
+    apply_tier_env_overrides(t)
+
+    s1, s2 = t.models
+    assert s1.extra_body == {
+        "chat_template_kwargs": {"enable_thinking": False},
+        "top_k": 20,
+    }
+    assert s2.extra_body is None  # vendor slot clean
 
 
 def test_env_indexed_slots_with_providers(monkeypatch) -> None:
