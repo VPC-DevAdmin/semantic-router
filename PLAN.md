@@ -42,11 +42,10 @@ tier label the router emits, `endpoint` is the actual backend.
 - `prompt` — the only thing the router sees
 - one or more reference answers, in either form (both may coexist):
   - `expected_answer: "..."` — legacy single; treated as the `upstream`
-    gold (model_id = `"upstream"`, source = `"upstream"`, provider = null).
-  - `expected_answers: [{ answer, source, model?, provider? }, …]` —
-    multiple golds. `source` (default `"upstream"`) is the provenance
-    label; `model` (default = `source`) is the per-query unique key
-    that becomes `gold_answers.model_id` and `demo.json`'s `model`;
+    gold (model_id = `"upstream"`, provider = null).
+  - `expected_answers: [{ answer, model, provider? }, …]` — multiple
+    golds. `model` is required and is the per-query unique key that
+    becomes `gold_answers.model_id` and `demo.json`'s `model`;
     `provider` is an optional label (Anthropic / OpenAI / Google).
     `model_id` must be unique within the query.
 - `expected_min_tier` — the lowest tier we believe should answer this well
@@ -159,10 +158,10 @@ shape — a tier can front several provider models and they're all called):
                          "latency_ms": 42,   // router decide time, per query
                          "raw": { ... } },
 
-  // Per-provider gold. source ∈ upstream | update-gold | import:<file>.
+  // Per-provider gold (from queries.json + make update-gold + make import-answers).
   "expected_answers": [
-    { "source": "upstream",    "provider": null,        "model": "upstream",        "answer": "Paris." },
-    { "source": "update-gold", "provider": "Anthropic", "model": "claude-opus-4-7", "answer": "Paris, ..." }
+    { "provider": null,        "model": "upstream",        "answer": "Paris." },
+    { "provider": "Anthropic", "model": "claude-opus-4-7", "answer": "Paris, ..." }
   ],
 
   // EVERY model the routed tier fronts (one per provider configured).
@@ -264,15 +263,17 @@ pass1_results    (run_id, query_id PK, router_selected_tier,
 tier_answers     (run_id, query_id, tier_level, model_id PK, model_slot,
                   provider, tier_name, response_text, prompt_tokens,
                   completion_tokens, latency_ms, status, ...)
-gold_answers     (query_id, model_id PK, provider, answer, source,
+gold_answers     (query_id, model_id PK, provider, answer,
                   generated_at)   -- per-provider expected answers
 ```
 
 `tier_answers` PK is `(run_id, query_id, tier_level, model_id)`: the
 router picks one tier and `make answers` calls **every model that tier
 fronts**, so a routed query produces one row per model. `gold_answers`
-holds the per-provider expected set — `source="upstream"` seeded from
-queries.json at `make load`, plus `update-gold` / `import:<file>` rows.
+holds the per-provider expected set — seeded from queries.json at
+`make load` (one row per declared answer; the legacy `expected_answer`
+lands as the `upstream` row), with additional rows from `make update-gold`
+and `make import-answers`.
 `Query.gold_answer` is kept as a back-compat single-value mirror of the
 slot-0 / upstream gold. **Schema changed for multi-model: a fresh DB or
 `make clean-results` + reseed is required (no migration script).**

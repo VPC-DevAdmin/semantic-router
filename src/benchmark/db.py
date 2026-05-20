@@ -114,14 +114,11 @@ class TierAnswer(Base):
 class GoldAnswer(Base):
     """Per-provider expected answer for a query (the gold set).
 
-    The top tier can be served by several models, so a query may have
-    more than one 'expected answer'. Sources:
-      - 'upstream'      : queries.json expected_answer (seeded at load)
-      - 'update-gold'   : a fresh top-tier model call (make update-gold)
-      - 'import:<file>' : an externally-generated answer (make import-answers)
-
     Keyed by (query_id, model_id) so each provider's gold is independent.
-    `make export` emits these as the query's `expected_answers[]`.
+    Populated by `make load` (from queries.json), `make update-gold`
+    (top-tier model calls), and `make import-answers` for externally
+    produced answers. `make export` emits these as the query's
+    `expected_answers[]`.
     """
 
     __tablename__ = "gold_answers"
@@ -132,7 +129,6 @@ class GoldAnswer(Base):
     model_id: Mapped[str] = mapped_column(String, primary_key=True)
     provider: Mapped[str | None] = mapped_column(String)
     answer: Mapped[str] = mapped_column(Text, nullable=False)
-    source: Mapped[str] = mapped_column(String, nullable=False)
     generated_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 

@@ -51,7 +51,7 @@ def _gold_marker(primary: ExpectedAnswer | None) -> str | None:
         return None
     if primary.model_id == UPSTREAM_GOLD_MODEL:
         return GOLD_SOURCE_MARKER
-    return f"{GOLD_SOURCE_MARKER} :: {primary.source}"
+    return f"{GOLD_SOURCE_MARKER} :: {primary.model_id}"
 
 
 def _existing_golds(session, qid: str) -> dict[str, GoldAnswer]:
@@ -68,20 +68,17 @@ def _golds_changed(session, qid: str, golds: list[ExpectedAnswer]) -> bool:
 
     Only looks at the model_ids the file declares, plus the legacy
     "upstream" row (so blanking it counts as a change). Other rows
-    (update-gold / import-answers) are intentionally ignored.
+    (update-gold / import-answers, with their own model_ids) are
+    intentionally ignored.
     """
     rows = _existing_golds(session, qid)
     want = {g.model_id: g for g in golds}
     for mid, g in want.items():
         r = rows.get(mid)
-        if r is None or r.answer != g.answer or r.source != g.source \
-                or r.provider != g.provider:
+        if r is None or r.answer != g.answer or r.provider != g.provider:
             return True
-    if UPSTREAM_GOLD_MODEL not in want:
-        r = rows.get(UPSTREAM_GOLD_MODEL)
-        if r is not None and r.source == "upstream":
-            return True  # file dropped the upstream gold
-    return False
+    # file dropped the upstream gold → that's also a change
+    return UPSTREAM_GOLD_MODEL not in want and UPSTREAM_GOLD_MODEL in rows
 
 
 def _sync_query_golds(
@@ -90,9 +87,9 @@ def _sync_query_golds(
     """Upsert every declared gold into gold_answers (PK (qid, model_id)).
 
     Scoped deletion: if the file no longer declares the legacy
-    "upstream" gold, that one row is removed — but update-gold /
-    import-answers rows (different model_ids / sources) are never
-    touched.
+    "upstream" gold, that one row is removed — but rows with other
+    model_ids (the common case for update-gold / import-answers) are
+    never touched.
     """
     rows = _existing_golds(session, qid)
     want = {g.model_id: g for g in golds}
@@ -105,19 +102,15 @@ def _sync_query_golds(
                     model_id=mid,
                     provider=g.provider,
                     answer=g.answer,
-                    source=g.source,
                     generated_at=now,
                 )
             )
         else:
             r.provider = g.provider
             r.answer = g.answer
-            r.source = g.source
             r.generated_at = now
-    if UPSTREAM_GOLD_MODEL not in want:
-        r = rows.get(UPSTREAM_GOLD_MODEL)
-        if r is not None and r.source == "upstream":
-            session.delete(r)
+    if UPSTREAM_GOLD_MODEL not in want and UPSTREAM_GOLD_MODEL in rows:
+        session.delete(rows[UPSTREAM_GOLD_MODEL])
 
 
 @dataclass

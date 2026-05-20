@@ -59,7 +59,6 @@ def test_initial_insert_seeds_upstream_gold_answer(tmp_path: Path) -> None:
             .where(GoldAnswer.model_id == "upstream")
         ).scalar_one()
         assert g.answer == "4."
-        assert g.source == "upstream"
         assert g.provider is None
 
 
@@ -145,11 +144,11 @@ def test_multiple_expected_answers_seed_one_gold_row_each(tmp_path: Path) -> Non
         "expected_min_tier": 1, "specializations": ["general"],
         "expected_answers": [
             {"answer": "Paris.",
-             "source": "upstream", "provider": None, "model": "upstream"},
+             "provider": None, "model": "upstream"},
             {"answer": "Paris, the capital of France.",
-             "source": "human", "provider": None, "model": "expert-review"},
+             "provider": None, "model": "expert-review"},
             {"answer": "Paris (vendor).",
-             "source": "vendor-export", "provider": "Anthropic",
+             "provider": "Anthropic",
              "model": "claude-opus-4-7"},
         ],
     }]
@@ -163,30 +162,22 @@ def test_multiple_expected_answers_seed_one_gold_row_each(tmp_path: Path) -> Non
         ).scalars().all()
     by_mid = {r.model_id: r for r in rows}
     assert set(by_mid) == {"upstream", "expert-review", "claude-opus-4-7"}
-    assert by_mid["upstream"].source == "upstream"
-    assert by_mid["expert-review"].source == "human"
     assert by_mid["claude-opus-4-7"].provider == "Anthropic"
     assert by_mid["claude-opus-4-7"].answer == "Paris (vendor)."
 
 
-def test_model_defaults_to_source_when_omitted(tmp_path: Path) -> None:
+def test_model_is_required_on_expected_answers_entry(tmp_path: Path) -> None:
+    """An entry in expected_answers without `model` is rejected at load."""
     queries = [{
         "id": "m002", "prompt": "p", "expected_min_tier": 1,
         "specializations": ["general"],
         "expected_answers": [
-            {"answer": "A", "source": "human"},          # model → "human"
-            {"answer": "B", "source": "vendor-export"},  # model → "vendor-export"
+            {"answer": "A"},  # no model — invalid
         ],
     }]
     db, qp = _setup(tmp_path, queries)
-    load_into_db(qp, db)
-    with session_scope(db) as s:
-        mids = {
-            r.model_id for r in s.execute(
-                select(GoldAnswer).where(GoldAnswer.query_id == "m002")
-            ).scalars()
-        }
-    assert mids == {"human", "vendor-export"}
+    with pytest.raises(Exception, match="model"):
+        load_into_db(qp, db)
 
 
 def test_legacy_and_multi_coexist(tmp_path: Path) -> None:
@@ -197,8 +188,7 @@ def test_legacy_and_multi_coexist(tmp_path: Path) -> None:
         "specializations": ["general"],
         "expected_answer": "Upstream gold.",
         "expected_answers": [
-            {"answer": "Anthropic gold.", "source": "update-gold",
-             "provider": "Anthropic", "model": "claude-opus-4-7"},
+            {"answer": "Anthropic gold.", "provider": "Anthropic", "model": "claude-opus-4-7"},
         ],
     }]
     db, qp = _setup(tmp_path, queries)
@@ -221,8 +211,8 @@ def test_duplicate_gold_model_id_rejected(tmp_path: Path) -> None:
         "id": "m004", "prompt": "p", "expected_min_tier": 1,
         "specializations": ["general"],
         "expected_answers": [
-            {"answer": "A", "source": "human", "model": "dup"},
-            {"answer": "B", "source": "vendor-export", "model": "dup"},
+            {"answer": "A", "model": "dup"},
+            {"answer": "B", "model": "dup"},
         ],
     }]
     db, qp = _setup(tmp_path, queries)
@@ -235,8 +225,8 @@ def test_reload_multi_is_noop(tmp_path: Path) -> None:
         "id": "m005", "prompt": "p", "expected_min_tier": 1,
         "specializations": ["general"],
         "expected_answers": [
-            {"answer": "A", "source": "human", "model": "h"},
-            {"answer": "B", "source": "vendor-export", "model": "v",
+            {"answer": "A", "model": "h"},
+            {"answer": "B", "model": "v",
              "provider": "Anthropic"},
         ],
     }]
@@ -251,7 +241,7 @@ def test_reload_edits_secondary_gold_triggers_update(tmp_path: Path) -> None:
         "id": "m006", "prompt": "p", "expected_min_tier": 1,
         "specializations": ["general"],
         "expected_answers": [
-            {"answer": "A v1", "source": "human", "model": "h"},
+            {"answer": "A v1", "model": "h"},
         ],
     }]
     db, qp = _setup(tmp_path, queries)
@@ -282,7 +272,7 @@ def test_load_does_not_clobber_update_gold_rows(tmp_path: Path) -> None:
     with session_scope(db) as s:
         s.add(GoldAnswer(
             query_id="m007", model_id="gpt-5", provider="OpenAI",
-            answer="OpenAI gold.", source="update-gold",
+            answer="OpenAI gold.",
             generated_at=datetime.now(UTC),
         ))
     # Re-load (no-op for the file content).

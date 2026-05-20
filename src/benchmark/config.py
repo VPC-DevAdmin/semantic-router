@@ -199,34 +199,31 @@ class Attachment(BaseModel):
 
 
 class ExpectedAnswer(BaseModel):
-    """One gold/reference answer for a query, with provenance.
+    """One gold/reference answer for a query.
 
     A query can carry several (e.g. an upstream reference plus a
     human-reviewed one, or one per provider). Each becomes a row in the
     `gold_answers` table and a `demo.json` `expected_answers[]` entry.
 
       answer    the reference text (required)
-      source    provenance label (default "upstream"); free-form, e.g.
-                "upstream", "human", "vendor-export"
       model     per-query unique key (→ gold_answers.model_id and
-                demo.json `model`). Defaults to `source` when omitted.
+                demo.json `model`) — required
       provider  optional label (Anthropic / OpenAI / Google) → demo.json
     """
     answer: str
-    source: str = "upstream"
-    model: str | None = None
+    model: str
     provider: str | None = None
 
     @property
     def model_id(self) -> str:
-        return self.model or self.source
+        return self.model
 
 
 class QuerySpec(BaseModel):
     id: str
     prompt: str
     # Legacy single gold (kept working): equivalent to one
-    # expected_answers entry with source="upstream", model="upstream".
+    # expected_answers entry with model="upstream".
     expected_answer: str | None = None
     # New: multiple golds, each with source/provider/model.
     expected_answers: list[ExpectedAnswer] = Field(default_factory=list)
@@ -265,11 +262,7 @@ class QuerySpec(BaseModel):
         out: list[ExpectedAnswer] = []
         if self.expected_answer:
             out.append(
-                ExpectedAnswer(
-                    answer=self.expected_answer,
-                    source="upstream",
-                    model="upstream",
-                )
+                ExpectedAnswer(answer=self.expected_answer, model="upstream")
             )
         out.extend(self.expected_answers)
         return out

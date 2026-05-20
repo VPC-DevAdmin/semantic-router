@@ -90,7 +90,7 @@ def test_export_basic_multimodel_shape(tmp_path: Path) -> None:
 
     # Expected answers: the upstream gold seeded at load.
     assert q1["expected_answers"] == [
-        {"source": "upstream", "provider": None, "model": "upstream",
+        {"provider": None, "model": "upstream",
          "answer": "Paris."},
     ]
 
@@ -153,18 +153,18 @@ def test_export_per_provider_expected_answers(tmp_path: Path) -> None:
     with session_scope(db) as s:
         s.add(GoldAnswer(
             query_id="q1", model_id="claude-opus-4-7", provider="Anthropic",
-            answer="Paris, the capital of France.", source="update-gold",
+            answer="Paris, the capital of France.",
             generated_at=datetime.now(UTC),
         ))
 
     out = tmp_path / "demo.json"
     export_demo_json(db, rid, out)
     q1 = next(e for e in json.loads(out.read_text()) if e["id"] == "q1")
-    # Sorted by (source, model): update-gold before upstream.
+    # Sorted by model_id: "claude-opus-4-7" before "upstream".
     assert q1["expected_answers"] == [
-        {"source": "update-gold", "provider": "Anthropic",
+        {"provider": "Anthropic",
          "model": "claude-opus-4-7", "answer": "Paris, the capital of France."},
-        {"source": "upstream", "provider": None, "model": "upstream",
+        {"provider": None, "model": "upstream",
          "answer": "Paris."},
     ]
 

@@ -61,7 +61,6 @@ async def test_update_gold_writes_per_model_gold(tmp_path: Path, monkeypatch) ->
             .where(GoldAnswer.model_id == "tier5")
         ).scalar_one()
         assert g.answer == "FRESH GOLD :: what is 2+2"
-        assert g.source == ug.REGEN_GOLD_SOURCE
         # The upstream gold row is still there, untouched.
         ups = s.execute(
             select(GoldAnswer)

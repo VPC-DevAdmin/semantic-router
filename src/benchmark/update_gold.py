@@ -3,8 +3,8 @@
 Backs `make update-gold`. The top tier can be fronted by several models
 (Anthropic Opus, OpenAI GPT-5, Google Gemini Pro…). This calls EVERY
 top-tier model for each requested query and upserts one `gold_answers`
-row per (query, model) with source='update-gold' — so the demo's
-`expected_answers[]` shows a gold per provider.
+row per (query, model) — so the demo's `expected_answers[]` shows a
+gold per provider.
 
 Separate from `make answers`:
   • `make answers` collects the routed tier's answers (tier_answers).
@@ -13,8 +13,7 @@ Separate from `make answers`:
     for back-compat).
 
 Destructive (overwrites existing per-model gold), so the CLI requires
-explicit scope. `source='update-gold'` distinguishes these from the
-upstream-import rows seeded by load.py.
+explicit scope.
 """
 from __future__ import annotations
 
@@ -29,7 +28,6 @@ from .config import ModelsConfig, TierConfig
 from .db import GoldAnswer, Query, session_scope
 from .tiers import client_from_model
 
-REGEN_GOLD_SOURCE = "update-gold"
 # Written to Query.gold_model (back-compat single-gold field) so a
 # regenerated gold is distinguishable from the upstream-import marker.
 REGEN_GOLD_MARKER = "regenerated via update-gold (top tier)"
@@ -79,14 +77,12 @@ def _upsert_gold(session, qid: str, model_id: str, provider, answer: str, now) -
                 model_id=model_id,
                 provider=provider,
                 answer=answer,
-                source=REGEN_GOLD_SOURCE,
                 generated_at=now,
             )
         )
     else:
         row.provider = provider
         row.answer = answer
-        row.source = REGEN_GOLD_SOURCE
         row.generated_at = now
 
 

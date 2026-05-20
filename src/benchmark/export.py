@@ -13,10 +13,11 @@ external judging, slide plots) read. Multi-model shape:
     "routed_tier": 3 | null,
     "routing_metadata": {...} | null,
 
-    # Per-provider expected answers (the gold set). Sources:
-    #   upstream | update-gold | import:<file>
+    # Per-provider expected answers (the gold set). Populated by
+    # `make load` (from queries.json), `make update-gold` (top-tier
+    # model calls), and `make import-answers`.
     "expected_answers": [
-      {"source": "upstream", "provider": null, "model": "upstream", "answer": "..."},
+      {"provider": null, "model": "upstream", "answer": "..."},
       ...
     ],
 
@@ -129,12 +130,11 @@ def _build_query_entry(
 
     expected_answers = [
         {
-            "source": g.source,
             "provider": g.provider,
             "model": g.model_id,
             "answer": g.answer,
         }
-        for g in sorted(gold_answers, key=lambda g: (g.source, g.model_id))
+        for g in sorted(gold_answers, key=lambda g: g.model_id)
     ]
 
     return {
