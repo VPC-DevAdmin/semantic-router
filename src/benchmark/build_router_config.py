@@ -809,7 +809,7 @@ def build(
 ) -> dict:
     """Read both inputs, validate, emit a vllm-sr v0.3 config dict.
 
-    `mock_endpoint` (e.g. `host.docker.internal:8811/v1`) overrides every
+    `mock_endpoint` (e.g. `host.docker.internal:18811/v1`) overrides every
     backend with the local OAI mock.
     """
     ex = yaml.safe_load(exemplars_path.read_text())
@@ -935,7 +935,7 @@ def main() -> None:
         help=(
             "Route every tier to this host:port[/path] instead of the configured "
             "backends. From inside the router container, use e.g. "
-            "host.docker.internal:8811/v1. Pipeline-verification only."
+            "host.docker.internal:18811/v1. Pipeline-verification only."
         ),
     )
     args = p.parse_args()

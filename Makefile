@@ -42,7 +42,7 @@ help:
 	@echo "              Used for pipeline verification before real backends are stood up."
 	@echo ""
 	@echo "Backends:"
-	@echo "  mock-bg                        start the local OAI mock (port \$$MOCK_PORT, default 8811)"
+	@echo "  mock-bg                        start the local OAI mock (port \$$MOCK_PORT, default 18811)"
 	@echo "  mock-stop                      stop the local OAI mock"
 	@echo "  start_LLM                      launch local-CPU tier backends per config/tiers/*.yaml"
 	@echo "  stop_LLM                       stop local-CPU tier backends"
@@ -116,7 +116,10 @@ ROUTER_CONFIG := config/router-config.yaml
 # Mock URLs are derived from MOCK_PORT (defined in the mock section below).
 # Two forms because the router (inside Docker) and the harness (on the host)
 # reach the same mock at different addresses.
-MOCK_PORT ?= 8811
+# Default well outside the typical 8000-8099 range (vllm 8000-8003,
+# vllm-sr dashboard 8700, envoy 8899). Override on the command line
+# (`make route MOCK_PORT=N`) if 18811 is taken on your machine.
+MOCK_PORT ?= 18811
 MOCK_FROM_ROUTER := host.docker.internal:$(MOCK_PORT)/v1
 MOCK_FROM_HOST   := http://localhost:$(MOCK_PORT)/v1
 

@@ -243,7 +243,7 @@ def answers_cmd(
     mock_endpoint: str | None = typer.Option(
         None, "--mock-endpoint",
         help=(
-            "Override every tier's endpoint (e.g. http://localhost:8811/v1). "
+            "Override every tier's endpoint (e.g. http://localhost:18811/v1). "
             "Used for pipeline verification against the local OAI mock."
         ),
     ),

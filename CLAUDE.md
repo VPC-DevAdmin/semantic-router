@@ -21,7 +21,7 @@ make answers            # for each routed query: call EVERY model the picked tie
 make export             # emit demo.json
 make start_LLM          # YAML-driven launch of local-CPU tier backends (T2 docker procedure today)
 make stop_LLM           # tear down local-CPU tier backends
-make mock-bg            # local OAI mock on :8811 for pipeline validation
+make mock-bg            # local OAI mock on :18811 for pipeline validation
 make mock-stop          # stop the mock
 ```
 
@@ -36,7 +36,7 @@ need a real completion. The vllm-sr router is an Envoy proxy that
 always forwards upstream, so without a mock every routed query would
 consume a token AND surface vendor quirks (max_tokens vs
 max_completion_tokens, temperature=0 on gpt-5, Anthropic adapter
-body-rewrite, etc.). The mock (`tools/oai_mock.py`, port 8811) ACKs
+body-rewrite, etc.). The mock (`tools/oai_mock.py`, port 18811) ACKs
 with a tier-tagged canned reply. `make route` depends on `mock-bg` so
 the mock auto-starts.
 

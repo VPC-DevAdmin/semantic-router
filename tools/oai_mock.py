@@ -18,7 +18,7 @@ Stdlib only — no FastAPI dep, no uvicorn. ThreadingHTTPServer is plenty
 for a 110-query benchmark.
 
 Run:
-    python tools/oai_mock.py --port 8811
+    python tools/oai_mock.py --port 18811
 """
 from __future__ import annotations
 
@@ -125,14 +125,28 @@ class MockHandler(BaseHTTPRequestHandler):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8811)
+    # Default well outside the typical 8000-8099 LLM/dashboard range
+    # (vllm 8000-8003, vllm-sr dashboard 8700, envoy 8899). Override
+    # with `make ... MOCK_PORT=N` if 18811 is also taken.
+    parser.add_argument("--port", type=int, default=18811)
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    server = ThreadingHTTPServer((args.host, args.port), MockHandler)
+    try:
+        server = ThreadingHTTPServer((args.host, args.port), MockHandler)
+    except OSError as e:
+        # Most often EADDRINUSE (errno 98). Give a clear next step
+        # instead of a bare stack trace.
+        log.error(
+            "failed to bind %s:%d (%s). Something else is on that port "
+            "— run with `make mock-bg MOCK_PORT=N` (and the same for "
+            "`make route`/`make answers MOCK=true`) to pick a free one.",
+            args.host, args.port, e,
+        )
+        raise SystemExit(1) from e
     log.info("oai-mock listening on %s:%d", args.host, args.port)
     try:
         server.serve_forever()
