@@ -58,6 +58,17 @@ try:
 except ImportError:
     sys.exit("PyYAML required: pip install pyyaml")
 
+# Load .env BEFORE _apply_backend_env_overrides runs. Without this, running
+# the build as `python -m benchmark.build_router_config` (the way the
+# Makefile invokes it) sees no TIER{N}_1_* vars and the YAML placeholders
+# (`model: tier1`, etc.) flow verbatim into the compiled router-config —
+# the router then forwards `model: "tier1"` upstream and OpenAI/Anthropic
+# 404 with "model not found". The CLI loads dotenv too; this keeps the
+# two entry points in sync.
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(override=False)
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # Defaults

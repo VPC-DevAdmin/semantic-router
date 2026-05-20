@@ -5,6 +5,7 @@ This test catches spec-name drift between code and the shipped configs.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from benchmark.config import (
@@ -81,6 +82,44 @@ def test_localhost_backend_url_translated_to_host_docker_internal(monkeypatch) -
     # Vendor URL untouched.
     assert "api.openai.com" in ref_for("tier3")
     assert "host.docker.internal" not in ref_for("tier3")
+
+
+def test_build_module_loads_dotenv(tmp_path) -> None:
+    """`python -m benchmark.build_router_config` (how the Makefile invokes
+    the build) must load .env, otherwise `_apply_backend_env_overrides`
+    sees no TIER{N}_1_MODEL etc. and the YAML placeholder `model: tier1`
+    flows verbatim into router-config.yaml. The router then forwards
+    `model: "tier1"` to OpenAI/Anthropic and gets a 404.
+
+    Regression for a 417/797 failure pass where every tier3+ query 404'd
+    with "The model `tier3` does not exist."
+    """
+    import subprocess
+    import sys
+
+    # Probe: a .env in cwd should be picked up at module import time. The
+    # subprocess prints the resolved var; if dotenv didn't run, the var is
+    # empty.
+    (tmp_path / ".env").write_text("BUILD_DOTENV_PROBE=loaded\n")
+    code = (
+        "import benchmark.build_router_config; "
+        "import os; "
+        "print(os.environ.get('BUILD_DOTENV_PROBE', ''))"
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith("BUILD_DOTENV_PROBE")}
+    res = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert res.stdout.strip() == "loaded", (
+        "build_router_config must call load_dotenv at import time so the "
+        "TIER{N}_1_* env overrides apply when invoked via "
+        f"`python -m benchmark.build_router_config` (got {res.stdout!r}, stderr={res.stderr!r})"
+    )
 
 
 def test_api_key_inlined_at_build_time(monkeypatch) -> None:
