@@ -454,8 +454,9 @@ async def test_run_smoke_probes_every_non_top_tier_model(monkeypatch) -> None:
     assert (report.attempted, report.ok, report.errors) == (4, 4, 0)
     # Top tier not probed.
     assert {n for n, _ in seen} == {"t1a", "t1b", "t3a", "t3b"}
-    # Tiny budget per probe (the contract).
-    assert all(tok == 64 for _, tok in seen)
+    # Tiny budget per probe (the contract). 256 covers gpt-5-nano's
+    # reasoning headroom; small enough that cost is negligible.
+    assert all(tok == 256 for _, tok in seen)
     # Progress line names the model + provider.
     joined = "\n".join(lines)
     assert "t1a (P0)" in joined and " OK " in joined
@@ -547,3 +548,65 @@ async def test_run_smoke_mock_endpoint_skips_client_from_model(monkeypatch) -> N
     report = await run_smoke(models, mock_endpoint="http://mock/v1")
     assert report.ok == 1  # only non-top "a"
     assert captured == ["http://mock/v1"]
+
+
+def test_force_disable_thinking_for_smoke_flips_when_present() -> None:
+    from benchmark.answers import _force_disable_thinking_for_smoke
+    extra = {
+        "chat_template_kwargs": {"enable_thinking": True, "other": "x"},
+        "top_k": 20,
+    }
+    out = _force_disable_thinking_for_smoke(extra)
+    assert out["chat_template_kwargs"]["enable_thinking"] is False
+    assert out["chat_template_kwargs"]["other"] == "x"   # sibling preserved
+    assert out["top_k"] == 20                              # untouched
+    # Original not mutated.
+    assert extra["chat_template_kwargs"]["enable_thinking"] is True
+
+
+def test_force_disable_thinking_for_smoke_noop_when_absent() -> None:
+    """OpenAI / Google / Anthropic slots have no chat_template_kwargs in
+    their extras. Smoke must NOT add the field — vendors reject unknown
+    body keys with HTTP 400."""
+    from benchmark.answers import _force_disable_thinking_for_smoke
+    # vendor slot — no chat_template_kwargs anywhere.
+    assert _force_disable_thinking_for_smoke({"top_p": 0.95}) == {"top_p": 0.95}
+    assert _force_disable_thinking_for_smoke(None) is None
+    # chat_template_kwargs present but no enable_thinking → also no-op
+    # (we only flip an existing key, never add).
+    same = {"chat_template_kwargs": {"other": "x"}}
+    assert _force_disable_thinking_for_smoke(same) == same
+
+
+@pytest.mark.asyncio
+async def test_run_smoke_force_disables_thinking_on_qwen_slot(monkeypatch) -> None:
+    """A local Qwen3 slot with enable_thinking=True (set by .env's
+    TIER{N}_{i}_THINKING=true) must still have it flipped to False for
+    the smoke call — preserving the rest of the extras."""
+    models = ModelsConfig(tiers=[
+        _tier(1, [TierModel(
+            slot=1, url="http://localhost:8001/v1",
+            served_model_name="Qwen3-1.7B",
+            extra_body={
+                "chat_template_kwargs": {"enable_thinking": True},
+                "top_k": 20,
+            },
+        )]),
+        _multi(5, ["opus"]),  # top tier — skipped by default
+    ])
+
+    seen_extras: list = []
+
+    class _Probe:
+        async def chat(self, prompt, *, max_tokens=None, extra=None, **_):
+            seen_extras.append(extra)
+            return ChatResult(content="pong", model="x", prompt_tokens=1,
+                              completion_tokens=1, latency_ms=1, raw={})
+
+    monkeypatch.setattr(answers_mod, "client_from_model", lambda m: _Probe())
+    await run_smoke(models)
+
+    assert len(seen_extras) == 1
+    extra = seen_extras[0]
+    assert extra["chat_template_kwargs"]["enable_thinking"] is False
+    assert extra["top_k"] == 20

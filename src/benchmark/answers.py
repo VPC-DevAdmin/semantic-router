@@ -129,8 +129,30 @@ class SmokeReport:
 # benign enough that no safety filter will refuse, but big enough that
 # reasoning models (Gemini 2.5+, OpenAI o-series, GPT-5) which spend
 # tokens on hidden reasoning still have headroom to emit visible output.
+# 256 covers gpt-5-nano comfortably; cost across a full smoke is < $0.01.
 _SMOKE_PROMPT = "Reply with the single word: pong."
-_SMOKE_MAX_TOKENS = 64
+_SMOKE_MAX_TOKENS = 256
+
+
+def _force_disable_thinking_for_smoke(extra: dict | None) -> dict | None:
+    """Flip `chat_template_kwargs.enable_thinking` to False IFF it's
+    already present in the slot's extras (i.e. this is a Qwen3-style
+    local model). Smoke is a connectivity probe; a <think> chain at
+    the probe budget would leave nothing visible.
+
+    Non-destructive: never ADDS the field to vendor slots (OpenAI /
+    Google / Anthropic reject unknown body fields). Reasoning models
+    that don't expose a "skip reasoning" knob (gpt-5-nano, gemini
+    reasoning) get budget headroom instead, via _SMOKE_MAX_TOKENS.
+    """
+    if not isinstance(extra, dict):
+        return extra
+    ctk = extra.get("chat_template_kwargs")
+    if not isinstance(ctk, dict) or "enable_thinking" not in ctk:
+        return extra
+    out = dict(extra)
+    out["chat_template_kwargs"] = {**ctk, "enable_thinking": False}
+    return out
 
 
 async def run_smoke(
@@ -197,7 +219,8 @@ async def run_smoke(
                     extra = None
                 else:
                     client = client_from_model(m)
-                    extra = m.extra_body if isinstance(m.extra_body, dict) else None
+                    extra_in = m.extra_body if isinstance(m.extra_body, dict) else None
+                    extra = _force_disable_thinking_for_smoke(extra_in)
                 result = await client.chat(
                     _SMOKE_PROMPT, max_tokens=_SMOKE_MAX_TOKENS, extra=extra,
                 )
