@@ -3,7 +3,7 @@
 Surface (one command per make target):
 
   init-db        create the SQLite schema
-  load           upsert data/queries.json into the DB (gold from `expected_answer`)
+  load           upsert data/queries.json into the DB (golds from `expected_answers[]`)
   route          for each query: send through router, capture routing decision
   answers        for each query × each tier: call the tier backend directly
   export         emit demo.json from the DB
@@ -71,7 +71,9 @@ def load_cmd(
     queries: Path = typer.Option(DEFAULT_QUERIES, help="Path to queries.json."),
     db: Path = typer.Option(DEFAULT_DB_PATH, help="Path to SQLite database."),
 ) -> None:
-    """Load queries.json into the DB. Gold answers come from `expected_answer`. Idempotent."""
+    """Load queries.json into the DB. Each query's `expected_answers[]` is
+    synced into the gold_answers table (one row per declared model). Idempotent.
+    """
     if not db.exists():
         init_db(db)
         console.print(f"[yellow]created[/] {db}")
@@ -446,12 +448,13 @@ def update_gold_cmd(
         help="Skip the confirmation prompt for the full-set (no scope) case.",
     ),
 ) -> None:
-    """Regenerate gold answers by calling the top-tier model.
+    """Regenerate per-provider gold by calling every top-tier model.
 
-    The top tier IS the gold-grade model (Opus). When the upstream
-    `expected_answer` is stale/wrong/missing, this calls the top tier
-    with each query's prompt and OVERWRITES `Query.gold_answer` (and
-    stamps gold_model/gold_generated_at).
+    The top tier IS the gold tier. This calls EACH model configured for
+    the top tier (Anthropic Opus, OpenAI GPT-5, …) with each query's
+    prompt and upserts one `gold_answers` row per (query, top-tier model)
+    — so the demo's `expected_answers[]` ends up with a gold per
+    provider.
 
     Scope (most → least specific):
       --query-id q00046 -q q00050   just those queries
@@ -461,7 +464,7 @@ def update_gold_cmd(
 
     Separate from `make answers` on purpose: answers CONSUMES gold,
     this PRODUCES it. Per-query failures are reported and never clobber
-    the existing gold.
+    the existing gold rows.
     """
     if not db.exists():
         console.print(f"[red]error[/]: db {db} does not exist; run `make setup` first")
@@ -500,9 +503,9 @@ def update_gold_cmd(
         scope = f"ALL {len(qids)} query(ies)"
         if not yes:
             confirmed = typer.confirm(
-                f"Regenerate gold for {scope} by calling the top tier? "
-                f"This overwrites every expected_answer and costs N top-tier "
-                f"calls.",
+                f"Regenerate gold for {scope} by calling every top-tier "
+                f"model? This overwrites the per-provider gold rows and "
+                f"costs N × (# top-tier models) calls.",
                 default=False,
             )
             if not confirmed:

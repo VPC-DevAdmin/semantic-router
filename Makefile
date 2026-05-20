@@ -162,9 +162,10 @@ route:
 # MAXTOK=<N>   → max_tokens per response (default 2048). Lower (e.g. 768)
 #                caps worst-case CPU wall-clock so slow generations don't
 #                hit the read timeout.
-# Top-tier-routed queries are answered from the gold (expected_answer)
-# rather than re-calling the top model. To regenerate the gold itself,
-# use `make update-gold QID=...`.
+# Queries the router sent to the top tier are SKIPPED — no model calls.
+# The top tier is the gold reference; comparisons are routed-vs-top,
+# never top-vs-top. Its per-provider answers come from `make update-gold`
+# and from `expected_answers[]` declared in queries.json.
 answers:
 	$(BENCHMARK) answers --db $(DB) \
 	    $(if $(RUN),--run $(RUN),) \
@@ -189,12 +190,15 @@ import-answers:
 	    $(if $(PROVIDER),--provider $(PROVIDER),) \
 	    $(if $(RUN),--run $(RUN),)
 
-# Regenerate gold answers by calling the top tier (Opus). Overwrites
-# Query.gold_answer. Scope, most → least specific:
+# Regenerate per-provider gold by calling EVERY top-tier model. Upserts
+# one `gold_answers` row per (query, top-tier model). Scope, most → least
+# specific:
 #   QID=<id[,id,...]>  — just those queries
 #   TIER=<1-5>         — every query with that expected_min_tier
 #   (neither)          — ALL queries (prompts to confirm unless YES=true)
-# After this, re-run `make answers` so top-tier rows pick up new gold.
+# `make answers` doesn't depend on this — top-tier-routed queries are
+# already skipped — but downstream consumers read these rows as the
+# per-provider `expected_answers[]` in demo.json.
 update-gold:
 	$(BENCHMARK) update-gold --db $(DB) \
 	    $(foreach q,$(subst $(comma), ,$(QID)),--query-id $(q)) \

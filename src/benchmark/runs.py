@@ -156,9 +156,10 @@ def seed_pending_answers(
     answer", never the top tier against itself. So a query the router
     sent to the top tier needs NO model calls here: its per-provider
     answers are the gold, produced separately by `make update-gold`
-    (which calls every top-tier model) and the upstream `expected_answer`
-    seeded into gold_answers at `make load`. Such queries are skipped
-    (and any stale top-tier rows for them are deleted).
+    (which calls every top-tier model) and the `expected_answers[]`
+    declared in queries.json (seeded into gold_answers at `make load`).
+    Such queries are skipped (and any stale top-tier rows for them are
+    deleted).
 
     Row reconciliation for non-top tiers (per row = per model):
       - A row already at the right (tier_level, model_id) → kept.
