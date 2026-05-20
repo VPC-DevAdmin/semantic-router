@@ -35,17 +35,16 @@ def test_tier_env_overrides_win_over_yaml(monkeypatch) -> None:
 
 def test_tier_env_overrides_ignore_blank(monkeypatch) -> None:
     """Empty `TIER{N}_{i}_*` env vars should NOT discover a slot — the
-    tier falls back to its YAML defaults (so a blank line in .env.example
+    tier ends up with no callable models (so a blank line in .env.example
     can't silently misconfigure a tier)."""
     monkeypatch.setenv("TIER4_1_URL", "")
     monkeypatch.setenv("TIER4_1_MODEL", "   ")  # whitespace-only also ignored
     monkeypatch.setenv("TIER4_1_API_KEY", "")
     m = load_models(ROOT / "config" / "tiers")
     t4 = m.by_level(4)
-    # No env slots → models stays empty; resolved_models() synthesizes
-    # one from the YAML defaults.
+    # No env slots → no callable models (tier YAML carries no fallback).
     assert t4.models == []
-    assert t4.resolved_models()[0].url == t4.endpoint.url
+    assert t4.resolved_models() == []
 
 
 def test_openai_https_backend_emits_provider_openai(monkeypatch, tmp_path) -> None:
@@ -129,9 +128,7 @@ def test_tier_yamls_parse() -> None:
     for t in m.tiers:
         assert t.specializations, f"tier {t.name} has empty specializations"
         assert t.router_alias, f"tier {t.name} missing router_alias"
-        assert t.served_model_name, f"tier {t.name} missing served_model_name"
-        assert t.endpoint.url, f"tier {t.name} missing endpoint.url"
-        assert t.backend.kind, f"tier {t.name} missing backend.kind"
+        assert t.timeout_s > 0, f"tier {t.name} missing timeout_s"
 
 
 def test_router_yaml_parses() -> None:

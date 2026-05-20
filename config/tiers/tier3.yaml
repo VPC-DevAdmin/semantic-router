@@ -1,16 +1,8 @@
-# Tier 3 — external GPU server.
+# Tier 3 — tier metadata only. Callable models come from `.env`'s
+# TIER3_{i}_* slots (vendor APIs; no local launch).
 
 name: tier3
 level: 3
 specializations: [general, coding, math, creative_writing]
 timeout_s: 120
-
 router_alias: tier3
-served_model_name: tier3
-
-endpoint:
-  url: http://localhost:8811/v1               # REAL: http://<gpu-host>:<port>/v1
-  api_key_env: null                            # REAL: TIER3_API_KEY (set in .env)
-
-backend:
-  kind: remote                                 # not launched by us

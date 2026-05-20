@@ -1,38 +1,48 @@
-"""Launch / stop local-CPU tier backends from per-tier YAML files.
+"""Local-engine launcher — backs `make start_LLM` and `make stop_LLM`.
 
-`make start_LLM` invokes `start_local_tiers()`; `make stop_LLM` invokes
-`stop_local_tiers()`. Each function iterates `config/tiers/*.yaml`, dispatches
-on `backend.kind`, and runs the appropriate docker commands.
+Tier-agnostic by design: the launcher walks every env slot whose URL
+resolves to localhost / 127.0.0.1, looks the slot's served model name
+up in `config/local_models.yaml`, picks the matching per-CPU-vendor
+launch block (amd / intel), and executes the verbatim argv with three
+placeholders filled in — `{port}` (from the slot's URL), `{served_name}`
+(from the slot's MODEL), and `{container_name}` (rendered from the
+recipe's `container_name` template).
 
-Supported kinds (extend as new runners are wired):
-  - `docker_vllm_dual_socket`    : two NUMA-pinned vLLM replicas (e.g. T2 Qwen).
-  - `docker_vllm_zendnn_single`  : one AMD ZenDNN/Zentorch vLLM replica
-                                   on a single NUMA socket (e.g. T1 Qwen3-1.7B).
-  - `remote`                     : someone else manages this endpoint; no-op.
-  - `placeholder`                : not yet provisioned; no-op (with note).
+Adding a new local model: add a top-level entry in
+`config/local_models.yaml` with the launch argv. The engine can be
+anything — vLLM in docker, SGLang, a bare binary launched with
+`nohup … &`. The launcher just runs the argv.
 
-Container names follow `vllm-{tier_name}-{replica_name}` so stop is a
-straightforward filter. Stable names mean `start_LLM` is idempotent —
-re-running just kills old containers and starts fresh.
-
-Errors abort with a clear message rather than half-bring-up a stack.
+Stopping is symmetric: same env walk, run the recipe's `stop` argv.
 """
 from __future__ import annotations
 
-import contextlib
 import shlex
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from rich.console import Console
 
-from .config import TierConfig, load_models
+from .config import (
+    DEFAULT_LOCAL_MODELS_PATH,
+    LocalModelLibrary,
+    LocalModelRecipe,
+    ModelsConfig,
+    TierModel,
+    load_models,
+    localhost_port,
+)
 
 console = Console()
 
 DEFAULT_TIERS_DIR = Path("config/tiers")
 
+
+# ─────────────────────────────────────────────────────────────────────────
+# Subprocess + CPU-vendor helpers (monkey-patchable seams for tests)
+# ─────────────────────────────────────────────────────────────────────────
 
 def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
     """Run a command, streaming output. Echoes the command for transparency."""
@@ -40,268 +50,157 @@ def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, check=check)
 
 
-def _container_name(tier_name: str, replica: str) -> str:
-    return f"vllm-{tier_name}-{replica}"
+def detect_cpu_vendor() -> str:
+    """Return 'amd' or 'intel' from /proc/cpuinfo's vendor_id.
 
-
-def _running_container_names(prefix: str = "vllm-") -> list[str]:
-    """List running container names matching the prefix."""
-    out = subprocess.check_output(
-        ["docker", "ps", "--format", "{{.Names}}", "--filter", f"name={prefix}"],
-        text=True,
-    )
-    return [line.strip() for line in out.splitlines() if line.strip()]
-
-
-def _stop_one(name: str, *, timeout: int = 30) -> None:
-    # Suppress "no such container" — that's the success case for stop_LLM.
-    with contextlib.suppress(subprocess.CalledProcessError):
-        subprocess.run(
-            ["docker", "stop", "-t", str(timeout), name],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-
-
-# ---- backend dispatchers ----
-
-def _start_docker_vllm_dual_socket(tier: TierConfig) -> None:
-    """Launch two NUMA-pinned vLLM CPU containers for one tier."""
-    # BackendSpec has extra='allow', so model_dump exposes kind-specific fields.
-    extra = tier.backend.model_dump()
-    image = extra.get("image")
-    model_host_path = extra.get("model_host_path")
-    hf_host_path = extra.get("hf_host_path")
-    max_model_len = extra.get("max_model_len", 8192)
-    block_size = extra.get("block_size", 32)
-    dtype = extra.get("dtype", "bfloat16")
-    kv_gb = extra.get("kv_gb_per_replica", 120)
-    replicas = extra.get("replicas") or []
-
-    if not image or not model_host_path:
-        console.print(
-            f"[red]error[/]: tier {tier.name} backend missing required fields "
-            f"(image, model_host_path)"
-        )
-        sys.exit(2)
-
-    model_dir = Path(model_host_path)
-    if not model_dir.is_dir():
-        console.print(
-            f"[red]error[/]: tier {tier.name} model dir not found: {model_dir}\n"
-            f"  download with:\n"
-            f"    huggingface-cli download <repo> --local-dir {model_dir}"
-        )
-        sys.exit(2)
-
-    if not replicas:
-        console.print(
-            f"[red]error[/]: tier {tier.name} has docker_vllm_dual_socket "
-            f"but no `backend.replicas` list"
-        )
-        sys.exit(2)
-
-    # Stop any previously-running replicas for this tier (idempotent).
-    for r in replicas:
-        _stop_one(_container_name(tier.name, r["name"]))
-
-    for r in replicas:
-        name = _container_name(tier.name, r["name"])
-        cpus = str(r["cpus"])
-        mems = str(r["mems"])
-        port = int(r["port"])
-        _run(
-            [
-                "docker", "run", "-d", "--rm",
-                "--name", name,
-                "--network", "host",
-                "--shm-size", "4g",
-                "--security-opt", "seccomp=unconfined",
-                "--cap-add", "SYS_NICE",
-                "--cpuset-cpus", cpus,
-                "--cpuset-mems", mems,
-                "-v", f"{model_host_path}:/models/served:ro",
-                *(["-v", f"{hf_host_path}:/root/.cache/huggingface"] if hf_host_path else []),
-                "-e", f"VLLM_CPU_KVCACHE_SPACE={kv_gb}",
-                "-e", f"VLLM_CPU_OMP_THREADS_BIND={cpus}",
-                "-e", "OMP_NUM_THREADS=32",
-                image,
-                "--model", "/models/served",
-                "--dtype", str(dtype),
-                "--max-model-len", str(max_model_len),
-                "--trust-remote-code",
-                "--host", "0.0.0.0",
-                "--port", str(port),
-                # Take the served name from slot 1's resolved model — that
-                # ties `--served-model-name` to whatever `.env` has set in
-                # TIER{N}_1_MODEL, with the YAML's served_model_name as a
-                # silent fallback. Keeps `.env` as the single source for
-                # the per-tier model name across both the docker launcher
-                # and the request body sent by `make answers`.
-                "--served-model-name", tier.resolved_models()[0].served_model_name,
-                "--block-size", str(block_size),
-            ]
-        )
-    console.print(
-        f"[green]tier {tier.name}[/]: launched {len(replicas)} replica(s); "
-        f"vllm cold load ~90-120s. Readiness probe: "
-        f"curl -sf http://127.0.0.1:{replicas[0]['port']}/v1/models"
-    )
-
-
-def _stop_docker_vllm_dual_socket(tier: TierConfig) -> None:
-    extra = tier.backend.model_dump()
-    for r in extra.get("replicas") or []:
-        name = _container_name(tier.name, r["name"])
-        console.print(f"[dim]stopping {name}[/]")
-        _stop_one(name)
-
-
-def _cpuset_count(cpus_str: str) -> int:
-    """Count CPUs in a docker cpuset string like '0-31' or '0,2,4-7'."""
-    n = 0
-    for part in cpus_str.split(","):
-        part = part.strip()
-        if "-" in part:
-            a, b = (int(x) for x in part.split("-"))
-            n += b - a + 1
-        elif part:
-            n += 1
-    return max(n, 1)
-
-
-def _start_docker_vllm_zendnn_single(tier: TierConfig) -> None:
-    """Launch one AMD ZenDNN/Zentorch vLLM CPU container on a single NUMA socket.
-
-    Differs from dual_socket in three ways:
-      • Single container, single replica.
-      • AMD-specific ZenDNN tunings (ZENDNNL_MATMUL_ALGO, TORCHINDUCTOR_*).
-      • Bridge networking with explicit `-p host:container` port mapping,
-        rather than `--network host`. This lets multiple ZenDNN-style
-        tiers coexist without colliding on container-internal port 8000.
+    Raises on anything we don't recognise — the launcher refuses to
+    guess. Only Linux is supported (the harness runs on Linux dev boxes
+    + the GPU server; Mac dev is for code, not for `make start_LLM`).
     """
-    extra = tier.backend.model_dump()
-    image = extra.get("image")
-    model_host_path = extra.get("model_host_path")
-    cpus = str(extra.get("cpus", "0-31"))
-    mems = str(extra.get("mems", "0"))
-    host_port = int(extra.get("host_port", 8001))
-    max_model_len = int(extra.get("max_model_len", 16384))
-    max_num_seqs = int(extra.get("max_num_seqs", 8))
-    dtype = str(extra.get("dtype", "bfloat16"))
-    enable_prefix_caching = bool(extra.get("enable_prefix_caching", True))
-    reasoning_parser = extra.get("reasoning_parser")  # optional, may be None
-    kv_gb = int(extra.get("kv_gb", 64))
+    try:
+        info = Path("/proc/cpuinfo").read_text()
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            "no /proc/cpuinfo — `make start_LLM` only supports Linux hosts"
+        ) from e
+    for line in info.splitlines():
+        if line.startswith("vendor_id"):
+            vid = line.split(":", 1)[1].strip()
+            if vid == "GenuineIntel":
+                return "intel"
+            if vid == "AuthenticAMD":
+                return "amd"
+            raise RuntimeError(f"unrecognised CPU vendor_id={vid!r}")
+    raise RuntimeError("no vendor_id line in /proc/cpuinfo")
 
-    if not image or not model_host_path:
+
+# ─────────────────────────────────────────────────────────────────────────
+# Dispatcher
+# ─────────────────────────────────────────────────────────────────────────
+
+def _walk_local_slots(models: ModelsConfig) -> list[tuple[TierModel, int]]:
+    """Every (TierModel, host_port) pair whose URL hits localhost.
+
+    Dedupes by (served_model_name, port) — if a model+port appears in
+    two tiers (unusual but possible), we only launch one container.
+    Preserves first-seen order so output is stable.
+    """
+    seen: set[tuple[str, int]] = set()
+    out: list[tuple[TierModel, int]] = []
+    for tier in models.tiers:
+        for m in tier.resolved_models():
+            port = localhost_port(m.url)
+            if port is None:
+                continue
+            key = (m.served_model_name, port)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append((m, port))
+    return out
+
+
+def _render(arg: str, ctx: dict[str, str]) -> str:
+    """str.format with a clear error when the recipe references an unknown
+    placeholder (anything beyond port / served_name / container_name)."""
+    try:
+        return arg.format(**ctx)
+    except KeyError as e:
+        raise ValueError(
+            f"recipe argv references unknown placeholder {{{e.args[0]}}}; "
+            f"only {{port}}, {{served_name}}, {{container_name}} are supported"
+        ) from e
+
+
+def _build_context(m: TierModel, port: int, recipe: LocalModelRecipe) -> dict[str, str]:
+    base = {"port": str(port), "served_name": m.served_model_name}
+    container_name = _render(recipe.container_name, base)
+    base["container_name"] = container_name
+    return base
+
+
+def _resolve_recipe(library: LocalModelLibrary, m: TierModel) -> LocalModelRecipe:
+    recipe = library.recipes.get(m.served_model_name)
+    if recipe is None:
+        known = sorted(library.recipes)
+        raise SystemExit(
+            f"no recipe for {m.served_model_name!r} in local_models.yaml. "
+            f"Known recipes: {known}. Add one before running this command."
+        )
+    return recipe
+
+
+def start_local_engines(
+    tiers_dir: Path = DEFAULT_TIERS_DIR,
+    library_path: Path = DEFAULT_LOCAL_MODELS_PATH,
+    *,
+    run: Callable[[list[str]], object] | None = None,
+    vendor: str | None = None,
+) -> None:
+    """For every env slot pointing at localhost: stop any pre-existing
+    container with the same name, then launch the recipe's `start` argv."""
+    runner = run or _run
+    if not library_path.exists():
         console.print(
-            f"[red]error[/]: tier {tier.name} backend missing required fields "
-            f"(image, model_host_path)"
+            f"[red]error[/]: missing local model library at {library_path}.\n"
+            f"  Create it with one entry per locally-launched model — see "
+            f"the file header for the schema."
         )
         sys.exit(2)
-
-    model_dir = Path(model_host_path)
-    if not model_dir.is_dir():
+    library = LocalModelLibrary.load(library_path)
+    cpu_vendor = vendor or detect_cpu_vendor()
+    models = load_models(tiers_dir)
+    targets = _walk_local_slots(models)
+    if not targets:
         console.print(
-            f"[red]error[/]: tier {tier.name} model dir not found: {model_dir}\n"
-            f"  download with:\n"
-            f"    hf download <repo> --local-dir {model_dir}"
+            "[dim]no local slots in .env — every TIER{N}_{i}_URL is remote; "
+            "nothing to launch.[/]"
         )
-        sys.exit(2)
-
-    omp_threads = _cpuset_count(cpus)
-
-    # Stop any previously-running replica (idempotent).
-    name = _container_name(tier.name, "r0")
-    _stop_one(name)
-
-    cmd = [
-        "docker", "run", "-d", "--rm",
-        "--name", name,
-        "--cpuset-cpus", cpus,
-        "--cpuset-mems", mems,
-        "--shm-size", "4g",
-        "--security-opt", "seccomp=unconfined",
-        "--cap-add", "SYS_NICE",
-        "-p", f"{host_port}:8000",
-        "-v", f"{model_host_path}:/models/served:ro",
-        # ZenDNN / Zentorch tunings — verbatim from the validated docker run.
-        "-e", f"VLLM_CPU_KVCACHE_SPACE={kv_gb}",
-        "-e", f"VLLM_CPU_OMP_THREADS_BIND={cpus}",
-        "-e", f"OMP_NUM_THREADS={omp_threads}",
-        "-e", "OMP_PROC_BIND=close",
-        "-e", "OMP_PLACES=cores",
-        "-e", "TORCHINDUCTOR_FREEZING=1",
-        "-e", "VLLM_USE_AOT_COMPILE=0",
-        "-e", "TORCHINDUCTOR_AUTOGRAD_CACHE=0",
-        "-e", "ZENDNNL_MATMUL_ALGO=1",
-        image,
-        "vllm", "serve", "/models/served",
-        # See comment in _start_docker_vllm_dual_socket above — env wins.
-        "--served-model-name", tier.resolved_models()[0].served_model_name,
-        "--dtype", dtype,
-        "--max-model-len", str(max_model_len),
-        "--max-num-seqs", str(max_num_seqs),
-    ]
-    if enable_prefix_caching:
-        cmd.append("--enable-prefix-caching")
-    if reasoning_parser:
-        cmd.extend(["--reasoning-parser", str(reasoning_parser)])
-    cmd.extend(["--host", "0.0.0.0", "--port", "8000"])
-
-    _run(cmd)
+        return
     console.print(
-        f"[green]tier {tier.name}[/]: launched ZenDNN single-socket replica on "
-        f"host port {host_port}; vllm cold load ~30-90s. Readiness probe: "
-        f"curl -sf http://127.0.0.1:{host_port}/v1/models"
+        f"[bold]start_LLM[/]: vendor={cpu_vendor}, {len(targets)} local "
+        f"slot(s) to launch"
     )
+    for m, port in targets:
+        recipe = _resolve_recipe(library, m)
+        spec = recipe.for_vendor(cpu_vendor)
+        ctx = _build_context(m, port, recipe)
+        # Idempotent: stop any container left over with the same name.
+        runner([_render(a, ctx) for a in spec.stop])
+        runner([_render(a, ctx) for a in spec.start])
+        console.print(
+            f"  [green]launched[/] {ctx['container_name']} "
+            f"({m.served_model_name}) on port {port}"
+        )
 
 
-def _stop_docker_vllm_zendnn_single(tier: TierConfig) -> None:
-    name = _container_name(tier.name, "r0")
-    console.print(f"[dim]stopping {name}[/]")
-    _stop_one(name)
-
-
-# ---- entry points ----
-
-_STARTERS: dict[str, callable] = {
-    "docker_vllm_dual_socket": _start_docker_vllm_dual_socket,
-    "docker_vllm_zendnn_single": _start_docker_vllm_zendnn_single,
-}
-_STOPPERS: dict[str, callable] = {
-    "docker_vllm_dual_socket": _stop_docker_vllm_dual_socket,
-    "docker_vllm_zendnn_single": _stop_docker_vllm_zendnn_single,
-}
-
-
-def start_local_tiers(tiers_dir: Path = DEFAULT_TIERS_DIR) -> None:
-    """Start every tier whose backend.kind has a registered starter."""
+def stop_local_engines(
+    tiers_dir: Path = DEFAULT_TIERS_DIR,
+    library_path: Path = DEFAULT_LOCAL_MODELS_PATH,
+    *,
+    run: Callable[[list[str]], object] | None = None,
+    vendor: str | None = None,
+) -> None:
+    """Symmetric: same env walk, run each recipe's `stop` argv."""
+    runner = run or _run
+    if not library_path.exists():
+        return  # nothing to stop if no library was ever defined
+    library = LocalModelLibrary.load(library_path)
+    cpu_vendor = vendor or detect_cpu_vendor()
     models = load_models(tiers_dir)
-    for tier in sorted(models.tiers, key=lambda t: t.level):
-        kind = tier.backend.kind
-        starter = _STARTERS.get(kind)
-        if starter is None:
-            console.print(f"[dim]tier {tier.name}: backend.kind={kind!r} — nothing to start[/]")
-            continue
-        starter(tier)
+    for m, port in _walk_local_slots(models):
+        recipe = library.recipes.get(m.served_model_name)
+        if recipe is None:
+            continue  # nothing to stop for an unrecognised model
+        spec = recipe.for_vendor(cpu_vendor)
+        ctx = _build_context(m, port, recipe)
+        runner([_render(a, ctx) for a in spec.stop])
+        console.print(
+            f"  [yellow]stopped[/] {ctx['container_name']} "
+            f"({m.served_model_name})"
+        )
 
 
-def stop_local_tiers(tiers_dir: Path = DEFAULT_TIERS_DIR) -> None:
-    """Stop every tier whose backend.kind has a registered stopper."""
-    models = load_models(tiers_dir)
-    for tier in sorted(models.tiers, key=lambda t: t.level):
-        kind = tier.backend.kind
-        stopper = _STOPPERS.get(kind)
-        if stopper is None:
-            continue
-        stopper(tier)
-    # Belt-and-suspenders: stop anything else matching our prefix that
-    # wasn't covered by a per-tier stopper (e.g. stale containers from a
-    # previous YAML config).
-    leftover = [n for n in _running_container_names("vllm-")
-                if n.startswith("vllm-tier")]
-    for name in leftover:
-        console.print(f"[dim]stopping leftover {name}[/]")
-        _stop_one(name)
+# Back-compat aliases — the CLI calls these names.
+start_local_tiers = start_local_engines
+stop_local_tiers = stop_local_engines

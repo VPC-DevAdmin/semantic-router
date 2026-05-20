@@ -1,75 +1,13 @@
-# Tier 1 — Qwen3-1.7B on CPU via AMD ZenDNN/Zentorch vLLM.
-# Single NUMA socket, single replica. Validated procedure for the
-# Granite Rapids dev box.
+# Tier 1 — tier metadata only. The callable model(s) for this tier come
+# from `.env`'s `TIER1_{i}_*` slots; the LAUNCH RECIPE (image, cpuset,
+# vLLM args, sampler) for any local model that .env points at lives in
+# config/local_models.yaml keyed by that model's served name.
 
 name: tier1
 level: 1
 specializations: [general]
-timeout_s: 180  # CPU inference of 200-500 tokens on Qwen3-1.7B at concurrency >1 can take 30-90s per request; 180s gives headroom.
-
+# CPU inference of 200-500 tokens on Qwen3-1.7B at concurrency >1 can
+# take 30-90s per request; 180s gives headroom.
+timeout_s: 180
 # What the router emits in `x-vsr-selected-model` (used for tier lookup).
 router_alias: tier1
-# Fallback served-model name. `make start_LLM` reads slot 1's resolved
-# served name (TIER1_1_MODEL from .env if set, else this value) and
-# passes it to vLLM as --served-model-name. `make answers` sends the
-# same name in the request body. So .env is the single source for the
-# per-tier model name; this YAML value only matters when .env hasn't
-# overridden TIER1_1_MODEL.
-served_model_name: tier1
-
-# Direct OAI endpoint for `make answers`. Matches the container's
-# host-side port mapping below (host:container = 8001:8000).
-endpoint:
-  url: http://localhost:8001/v1
-  api_key_env: null
-
-backend:
-  kind: docker_vllm_zendnn_single
-  image: amdih/zendnn_zentorch:vllm_v0.17.0_zentorch_v5.2.0_ubuntu22.04_2026_ww11
-
-  # Host paths mounted into the container.
-  model_host_path: /data/ml/models/Qwen3-1.7B
-
-  # NUMA / CPU pinning. Single socket → mems=0; 32 cores → cpus=0-31.
-  cpus: "0-31"
-  mems: "0"
-
-  # Bridge networking with explicit port mapping (host:container).
-  # The container always serves on port 8000 internally; we expose it
-  # on `host_port` so it doesn't collide with other tiers' containers.
-  host_port: 8001
-
-  # vLLM launch knobs — match the validated docker run.
-  max_model_len: 16384
-  max_num_seqs: 8
-  dtype: bfloat16
-  enable_prefix_caching: true
-  reasoning_parser: qwen3
-  kv_gb: 24  # 1.7B model at 16K context only needs ~5-10 GiB of KV; 24 leaves room for socket-0 to also host T2 r0 (40 GiB KV) without OOM.
-
-  # Qwen3 emits a long <think> chain by default. On CPU at ~5-15 tok/s
-  # that burns the entire max_tokens budget on hidden reasoning and the
-  # request blows past the client read timeout (the q00057/q00067/q00076
-  # ReadTimeouts). Disabling thinking makes the budget produce the actual
-  # answer fast. `extra_body` is merged verbatim into each chat request
-  # by the answers worker (and merged AFTER the hardcoded temperature, so
-  # the sampler keys below override it). chat_template_kwargs
-  # .enable_thinking is Qwen3's documented switch; TIER1_THINKING in .env
-  # flips it without losing the sampler keys (sibling-preserving).
-  #
-  # Sampler: the harness calls models with temperature=0 (greedy) for
-  # determinism, but Qwen3's model card explicitly says greedy decoding
-  # "can lead to performance degradation and endless repetitions" — which
-  # is exactly the verbatim synonym-list loop q00076 produced WITH
-  # thinking on. So even if thinking is re-enabled, use Qwen3's
-  # recommended sampling (temp 0.6 / top_p 0.95 / top_k 20) plus a
-  # presence_penalty (Qwen3 card: "if you encounter endless repetitions,
-  # set presence_penalty between 0 and 2"). This breaks the loop without
-  # turning thinking off.
-  extra_body:
-    chat_template_kwargs:
-      enable_thinking: false
-    temperature: 0.6
-    top_p: 0.95
-    top_k: 20
-    presence_penalty: 1.5

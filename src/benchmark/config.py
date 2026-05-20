@@ -34,34 +34,15 @@ SPECIALIZATIONS = {
 }
 
 
-class TierEndpoint(BaseModel):
-    """How `make answers` reaches a tier (direct OAI call, bypassing router)."""
-    url: str
-    api_key_env: str | None = None
-
-
-class BackendSpec(BaseModel):
-    """How `make start_LLM` provisions this tier. `kind` is the dispatcher key."""
-    # docker_vllm_dual_socket | remote | placeholder
-    kind: str
-    # Everything else is kind-specific. Pydantic in "permissive" mode here:
-    # we keep extra fields rather than reject, so individual backend kinds
-    # can carry their own params without each needing a new model class.
-    model_config = {"extra": "allow"}
-
-
 class TierModel(BaseModel):
     """One callable model endpoint within a tier.
 
-    A tier can front several models — e.g. Tier 5 served by Anthropic
-    Opus, OpenAI GPT-5, and Google Gemini Pro — so `make answers` can
-    show "how the answer changes if you're on OpenAI/Google instead of
-    Anthropic". Slot 0 is the bare `TIER{N}_*` / YAML default; slots 1..
-    come from `TIER{N}_{i}_*` env vars. `provider` is an optional human
-    label (Anthropic / OpenAI / Google) surfaced verbatim in demo.json.
-
-    `served_model_name` must be unique within a tier — it is the per-tier
-    model key used as a DB primary-key component and a demo.json key.
+    A tier can front several models (Anthropic Opus, OpenAI GPT-5,
+    Google Gemini, …) so `make answers` shows "how the answer changes
+    across providers". Each entry corresponds to one indexed env slot
+    `TIER{N}_{i}_*`. `served_model_name` must be unique within a tier
+    (it's the per-tier DB / demo.json key). `provider` is an optional
+    human label.
     """
     slot: int
     url: str
@@ -74,69 +55,42 @@ class TierModel(BaseModel):
 
 
 class TierConfig(BaseModel):
+    """Pure tier metadata — no endpoint, no backend, no per-model launch
+    config. All "which model, where, with what key" lives in `.env`
+    (indexed `TIER{N}_{i}_*` slots, surfaced as `tier.models`). The
+    launch recipe for a local model — image, cpuset, vLLM args, sampler
+    knobs — lives in `config/local_models.yaml`, keyed by the model's
+    served name.
+    """
     name: str
     level: int = Field(ge=1, le=5)
     specializations: list[str]
     timeout_s: int = 60
 
-    # Per-tier generation cap for `make answers`. None → fall back to the
-    # global --max-tokens (Makefile MAXTOK, default 2048). Override per
-    # tier via TIER{N}_MAX_TOKENS so a slow local tier can be given a
-    # bigger budget to actually finish a good answer.
+    # Per-tier generation-cap default for `make answers`. None → use the
+    # global --max-tokens (Makefile MAXTOK, default 2048). Per-slot
+    # overrides via TIER{N}_{i}_MAX_TOKENS still win.
     max_tokens: int | None = None
 
-    # Identity:
-    #   router_alias    = what the router emits in x-vsr-selected-model.
-    #   served_model_name = what the upstream serves; sent in the body's
-    #                       `model` field on direct OAI calls.
-    # For local tiers these are usually the same. For vendor APIs
-    # (Anthropic), `served_model_name` is the real vendor model id.
+    # What the router emits in x-vsr-selected-model (used to map a
+    # routing decision back to a tier).
     router_alias: str
-    served_model_name: str
 
-    endpoint: TierEndpoint
-    backend: BackendSpec
-
-    # Optional human label for the bare/slot-0 model (Anthropic / OpenAI /
-    # Google). Settable in YAML or via TIER{N}_PROVIDER; flows to demo.json.
-    provider: str | None = None
-
-    # Callable models for this tier. Populated by apply_tier_env_overrides
-    # (slot 0 from YAML/bare env + slots 1.. from TIER{N}_{i}_* env). Left
-    # empty when a TierConfig is built directly (tests) — use
-    # `resolved_models()` which synthesizes slot 0 from the legacy fields.
+    # Callable models, populated from `.env` by apply_tier_env_overrides.
+    # Empty list means no model is configured for this tier (the router
+    # may still emit `router_alias`, but `make answers` has nothing to
+    # call). Each entry corresponds to one `TIER{N}_{i}_*` slot.
     models: list[TierModel] = Field(default_factory=list)
 
-    # Convenience: `model_id` returns `router_alias` for the dominant legacy
-    # caller (TierLookup, which maps router header → tier). New code should
-    # use the explicit `router_alias` or `served_model_name` fields.
     @property
     def model_id(self) -> str:
+        """Back-compat convenience for TierLookup (router header → tier)."""
         return self.router_alias
 
     def resolved_models(self) -> list[TierModel]:
-        """The tier's callable models — always at least one.
-
-        If `models` was populated (by env-override loading) it is
-        returned as-is. Otherwise a single slot-1 model is synthesized
-        from the tier YAML's `endpoint` / `served_model_name` defaults
-        so directly-constructed TierConfigs (tests, programmatic use)
-        still resolve to a usable model.
-        """
-        if self.models:
-            return self.models
-        return [
-            TierModel(
-                slot=1,
-                url=self.endpoint.url,
-                served_model_name=self.served_model_name,
-                api_key_env=self.endpoint.api_key_env,
-                provider=self.provider,
-                timeout_s=self.timeout_s,
-                max_tokens=self.max_tokens,
-                extra_body=getattr(self.backend, "extra_body", None),
-            )
-        ]
+        """The tier's callable models. Just `self.models` — there is no
+        YAML fallback synthesis. If env doesn't provide slots, returns []."""
+        return self.models
 
     @field_validator("specializations")
     @classmethod
@@ -145,6 +99,103 @@ class TierConfig(BaseModel):
         if unknown:
             raise ValueError(f"unknown specializations: {sorted(unknown)}")
         return v
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Local model recipe library — `config/local_models.yaml`
+# ─────────────────────────────────────────────────────────────────────────
+# `make start_LLM` is tier-agnostic. It walks every env slot whose URL
+# resolves to localhost, looks up the slot's `served_model_name` in this
+# library, and executes the matching per-CPU-vendor launch command.
+# Recipes also carry an optional `extra_body` that the harness merges
+# into chat requests against this model (Qwen3 thinking flag, sampler).
+
+class LocalLauncherSpec(BaseModel):
+    """The verbatim argv to start (and stop) the engine for one CPU vendor.
+
+    Three placeholders are filled in by the dispatcher: `{port}` (from
+    the env slot's URL), `{served_name}` (from the slot's MODEL), and
+    `{container_name}` (rendered from the recipe's `container_name`
+    template). Everything else lives literally in the argv — there's no
+    structured "fields" to extract; the recipe is the contract.
+    """
+    model_config = {"extra": "forbid"}
+    start: list[str]
+    stop: list[str]
+
+
+class LocalModelRecipe(BaseModel):
+    """One model's full launch + request-time configuration."""
+    model_config = {"extra": "forbid"}
+
+    description: str = ""
+    # Container/process name template. Placeholders: {served_name}, {port}.
+    container_name: str = "vllm-{served_name}"
+    # Optional knobs merged into chat requests against this model
+    # (Qwen3 chat_template_kwargs, sampler params, etc.). Per-slot env
+    # overrides (TIER{N}_{i}_THINKING) deep-merge on top.
+    extra_body: dict | None = None
+    # Per-CPU-vendor launch specs. At least one must be present; the
+    # dispatcher errors with a clear message if the host CPU vendor has
+    # no matching block.
+    amd: LocalLauncherSpec | None = None
+    intel: LocalLauncherSpec | None = None
+
+    def for_vendor(self, vendor: str) -> LocalLauncherSpec:
+        spec = getattr(self, vendor, None)
+        if spec is None:
+            present = [v for v in ("amd", "intel") if getattr(self, v)]
+            raise ValueError(
+                f"recipe has no {vendor!r} launcher block "
+                f"(available: {present or '(none)'})"
+            )
+        return spec
+
+
+class LocalModelLibrary(BaseModel):
+    """The whole `config/local_models.yaml` file — model id → recipe."""
+    recipes: dict[str, LocalModelRecipe]
+
+    @classmethod
+    def load(cls, path: Path) -> LocalModelLibrary:
+        raw = yaml.safe_load(path.read_text()) or {}
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"{path}: top level must be a mapping of model_id → recipe"
+            )
+        return cls(recipes={
+            k: LocalModelRecipe.model_validate(v) for k, v in raw.items()
+        })
+
+
+# Merge `over` into `base` recursively. Used to layer per-slot env
+# overrides (e.g. THINKING) on top of recipe.extra_body — slot wins on
+# leaf conflicts; nested dicts merge.
+def _deep_merge(base: dict, over: dict) -> dict:
+    out = dict(base)
+    for k, v in over.items():
+        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def localhost_port(url: str) -> int | None:
+    """Return the port if `url` points at localhost / 127.0.0.1, else None.
+
+    A URL like `http://localhost:8001/v1` → 8001. Any non-loopback host
+    (vendor APIs, internal IPs) returns None, signalling "no local
+    container to launch / no recipe lookup needed".
+    """
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host not in ("localhost", "127.0.0.1"):
+        return None
+    if parsed.port is not None:
+        return parsed.port
+    return 80 if parsed.scheme == "http" else 443
 
 
 class ModelsConfig(BaseModel):
@@ -305,19 +356,6 @@ def _with_thinking(extra: dict | None, enabled: bool) -> dict:
     return out
 
 
-def _set_qwen_thinking(tier: TierConfig, enabled: bool) -> None:
-    """Flip Qwen3's enable_thinking in the tier's slot-0 backend.extra_body.
-
-    BackendSpec has extra='allow', so reassigning a fresh dict makes
-    answers.py's `tier.backend.model_dump()` pick it up. Vendor reasoning
-    controls (OpenAI reasoning_effort, Anthropic thinking budgets) are out
-    of scope here; set those in the tier YAML's `backend.extra_body`.
-    """
-    tier.backend.extra_body = _with_thinking(
-        getattr(tier.backend, "extra_body", None), enabled
-    )
-
-
 def _int_env(name: str, raw: str, unit: str = "") -> int:
     """Parse an int env var, raising a clear error naming the var."""
     try:
@@ -349,10 +387,12 @@ def _slot_var(n: int, i: int, suffix: str) -> str:
 def _build_tier_model(tier: TierConfig, i: int) -> TierModel | None:
     """Assemble one TierModel for slot `i` from `TIER{n}_{i}_*` env vars.
 
-    The slot exists iff its MODEL (or URL) is set. URL falls back to the
-    tier YAML's `endpoint.url` so you can run the same endpoint with a
-    different model name without repeating the URL. MODEL is required.
+    The slot exists iff URL and MODEL are both set. Both are required —
+    there's no YAML fallback for either; the tier YAML is metadata only.
     Returns None when slot `i` is absent (signals end of discovery).
+    Per-slot request-body extras (THINKING) attach here; any
+    model-defined defaults (from `config/local_models.yaml`'s
+    `extra_body`) merge in later via `apply_recipe_extras`.
     """
     n = tier.level
 
@@ -363,15 +403,20 @@ def _build_tier_model(tier: TierConfig, i: int) -> TierModel | None:
     model = g("MODEL")
     if not url and not model:
         return None  # gap → discovery stops here
+    if not url:
+        raise ValueError(
+            f"{_slot_var(n, i, 'MODEL')} is set but "
+            f"{_slot_var(n, i, 'URL')} is not — a model slot needs both "
+            f"URL and MODEL (the tier YAML carries no endpoint fallback)."
+        )
     if not model:
         raise ValueError(
             f"{_slot_var(n, i, 'URL')} is set but "
-            f"{_slot_var(n, i, 'MODEL')} is not — a model slot needs "
-            f"a model name (the URL alone can't identify a model)."
+            f"{_slot_var(n, i, 'MODEL')} is not — a model slot needs both "
+            f"URL and MODEL (the URL alone can't identify a model)."
         )
-    url = url or tier.endpoint.url
 
-    key_env = _slot_var(n, i, "API_KEY") if g("API_KEY") else tier.endpoint.api_key_env
+    key_env = _slot_var(n, i, "API_KEY") if g("API_KEY") else None
     provider = g("PROVIDER") or None
 
     timeout = (
@@ -383,20 +428,11 @@ def _build_tier_model(tier: TierConfig, i: int) -> TierModel | None:
         if g("MAX_TOKENS") else tier.max_tokens
     )
 
-    # The tier YAML's backend.extra_body is for the model the YAML's
-    # endpoint serves (typically a local Qwen3 vLLM container with its
-    # chat_template_kwargs + sampler knobs). It must NOT leak onto
-    # vendor slots in the same tier — OpenAI / Google reject unknown
-    # request-body fields. Only inherit when this slot is hitting the
-    # same URL the YAML configured.
-    yaml_extra = getattr(tier.backend, "extra_body", None)
-    extra = (
-        dict(yaml_extra)
-        if url == tier.endpoint.url and isinstance(yaml_extra, dict)
-        else None
-    )
+    extra: dict | None = None
     if g("THINKING"):
-        extra = _with_thinking(extra, _bool_env(_slot_var(n, i, "THINKING"), g("THINKING")))
+        extra = _with_thinking(
+            None, _bool_env(_slot_var(n, i, "THINKING"), g("THINKING"))
+        )
 
     return TierModel(
         slot=i,
@@ -408,6 +444,23 @@ def _build_tier_model(tier: TierConfig, i: int) -> TierModel | None:
         max_tokens=max_tokens,
         extra_body=extra,
     )
+
+
+def apply_recipe_extras(tier: TierConfig, library: LocalModelLibrary) -> None:
+    """Merge each local model's recipe.extra_body into the slot's
+    extra_body. Per-slot env overrides (e.g. THINKING) win on leaf
+    conflicts via deep-merge. No-op for slots that don't hit localhost
+    or have no matching recipe.
+    """
+    for m in tier.models:
+        if localhost_port(m.url) is None:
+            continue
+        recipe = library.recipes.get(m.served_model_name)
+        if recipe is None or not recipe.extra_body:
+            continue
+        # Recipe is the base (model-default knobs); slot is the override.
+        slot_extras = m.extra_body or {}
+        m.extra_body = _deep_merge(recipe.extra_body, slot_extras)
 
 
 def apply_tier_env_overrides(tier: TierConfig) -> TierConfig:
@@ -475,15 +528,25 @@ def apply_tier_env_overrides(tier: TierConfig) -> TierConfig:
     return tier
 
 
-def load_tiers(tiers_dir: Path) -> ModelsConfig:
+DEFAULT_LOCAL_MODELS_PATH = Path("config/local_models.yaml")
+
+
+def load_tiers(
+    tiers_dir: Path,
+    local_models_path: Path | None = DEFAULT_LOCAL_MODELS_PATH,
+) -> ModelsConfig:
     """Load every `*.yaml` in `tiers_dir` as one TierConfig; sort by level.
 
-    This is the single source of truth for tier configuration. Files named
-    starting with `_` are skipped (reserved for partials / templates).
+    Tier YAMLs are metadata-only (name, level, specializations,
+    router_alias, timeout_s, max_tokens). All callable model slots
+    come from `.env` (indexed `TIER{N}_{i}_*`); the loader applies env
+    overrides per tier.
 
-    After loading each tier, `TIER{N}_URL`/`TIER{N}_MODEL`/`TIER{N}_API_KEY`
-    env vars (if set and non-empty) override the corresponding YAML fields
-    — so .env is the single place to flip endpoint config across tiers.
+    If `local_models_path` exists, recipes for each model name surface
+    as merged extra_body knobs (e.g. Qwen3 thinking + sampler) on slots
+    that hit localhost. Per-slot env overrides win on leaf conflicts.
+
+    Files named starting with `_` are skipped (reserved for partials).
     """
     tiers: list[TierConfig] = []
     paths = sorted(p for p in tiers_dir.glob("*.yaml") if not p.name.startswith("_"))
@@ -501,6 +564,12 @@ def load_tiers(tiers_dir: Path) -> ModelsConfig:
         apply_tier_env_overrides(tier)
         tiers.append(tier)
     tiers.sort(key=lambda t: t.level)
+
+    if local_models_path and local_models_path.exists():
+        library = LocalModelLibrary.load(local_models_path)
+        for tier in tiers:
+            apply_recipe_extras(tier, library)
+
     return ModelsConfig(tiers=tiers)
 
 

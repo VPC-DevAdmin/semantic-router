@@ -1,17 +1,11 @@
-# Tier 5 — Anthropic Claude Opus via OAI-compatible endpoint.
+# Tier 5 — tier metadata only. Callable models come from `.env`'s
+# TIER5_{i}_* slots (vendor APIs; no local launch).
+# This is also the GOLD tier — `make answers` skips top-tier-routed
+# queries; `make update-gold` calls every TIER5 slot to produce
+# per-provider expected answers.
 
 name: tier5
 level: 5
 specializations: [general, coding, math, reasoning, creative_writing]
 timeout_s: 240
-
 router_alias: tier5
-# REAL: switch to the actual Anthropic model id (e.g. claude-opus-4-7).
-served_model_name: tier5
-
-endpoint:
-  url: http://localhost:8811/v1               # REAL: https://api.anthropic.com/v1
-  api_key_env: null                            # REAL: ANTHROPIC_API_KEY (set in .env)
-
-backend:
-  kind: remote

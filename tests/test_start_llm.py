@@ -1,116 +1,241 @@
-"""`make start_LLM` reads the served model name from the resolved slot-1
-model — meaning `.env`'s `TIER{N}_1_MODEL` is the single source for the
-per-tier model name across both the docker launcher and the request
-body. The tier YAML's `served_model_name` is a silent fallback.
+"""`make start_LLM` is a tier-agnostic dispatcher: walk every env slot
+whose URL hits localhost, look it up in `config/local_models.yaml`,
+match the per-CPU-vendor block, exec the verbatim argv with
+{port}/{served_name}/{container_name} filled in.
+
+These tests inject a fake recipe library and a fake `run` function so
+no docker / no actual subprocess is invoked. The real `_run` is exercised
+indirectly by the live `make start_LLM` workflow on the dev server.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+import yaml
+
 from benchmark import start_llm
-from benchmark.config import (
-    BackendSpec,
-    TierConfig,
-    TierEndpoint,
-    TierModel,
-)
+from benchmark.config import ModelsConfig, TierConfig, TierModel
 
 
-def _tier(level: int, *, served: str, model_dir: Path,
-          slot_models: list[TierModel] | None = None,
-          backend_kind: str = "docker_vllm_zendnn_single") -> TierConfig:
-    t = TierConfig(
+def _tier(level: int, models: list[TierModel]) -> TierConfig:
+    return TierConfig(
         name=f"tier{level}", level=level, specializations=["general"],
-        router_alias=f"tier{level}", served_model_name=served,
-        endpoint=TierEndpoint(url=f"http://localhost:800{level}/v1"),
-        backend=BackendSpec(
-            kind=backend_kind,
-            image="vllm/test:latest",
-            model_host_path=str(model_dir),
-            host_port=8000 + level,
-            cpus="0-31",
-            mems="0",
-            max_model_len=8192,
-            max_num_seqs=8,
-            dtype="bfloat16",
-            block_size=32,
-            kv_gb=24,
-        ),
+        router_alias=f"tier{level}", models=models,
     )
-    if slot_models is not None:
-        t.models = slot_models
-    return t
 
 
-def _capture_cmd(monkeypatch):
-    """Replace `_run` + `_stop_one` so the launcher records the docker
-    command it WOULD execute without actually invoking docker."""
-    cmds: list[list[str]] = []
-    monkeypatch.setattr(start_llm, "_run", lambda cmd, *a, **kw: cmds.append(cmd))
-    monkeypatch.setattr(start_llm, "_stop_one", lambda name, **kw: None)
-    return cmds
+@pytest.fixture
+def library_file(tmp_path: Path) -> Path:
+    """A minimal local-models library with one recipe per CPU vendor."""
+    p = tmp_path / "local_models.yaml"
+    p.write_text(yaml.safe_dump({
+        "Qwen3-1.7B": {
+            "description": "Qwen 3 1.7B small dense.",
+            "container_name": "vllm-{served_name}",
+            "extra_body": {
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+            "amd": {
+                "start": [
+                    "docker", "run", "-d", "--name", "{container_name}",
+                    "-p", "{port}:8000",
+                    "amd-image",
+                    "--served-model-name", "{served_name}",
+                ],
+                "stop": ["docker", "stop", "{container_name}"],
+            },
+            "intel": {
+                "start": [
+                    "docker", "run", "-d", "--name", "{container_name}",
+                    "-p", "{port}:8000",
+                    "intel-image",
+                    "--served-model-name", "{served_name}",
+                ],
+                "stop": ["docker", "stop", "{container_name}"],
+            },
+        },
+        "Qwen3-30B-A3B": {
+            "description": "Qwen 3 30B MoE.",
+            "container_name": "vllm-{served_name}",
+            "amd": {
+                "start": [
+                    "docker", "run", "-d", "--name", "{container_name}",
+                    "--network", "host",
+                    "amd-moe-image",
+                    "--port", "{port}",
+                    "--served-model-name", "{served_name}",
+                ],
+                "stop": ["docker", "stop", "{container_name}"],
+            },
+        },
+    }))
+    return p
 
 
-def test_zendnn_single_uses_env_model_name_via_resolved_slot1(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """When .env populates slot 1 with a different name than the YAML,
-    the docker launch must use the env name as `--served-model-name`."""
-    cmds = _capture_cmd(monkeypatch)
+def _capture_runs(monkeypatch) -> list[list[str]]:
+    """Record every command the launcher would issue."""
+    runs: list[list[str]] = []
+    monkeypatch.setattr(start_llm, "_run", lambda cmd, *a, **kw: runs.append(cmd))
+    return runs
 
-    # YAML default = "tier1"; env-provided slot 1 = "Qwen3-1.7B" → env wins.
-    tier = _tier(1, served="tier1", model_dir=tmp_path, slot_models=[
-        TierModel(
+
+def _patch_models(monkeypatch, models: ModelsConfig) -> None:
+    """Stub out load_models so the dispatcher gets exactly our tiers."""
+    monkeypatch.setattr(start_llm, "load_models", lambda *_a, **_kw: models)
+
+
+def test_dispatches_only_localhost_slots(monkeypatch, library_file) -> None:
+    """Vendor slots (non-localhost) are ignored. Localhost slots match
+    a recipe, and the per-vendor argv runs with placeholders filled in."""
+    runs = _capture_runs(monkeypatch)
+    models = ModelsConfig(tiers=[
+        _tier(1, [
+            TierModel(
+                slot=1, url="http://localhost:8001/v1",
+                served_model_name="Qwen3-1.7B",
+            ),
+            TierModel(  # vendor slot — must be skipped
+                slot=2, url="https://api.openai.com/v1",
+                served_model_name="gpt-4o-mini",
+            ),
+        ]),
+    ])
+    _patch_models(monkeypatch, models)
+
+    start_llm.start_local_engines(library_path=library_file, vendor="amd")
+
+    # Two runs: stop (idempotent cleanup) + start. Vendor slot ignored.
+    assert len(runs) == 2
+    stop_cmd, start_cmd = runs
+    assert stop_cmd == ["docker", "stop", "vllm-Qwen3-1.7B"]
+    assert "--port" not in start_cmd  # this recipe has -p (host:cont), not --port
+    assert "vllm-Qwen3-1.7B" in start_cmd
+    assert "8001:8000" in start_cmd  # {port} from URL
+    assert "Qwen3-1.7B" in start_cmd  # {served_name}
+
+
+def test_vendor_picks_matching_block(monkeypatch, library_file) -> None:
+    """AMD on AMD picks the amd block; Intel picks the intel block."""
+    runs = _capture_runs(monkeypatch)
+    _patch_models(monkeypatch, ModelsConfig(tiers=[
+        _tier(1, [TierModel(
             slot=1, url="http://localhost:8001/v1",
             served_model_name="Qwen3-1.7B",
-        ),
-    ])
-    start_llm._start_docker_vllm_zendnn_single(tier)
-
-    assert cmds, "no docker command issued"
-    cmd = cmds[-1]
-    assert "--served-model-name" in cmd
-    assert cmd[cmd.index("--served-model-name") + 1] == "Qwen3-1.7B"
+        )]),
+    ]))
+    start_llm.start_local_engines(library_path=library_file, vendor="intel")
+    # The start command should contain the Intel image.
+    assert any("intel-image" in cmd for cmd in runs)
+    assert not any("amd-image" in cmd for cmd in runs)
 
 
-def test_zendnn_single_falls_back_to_yaml_when_no_env(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """No env slots → resolved_models() synthesizes from YAML and the
-    launcher uses the YAML's served_model_name verbatim."""
-    cmds = _capture_cmd(monkeypatch)
+def test_unknown_model_raises_with_known_list(monkeypatch, library_file) -> None:
+    """An env slot referencing a model the library doesn't know about
+    must fail loud — and the error should list the known recipes so the
+    operator can either add a recipe or fix the .env."""
+    _capture_runs(monkeypatch)
+    _patch_models(monkeypatch, ModelsConfig(tiers=[
+        _tier(1, [TierModel(
+            slot=1, url="http://localhost:8001/v1",
+            served_model_name="NotInTheLibrary",
+        )]),
+    ]))
+    with pytest.raises(SystemExit, match="no recipe for 'NotInTheLibrary'"):
+        start_llm.start_local_engines(library_path=library_file, vendor="amd")
 
-    tier = _tier(1, served="tier1", model_dir=tmp_path)  # no env slots
-    start_llm._start_docker_vllm_zendnn_single(tier)
 
-    cmd = cmds[-1]
-    assert cmd[cmd.index("--served-model-name") + 1] == "tier1"
+def test_vendor_block_missing_raises(monkeypatch, library_file) -> None:
+    """Qwen3-30B-A3B only has an `amd:` block in the fixture library.
+    Running on Intel must fail explicitly rather than silently skip."""
+    _capture_runs(monkeypatch)
+    _patch_models(monkeypatch, ModelsConfig(tiers=[
+        _tier(2, [TierModel(
+            slot=1, url="http://localhost:8002/v1",
+            served_model_name="Qwen3-30B-A3B",
+        )]),
+    ]))
+    with pytest.raises(ValueError, match="no 'intel' launcher block"):
+        start_llm.start_local_engines(library_path=library_file, vendor="intel")
 
 
-def test_dual_socket_uses_env_model_name(tmp_path: Path, monkeypatch) -> None:
-    """Same behaviour for the dual-socket launcher (used by T2)."""
-    cmds = _capture_cmd(monkeypatch)
+def test_stop_runs_recipe_stop_commands(monkeypatch, library_file) -> None:
+    runs = _capture_runs(monkeypatch)
+    _patch_models(monkeypatch, ModelsConfig(tiers=[
+        _tier(1, [TierModel(
+            slot=1, url="http://localhost:8001/v1",
+            served_model_name="Qwen3-1.7B",
+        )]),
+    ]))
+    start_llm.stop_local_engines(library_path=library_file, vendor="amd")
+    assert runs == [["docker", "stop", "vllm-Qwen3-1.7B"]]
 
-    tier = _tier(
-        2, served="tier2", model_dir=tmp_path,
-        backend_kind="docker_vllm_dual_socket",
-        slot_models=[
-            TierModel(
-                slot=1, url="http://localhost:8002/v1",
-                served_model_name="Qwen3-30B-A3B",
-            ),
-        ],
+
+def test_dedupes_same_model_on_same_port(monkeypatch, library_file) -> None:
+    """If the same (served_name, port) appears in two tiers, launch once."""
+    runs = _capture_runs(monkeypatch)
+    common = TierModel(
+        slot=1, url="http://localhost:8001/v1",
+        served_model_name="Qwen3-1.7B",
     )
-    # The dual_socket launcher reads `backend.replicas` for ports/cpus.
-    tier.backend.replicas = [
-        {"name": "r0", "cpus": "0-31", "mems": "0", "port": 8002},
-    ]
-    tier.backend.kv_gb_per_replica = 40
-    start_llm._start_docker_vllm_dual_socket(tier)
+    _patch_models(monkeypatch, ModelsConfig(tiers=[
+        _tier(1, [common]),
+        _tier(2, [common]),
+    ]))
+    start_llm.start_local_engines(library_path=library_file, vendor="amd")
+    # One stop + one start, not two stops + two starts.
+    assert len(runs) == 2
 
-    # Each replica gets its own docker command; all must use the env name.
-    served = [
-        cmd[cmd.index("--served-model-name") + 1]
-        for cmd in cmds if "--served-model-name" in cmd
-    ]
-    assert served and all(s == "Qwen3-30B-A3B" for s in served)
+
+def test_dispatcher_skips_when_no_local_slots(monkeypatch, library_file) -> None:
+    """A config with only vendor URLs runs nothing — clean exit, no error."""
+    runs = _capture_runs(monkeypatch)
+    _patch_models(monkeypatch, ModelsConfig(tiers=[
+        _tier(3, [TierModel(
+            slot=1, url="https://api.openai.com/v1",
+            served_model_name="gpt-5-mini",
+        )]),
+    ]))
+    start_llm.start_local_engines(library_path=library_file, vendor="amd")
+    assert runs == []
+
+
+def test_recipe_argv_uses_unknown_placeholder_raises(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A typo in a placeholder name (e.g. {portt}) must be caught with a
+    clear error rather than emit a partially-rendered argv."""
+    bad = tmp_path / "local_models.yaml"
+    bad.write_text(yaml.safe_dump({
+        "Qwen3-1.7B": {
+            "amd": {
+                "start": ["docker", "run", "-p", "{portt}:8000", "img"],
+                "stop": ["docker", "stop", "x"],
+            },
+        },
+    }))
+    _capture_runs(monkeypatch)
+    _patch_models(monkeypatch, ModelsConfig(tiers=[
+        _tier(1, [TierModel(
+            slot=1, url="http://localhost:8001/v1",
+            served_model_name="Qwen3-1.7B",
+        )]),
+    ]))
+    with pytest.raises(ValueError, match="unknown placeholder"):
+        start_llm.start_local_engines(library_path=bad, vendor="amd")
+
+
+# ---- helper: detect_cpu_vendor (parsing /proc/cpuinfo) ----
+
+def test_detect_cpu_vendor_amd(tmp_path: Path, monkeypatch) -> None:
+    fake = tmp_path / "cpuinfo"
+    fake.write_text("processor\t: 0\nvendor_id\t: AuthenticAMD\n")
+    monkeypatch.setattr(start_llm, "Path", lambda p: fake if p == "/proc/cpuinfo" else Path(p))
+    assert start_llm.detect_cpu_vendor() == "amd"
+
+
+def test_detect_cpu_vendor_intel(tmp_path: Path, monkeypatch) -> None:
+    fake = tmp_path / "cpuinfo"
+    fake.write_text("processor\t: 0\nvendor_id\t: GenuineIntel\n")
+    monkeypatch.setattr(start_llm, "Path", lambda p: fake if p == "/proc/cpuinfo" else Path(p))
+    assert start_llm.detect_cpu_vendor() == "intel"

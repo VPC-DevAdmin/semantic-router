@@ -19,10 +19,8 @@ from benchmark.answers import (
     run_smoke,
 )
 from benchmark.config import (
-    BackendSpec,
     ModelsConfig,
     TierConfig,
-    TierEndpoint,
     TierModel,
 )
 from benchmark.db import Pass1Result, TierAnswer, session_scope
@@ -116,20 +114,24 @@ def _clients(levels: list[int], fail_on_query: str | None = None) -> dict:
 
 
 def _tier(level: int, models: list[TierModel] | None = None) -> TierConfig:
-    t = TierConfig(
+    """Build a minimal TierConfig. If `models` not passed, default to one
+    slot-1 entry so a single-model tier "just works" — matching what the
+    env-override loader produces from a single TIER{N}_1_* block."""
+    if models is None:
+        models = [TierModel(
+            slot=1, url=f"http://localhost:880{level}/v1",
+            served_model_name=f"tier{level}",
+        )]
+    return TierConfig(
         name=f"tier{level}", level=level, specializations=["general"],
-        router_alias=f"tier{level}", served_model_name=f"tier{level}",
-        endpoint=TierEndpoint(url=f"http://localhost:880{level}/v1"),
-        backend=BackendSpec(kind="remote"),
+        router_alias=f"tier{level}",
+        models=models,
     )
-    if models is not None:
-        t.models = models
-    return t
 
 
 def _multi(level: int, names: list[str]) -> TierConfig:
     return _tier(level, [
-        TierModel(slot=i, url=f"http://h{level}/v1", served_model_name=n,
+        TierModel(slot=i + 1, url=f"http://h{level}/v1", served_model_name=n,
                   provider=f"P{i}")
         for i, n in enumerate(names)
     ])
@@ -145,10 +147,10 @@ def test_clients_by_model_keyed_by_level_and_model() -> None:
 
 def test_extra_body_and_max_tokens_by_model() -> None:
     t = _tier(2, [
-        TierModel(slot=0, url="http://x/v1", served_model_name="a",
+        TierModel(slot=1, url="http://x/v1", served_model_name="a",
                   extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                   max_tokens=4096),
-        TierModel(slot=1, url="http://x/v1", served_model_name="b"),
+        TierModel(slot=2, url="http://x/v1", served_model_name="b"),
     ])
     models = ModelsConfig(tiers=[t])
     assert _extra_body_by_model(models) == {
@@ -388,10 +390,10 @@ async def test_run_answers_forwards_extra_body_and_max_tokens(tmp_path: Path) ->
     db, rid = _bootstrap(tmp_path)
     _record_pass1(db, rid, "q1", 1)
     _record_pass1(db, rid, "q2", 2)
-    t1 = _tier(1, [TierModel(slot=0, url="http://x/v1", served_model_name="tier1",
+    t1 = _tier(1, [TierModel(slot=1, url="http://x/v1", served_model_name="tier1",
                              extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                              max_tokens=4096)])
-    t2 = _tier(2, [TierModel(slot=0, url="http://x/v1", served_model_name="tier2")])
+    t2 = _tier(2, [TierModel(slot=1, url="http://x/v1", served_model_name="tier2")])
     models = ModelsConfig(tiers=[t1, t2, _tier(5)])
     seed_pending_answers(db, rid, models)
     cap = {(1, "tier1"): _CapturingClient(1), (2, "tier2"): _CapturingClient(2)}

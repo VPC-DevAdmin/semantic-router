@@ -1,58 +1,10 @@
-# Tier 2 — vLLM Qwen3-30B-A3B-Instruct-2507 (BF16), dual NUMA-pinned replicas.
-# Validated procedure: AMD EPYC dual-socket. See PLAN.md §12.
+# Tier 2 — tier metadata only. Local launch recipe lives in
+# config/local_models.yaml keyed by `.env`'s TIER2_1_MODEL.
 
 name: tier2
 level: 2
 specializations: [general, coding]
-timeout_s: 300  # Qwen3-30B-A3B MoE on CPU; long code-gen prompts (e.g. "implement a Bloom filter") can run 2-4 min. 300s headroom.
-
+# Qwen3-30B-A3B MoE on CPU; long code-gen prompts (e.g. "implement a
+# Bloom filter") can run 2-4 min. 300s headroom.
+timeout_s: 300
 router_alias: tier2
-# Fallback served-model name; .env's TIER2_1_MODEL overrides this for
-# both `make start_LLM` (--served-model-name) and `make answers` (the
-# request body's `model` field). See tier1.yaml for the full note.
-served_model_name: tier2
-
-# Direct OAI endpoint for `make answers`. r0 is the canonical for direct
-# calls; the router learns its own endpoint via config/router-backends.yaml
-# (which also points at 8002). The endpoint here MUST match r0's host port.
-endpoint:
-  url: http://localhost:8002/v1
-  api_key_env: null
-
-backend:
-  kind: docker_vllm_dual_socket
-  image: vllm/vllm-openai-cpu:latest-x86_64
-  # Host paths mounted into each container.
-  model_host_path: /data/ml/models/Qwen3-30B-A3B-Instruct-2507
-  hf_host_path: /data/ml/huggingface
-  # vLLM launch knobs.
-  max_model_len: 8192
-  block_size: 32
-  dtype: bfloat16
-  # KV cache size per replica in GiB. Was 120 GiB, but socket 0 also hosts
-  # T1 (Qwen3-1.7B with kv_gb=64 → ~70 GiB total). 120+70 > 188 GiB socket
-  # capacity, so T2 r0 couldn't start. 40 GiB per replica is plenty for
-  # 30B-MoE at 8K context with default concurrency:
-  #   ~64 active params × bf16 × 8192 ctx × small batch = ~10 GiB working set
-  # Leaving 4× headroom for prefix-cache and batching.
-  kv_gb_per_replica: 40
-  # One docker container per replica. dual_socket uses `--network host`,
-  # so each replica's `port:` is bound directly on the host.
-  # Port layout across local tiers:
-  #   T1     → 8001   (Qwen3-1.7B, single-socket ZenDNN)
-  #   T2 r0  → 8002   (router talks here; matches router-backends.yaml)
-  #   T2 r1  → 8003   (extra replica for throughput; not addressed by the
-  #                    router today — no LB in front, single-call benchmark.
-  #                    Keeps the dual-socket procedure intact for when an
-  #                    LB is added. Collides with router-backends.yaml's
-  #                    placeholder for tier3; T3 is a remote endpoint in
-  #                    Phase C, so the collision is harmless.)
-  replicas:
-    - name: r0
-      cpus: "0-31"
-      mems: "0"
-      port: 8002
-    - name: r1
-      cpus: "32-63"
-      mems: "1"
-      port: 8003

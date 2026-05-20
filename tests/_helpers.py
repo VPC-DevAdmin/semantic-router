@@ -4,12 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from benchmark.config import (
-    BackendSpec,
-    ModelsConfig,
-    TierConfig,
-    TierEndpoint,
-)
+from benchmark.config import ModelsConfig, TierConfig, TierModel
 from benchmark.db import init_db
 from benchmark.load import load_into_db
 
@@ -46,22 +41,27 @@ def make_tier(
     api_key_env: str | None = None,
     specializations: list[str] | None = None,
     timeout_s: int = 60,
-    backend_kind: str = "remote",
 ) -> TierConfig:
-    """Build a minimal TierConfig for tests. All identifiers default to `tier{level}`."""
+    """Build a minimal TierConfig for tests. All identifiers default to
+    `tier{level}`. The tier comes pre-populated with a single slot-1
+    model so `tier.models[0]` works without going through env override."""
     n = name or f"tier{level}"
+    served = served_model_name or n
     return TierConfig(
         name=n,
         level=level,
         specializations=specializations or ["general"],
         timeout_s=timeout_s,
         router_alias=router_alias or n,
-        served_model_name=served_model_name or n,
-        endpoint=TierEndpoint(
-            url=url or f"http://localhost:880{level}/v1",
-            api_key_env=api_key_env,
-        ),
-        backend=BackendSpec(kind=backend_kind),
+        models=[
+            TierModel(
+                slot=1,
+                url=url or f"http://localhost:880{level}/v1",
+                served_model_name=served,
+                api_key_env=api_key_env,
+                timeout_s=timeout_s,
+            ),
+        ],
     )
 
 
@@ -78,8 +78,5 @@ def make_models_yaml(tmp_path: Path) -> Path:
         "level: 1\n"
         "specializations: [general]\n"
         "router_alias: tier1\n"
-        "served_model_name: tier1\n"
-        "endpoint: {url: http://localhost:8001/v1}\n"
-        "backend: {kind: remote}\n"
     )
     return d

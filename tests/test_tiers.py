@@ -9,9 +9,7 @@ import pytest
 
 from benchmark.config import (
     Attachment,
-    BackendSpec,
     TierConfig,
-    TierEndpoint,
     TierModel,
     _env_bool,
     apply_tier_env_overrides,
@@ -340,19 +338,15 @@ def test_resolve_api_key_set(monkeypatch) -> None:
 
 # ---- per-tier env overrides: timeout / max_tokens / thinking ----
 
-def _tier(level: int, *, timeout_s: int = 60, extra_body: dict | None = None) -> TierConfig:
-    backend_kwargs: dict = {"kind": "remote"}
-    if extra_body is not None:
-        backend_kwargs["extra_body"] = extra_body
+def _tier(level: int, *, timeout_s: int = 60) -> TierConfig:
+    """Minimal TierConfig with no env-discovered slots — used by tests that
+    want to drive `apply_tier_env_overrides` from a known empty state."""
     return TierConfig(
         name=f"tier{level}",
         level=level,
         specializations=["general"],
         timeout_s=timeout_s,
         router_alias=f"tier{level}",
-        served_model_name=f"tier{level}",
-        endpoint=TierEndpoint(url=f"http://localhost:800{level}/v1"),
-        backend=BackendSpec(**backend_kwargs),
     )
 
 
@@ -381,6 +375,7 @@ def test_env_bool(raw: str, expected) -> None:
 
 def test_env_per_slot_timeout_and_max_tokens(monkeypatch) -> None:
     _clear_tier_env(monkeypatch, 1)
+    monkeypatch.setenv("TIER1_1_URL", "http://example/v1")
     monkeypatch.setenv("TIER1_1_MODEL", "m1")
     monkeypatch.setenv("TIER1_1_TIMEOUT", "600")
     monkeypatch.setenv("TIER1_1_MAX_TOKENS", "4096")
@@ -389,18 +384,17 @@ def test_env_per_slot_timeout_and_max_tokens(monkeypatch) -> None:
     assert t.models[0].max_tokens == 4096
 
 
-def test_env_unset_keeps_yaml_defaults(monkeypatch) -> None:
-    """No env slots → tier.models stays empty; resolved_models()
-    synthesizes one slot-1 model from the YAML defaults."""
+def test_env_unset_yields_no_models(monkeypatch) -> None:
+    """No env slots → tier.models stays empty; resolved_models() is []."""
     _clear_tier_env(monkeypatch, 2)
     t = apply_tier_env_overrides(_tier(2, timeout_s=300))
     assert t.models == []
-    m = t.resolved_models()[0]
-    assert (m.slot, m.timeout_s, m.max_tokens) == (1, 300, None)
+    assert t.resolved_models() == []
 
 
 def test_env_timeout_non_integer_raises(monkeypatch) -> None:
     _clear_tier_env(monkeypatch, 1)
+    monkeypatch.setenv("TIER1_1_URL", "http://example/v1")
     monkeypatch.setenv("TIER1_1_MODEL", "m1")
     monkeypatch.setenv("TIER1_1_TIMEOUT", "fast")
     with pytest.raises(ValueError, match="TIER1_1_TIMEOUT must be an integer"):
@@ -409,31 +403,18 @@ def test_env_timeout_non_integer_raises(monkeypatch) -> None:
 
 def test_env_thinking_true_creates_extra_body(monkeypatch) -> None:
     _clear_tier_env(monkeypatch, 1)
+    monkeypatch.setenv("TIER1_1_URL", "http://example/v1")
     monkeypatch.setenv("TIER1_1_MODEL", "Qwen3-1.7B")
     monkeypatch.setenv("TIER1_1_THINKING", "true")
-    t = apply_tier_env_overrides(_tier(1))  # no extra_body in YAML
+    t = apply_tier_env_overrides(_tier(1))
     assert t.models[0].extra_body == {
         "chat_template_kwargs": {"enable_thinking": True}
     }
 
 
-def test_env_thinking_false_overrides_yaml_and_preserves_siblings(monkeypatch) -> None:
-    _clear_tier_env(monkeypatch, 1)
-    monkeypatch.setenv("TIER1_1_MODEL", "Qwen3-1.7B")
-    monkeypatch.setenv("TIER1_1_THINKING", "false")
-    # YAML had enable_thinking=true plus an unrelated sibling key.
-    t = _tier(1, extra_body={
-        "chat_template_kwargs": {"enable_thinking": True, "other": 1},
-        "top_p": 0.9,
-    })
-    apply_tier_env_overrides(t)
-    extra = t.models[0].extra_body
-    assert extra["chat_template_kwargs"] == {"enable_thinking": False, "other": 1}
-    assert extra["top_p"] == 0.9  # unrelated extra_body keys untouched
-
-
 def test_env_thinking_invalid_raises(monkeypatch) -> None:
     _clear_tier_env(monkeypatch, 1)
+    monkeypatch.setenv("TIER1_1_URL", "http://example/v1")
     monkeypatch.setenv("TIER1_1_MODEL", "m1")
     monkeypatch.setenv("TIER1_1_THINKING", "sometimes")
     with pytest.raises(ValueError, match="TIER1_1_THINKING must be a boolean"):
@@ -450,51 +431,8 @@ def test_bare_tier_env_var_raises_with_migration_hint(monkeypatch) -> None:
         apply_tier_env_overrides(_tier(1))
 
 
-def test_resolved_models_synthesizes_slot1_when_models_empty() -> None:
-    """A directly-built TierConfig (tests/programmatic) yields exactly one
-    slot-1 model derived from the YAML defaults."""
-    t = _tier(5, timeout_s=120)
-    t.served_model_name = "claude-opus-x"
-    t.provider = "Anthropic"
-    models = t.resolved_models()
-    assert len(models) == 1
-    m = models[0]
-    assert (m.slot, m.served_model_name, m.provider, m.timeout_s) == (
-        1, "claude-opus-x", "Anthropic", 120,
-    )
-
-
-def test_yaml_extra_body_does_not_leak_to_vendor_slots(monkeypatch) -> None:
-    """The tier YAML's backend.extra_body (Qwen3 chat_template_kwargs +
-    anti-loop sampler) must NOT inherit onto a vendor slot whose URL
-    differs from the YAML's — OpenAI / Google reject unknown fields."""
-    _clear_tier_env(monkeypatch, 1)
-    # Slot 1 hits the YAML's URL → inherits the Qwen3 extras.
-    monkeypatch.setenv("TIER1_1_URL", "http://localhost:8001/v1")
-    monkeypatch.setenv("TIER1_1_MODEL", "Qwen3-1.7B")
-    # Slot 2 hits OpenAI → must NOT inherit the Qwen3 extras.
-    monkeypatch.setenv("TIER1_2_URL", "https://api.openai.com/v1")
-    monkeypatch.setenv("TIER1_2_MODEL", "gpt-4o-mini")
-
-    t = _tier(1, extra_body={
-        "chat_template_kwargs": {"enable_thinking": False},
-        "top_k": 20,
-    })
-    # Make the YAML's endpoint.url match slot 1's URL.
-    t.endpoint.url = "http://localhost:8001/v1"
-    apply_tier_env_overrides(t)
-
-    s1, s2 = t.models
-    assert s1.extra_body == {
-        "chat_template_kwargs": {"enable_thinking": False},
-        "top_k": 20,
-    }
-    assert s2.extra_body is None  # vendor slot clean
-
-
 def test_env_indexed_slots_with_providers(monkeypatch) -> None:
-    """Indexed slots add models; each carries its optional provider label;
-    a slot's URL falls back to the tier YAML's endpoint.url when omitted."""
+    """Indexed slots add models; each carries its optional provider label."""
     _clear_tier_env(monkeypatch, 5)
     monkeypatch.setenv("TIER5_1_URL", "https://api.anthropic.com/v1")
     monkeypatch.setenv("TIER5_1_MODEL", "claude-opus-4-7")
@@ -504,15 +442,11 @@ def test_env_indexed_slots_with_providers(monkeypatch) -> None:
     monkeypatch.setenv("TIER5_2_MODEL", "gpt-5")
     monkeypatch.setenv("TIER5_2_API_KEY", "sk-openai")
     monkeypatch.setenv("TIER5_2_PROVIDER", "OpenAI")
-    # Slot 3: URL omitted → falls back to the tier YAML's endpoint.url
-    # (http://localhost:8805/v1 from `_tier(5)`'s helper).
-    monkeypatch.setenv("TIER5_3_MODEL", "claude-sonnet-4-5")
 
     t = apply_tier_env_overrides(_tier(5))
     assert [(m.slot, m.served_model_name, m.provider, m.url) for m in t.models] == [
         (1, "claude-opus-4-7", "Anthropic", "https://api.anthropic.com/v1"),
         (2, "gpt-5", "OpenAI", "https://api.openai.com/v1"),
-        (3, "claude-sonnet-4-5", None, "http://localhost:8005/v1"),
     ]
     assert t.models[0].api_key_env == "TIER5_1_API_KEY"
     assert t.models[1].api_key_env == "TIER5_2_API_KEY"
@@ -521,9 +455,12 @@ def test_env_indexed_slots_with_providers(monkeypatch) -> None:
 def test_env_indexed_slots_stop_at_gap(monkeypatch) -> None:
     """Discovery stops at the first missing slot — a gap ends the list."""
     _clear_tier_env(monkeypatch, 3)
+    monkeypatch.setenv("TIER3_1_URL", "http://example/v1")
     monkeypatch.setenv("TIER3_1_MODEL", "m1")
+    monkeypatch.setenv("TIER3_2_URL", "http://example/v1")
     monkeypatch.setenv("TIER3_2_MODEL", "m2")
     # no slot 3
+    monkeypatch.setenv("TIER3_4_URL", "http://example/v1")
     monkeypatch.setenv("TIER3_4_MODEL", "m4")  # unreachable: gap at 3
     t = apply_tier_env_overrides(_tier(3))
     assert [m.served_model_name for m in t.models] == ["m1", "m2"]
@@ -536,35 +473,129 @@ def test_env_slot_url_without_model_raises(monkeypatch) -> None:
         apply_tier_env_overrides(_tier(3))
 
 
+def test_env_slot_model_without_url_raises(monkeypatch) -> None:
+    """Both URL and MODEL are required per slot — no YAML fallback for URL."""
+    _clear_tier_env(monkeypatch, 3)
+    monkeypatch.setenv("TIER3_1_MODEL", "model-with-no-url")
+    with pytest.raises(ValueError, match="TIER3_1_URL is not"):
+        apply_tier_env_overrides(_tier(3))
+
+
 def test_env_duplicate_model_name_within_tier_raises(monkeypatch) -> None:
     _clear_tier_env(monkeypatch, 3)
+    monkeypatch.setenv("TIER3_1_URL", "http://a/v1")
     monkeypatch.setenv("TIER3_1_MODEL", "dup")
+    monkeypatch.setenv("TIER3_2_URL", "http://b/v1")
     monkeypatch.setenv("TIER3_2_MODEL", "dup")
     with pytest.raises(ValueError, match="duplicate model name 'dup'"):
         apply_tier_env_overrides(_tier(3))
 
 
 def test_env_per_slot_thinking_and_budget(monkeypatch) -> None:
-    """Per-slot TIMEOUT/MAX_TOKENS/THINKING; slots inherit YAML defaults
-    independently."""
+    """Per-slot TIMEOUT/MAX_TOKENS/THINKING; slots inherit tier defaults
+    independently for fields they don't override."""
     _clear_tier_env(monkeypatch, 1)
+    monkeypatch.setenv("TIER1_1_URL", "http://example/v1")
     monkeypatch.setenv("TIER1_1_MODEL", "Qwen3-1.7B")
+    monkeypatch.setenv("TIER1_2_URL", "http://example/v1")
     monkeypatch.setenv("TIER1_2_MODEL", "Qwen3-1.7B-think")
     monkeypatch.setenv("TIER1_2_THINKING", "true")
     monkeypatch.setenv("TIER1_2_MAX_TOKENS", "8192")
-    # YAML timeout_s = 300 — slot 2 omits TIMEOUT → inherits from YAML
+    # tier timeout 300 — slot 2 omits TIMEOUT → inherits.
     t = apply_tier_env_overrides(_tier(1, timeout_s=300))
     s1, s2 = t.models
     assert s1.served_model_name == "Qwen3-1.7B"
-    assert s2.timeout_s == 300            # inherited from YAML
-    assert s2.max_tokens == 8192          # per-slot override
+    assert s2.timeout_s == 300          # inherited from tier
+    assert s2.max_tokens == 8192        # per-slot override
     assert s2.extra_body["chat_template_kwargs"]["enable_thinking"] is True
-    # slot 1 unaffected by slot 2's thinking flag
-    assert (s1.extra_body or {}).get("chat_template_kwargs", {}).get(
-        "enable_thinking"
-    ) is not True
+    # slot 1 untouched by slot 2's THINKING flag.
+    assert s1.extra_body is None
 
 
 def test_tier_model_is_pydantic() -> None:
     m = TierModel(slot=1, url="http://x/v1", served_model_name="m")
     assert m.api_key_env is None and m.provider is None and m.max_tokens is None
+
+
+# ---- recipe-merge: local_models.yaml extras into localhost slots ----
+
+def test_recipe_extras_merge_only_into_localhost_slots() -> None:
+    """A recipe's extra_body (e.g. Qwen3 sampler) merges into the slot's
+    extra_body when the slot hits localhost AND the recipe exists.
+    Vendor slots (non-localhost) are not touched — even if the recipe
+    exists, the vendor wouldn't accept its fields."""
+    from benchmark.config import (
+        LocalLauncherSpec,
+        LocalModelLibrary,
+        LocalModelRecipe,
+        apply_recipe_extras,
+    )
+
+    library = LocalModelLibrary(recipes={
+        "Qwen3-1.7B": LocalModelRecipe(
+            extra_body={
+                "chat_template_kwargs": {"enable_thinking": False},
+                "top_k": 20,
+            },
+            amd=LocalLauncherSpec(start=["true"], stop=["true"]),
+        ),
+    })
+
+    tier = _tier(1)
+    tier.models = [
+        TierModel(
+            slot=1, url="http://localhost:8001/v1",
+            served_model_name="Qwen3-1.7B",
+        ),
+        TierModel(
+            slot=2, url="https://api.openai.com/v1",
+            served_model_name="Qwen3-1.7B",  # same name, but vendor URL
+        ),
+    ]
+    apply_recipe_extras(tier, library)
+
+    # localhost slot picked up the recipe's extras.
+    assert tier.models[0].extra_body == {
+        "chat_template_kwargs": {"enable_thinking": False},
+        "top_k": 20,
+    }
+    # vendor slot left untouched.
+    assert tier.models[1].extra_body is None
+
+
+def test_recipe_extras_slot_env_wins_on_leaf_conflict() -> None:
+    """A per-slot env override (TIER{N}_{i}_THINKING=true) must win over
+    the recipe's default (enable_thinking=false) on a deep-merge."""
+    from benchmark.config import (
+        LocalLauncherSpec,
+        LocalModelLibrary,
+        LocalModelRecipe,
+        apply_recipe_extras,
+    )
+
+    library = LocalModelLibrary(recipes={
+        "Qwen3-1.7B": LocalModelRecipe(
+            extra_body={
+                "chat_template_kwargs": {"enable_thinking": False},
+                "top_k": 20,  # sibling — recipe wins (no slot override)
+            },
+            amd=LocalLauncherSpec(start=["true"], stop=["true"]),
+        ),
+    })
+
+    tier = _tier(1)
+    tier.models = [
+        TierModel(
+            slot=1, url="http://localhost:8001/v1",
+            served_model_name="Qwen3-1.7B",
+            # Slot already has the per-slot THINKING env override applied.
+            extra_body={"chat_template_kwargs": {"enable_thinking": True}},
+        ),
+    ]
+    apply_recipe_extras(tier, library)
+
+    merged = tier.models[0].extra_body
+    # Leaf conflict: slot's enable_thinking=True wins.
+    assert merged["chat_template_kwargs"]["enable_thinking"] is True
+    # Sibling key from recipe survives.
+    assert merged["top_k"] == 20

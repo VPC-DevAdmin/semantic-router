@@ -1,18 +1,8 @@
-# Tier 4 — Anthropic Claude Sonnet via OAI-compatible endpoint.
+# Tier 4 — tier metadata only. Callable models come from `.env`'s
+# TIER4_{i}_* slots (vendor APIs; no local launch).
 
 name: tier4
 level: 4
 specializations: [general, coding, math, reasoning, creative_writing]
 timeout_s: 180
-
 router_alias: tier4
-# REAL: switch to the actual Anthropic model id (e.g. claude-sonnet-4-7)
-# so the OAI request body's `model` field is accepted by Anthropic.
-served_model_name: tier4
-
-endpoint:
-  url: http://localhost:8811/v1               # REAL: https://api.anthropic.com/v1
-  api_key_env: null                            # REAL: ANTHROPIC_API_KEY (set in .env)
-
-backend:
-  kind: remote

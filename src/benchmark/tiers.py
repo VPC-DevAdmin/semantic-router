@@ -24,7 +24,7 @@ from typing import Any
 
 import httpx
 
-from .config import Attachment, TierConfig, TierModel
+from .config import Attachment, TierModel
 
 
 @dataclass
@@ -275,16 +275,6 @@ def _resolve_api_key(api_key_env: str | None) -> str | None:
             f"either set it or remove `api_key_env` from the config for local endpoints"
         )
     return val
-
-
-def client_from_tier(tier: TierConfig) -> OAIClient:
-    """Back-compat: a client for the tier's slot-0 / legacy single model."""
-    return OAIClient(
-        endpoint=tier.endpoint.url,
-        model_id=tier.served_model_name,
-        api_key=_resolve_api_key(tier.endpoint.api_key_env),
-        timeout_s=float(tier.timeout_s),
-    )
 
 
 def client_from_model(model: TierModel) -> OAIClient:

@@ -1,0 +1,196 @@
+# Local model launch library.
+#
+# `make start_LLM` walks every env slot whose URL is localhost / 127.0.0.1
+# and looks the slot's MODEL up here. The matching per-CPU-vendor block
+# (amd: / intel:) supplies the verbatim argv to start and stop the engine.
+# Three placeholders are filled in by the dispatcher:
+#
+#   {port}            from the env slot's URL (e.g. localhost:8001 → 8001)
+#   {served_name}     from the env slot's MODEL
+#   {container_name}  rendered from the recipe's `container_name` template
+#                     (defaults to "vllm-{served_name}")
+#
+# Everything else lives literally — no abstraction, no "fields the
+# launcher knows about" beyond the three placeholders. Swap engines
+# (vLLM → SGLang → bare binary) by editing the argv list. Add a new
+# model by adding a top-level entry with the appropriate amd: / intel:
+# blocks.
+#
+# `extra_body` is an optional dict the harness merges into every chat
+# request sent against this model (Qwen3 thinking flag, sampler knobs).
+# Per-slot env overrides (TIER{N}_{i}_THINKING) deep-merge on top.
+
+# ─────────────────────────────────────────────────────────────────────
+# Qwen3-1.7B — small dense, single socket.
+# ─────────────────────────────────────────────────────────────────────
+Qwen3-1.7B:
+  description: "Qwen 3 1.7B dense. CPU inference, ~5-15 tok/s."
+  container_name: "vllm-{served_name}"
+  extra_body:
+    # Disable thinking by default — a 1.7B model on a lookup-shaped
+    # prompt loops on its <think> chain and burns the whole budget.
+    # Override per slot with TIER{N}_{i}_THINKING=true if you want it.
+    chat_template_kwargs:
+      enable_thinking: false
+    # Qwen3 model card: greedy decoding causes endless repetitions.
+    # Use the documented sampler + presence_penalty as the default.
+    temperature: 0.6
+    top_p: 0.95
+    top_k: 20
+    presence_penalty: 1.5
+  amd:
+    start:
+      - docker
+      - run
+      - -d
+      - --rm
+      - --name
+      - "{container_name}"
+      - -p
+      - "{port}:8000"
+      - -v
+      - "/data/ml/models/Qwen3-1.7B:/models/served"
+      - -v
+      - "/data/ml/huggingface:/root/.cache/huggingface"
+      - --cpuset-cpus
+      - "0-31"
+      - --cpuset-mems
+      - "0"
+      - --shm-size
+      - 4g
+      - -e
+      - "VLLM_CPU_KVCACHE_SPACE=24"
+      - -e
+      - "VLLM_CPU_OMP_THREADS_BIND=0-31"
+      - -e
+      - "OMP_NUM_THREADS=32"
+      - -e
+      - "OMP_PROC_BIND=close"
+      - -e
+      - "OMP_PLACES=cores"
+      - -e
+      - "TORCHINDUCTOR_FREEZING=1"
+      - -e
+      - "VLLM_USE_AOT_COMPILE=0"
+      - -e
+      - "TORCHINDUCTOR_AUTOGRAD_CACHE=0"
+      - -e
+      - "ZENDNNL_MATMUL_ALGO=1"
+      - amdih/zendnn_zentorch:vllm_v0.17.0_zentorch_v5.2.0_ubuntu22.04_2026_ww11
+      - vllm
+      - serve
+      - /models/served
+      - --served-model-name
+      - "{served_name}"
+      - --dtype
+      - bfloat16
+      - --max-model-len
+      - "16384"
+      - --max-num-seqs
+      - "8"
+      - --enable-prefix-caching
+      - --reasoning-parser
+      - qwen3
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+    stop:
+      - docker
+      - stop
+      - "{container_name}"
+  intel:
+    start:
+      - docker
+      - run
+      - -d
+      - --rm
+      - --name
+      - "{container_name}"
+      - -p
+      - "{port}:8000"
+      - -v
+      - "/data/ml/models/Qwen3-1.7B:/models/served"
+      - -v
+      - "/data/ml/huggingface:/root/.cache/huggingface"
+      - --cpuset-cpus
+      - "0-31"
+      - --shm-size
+      - 4g
+      - -e
+      - "VLLM_CPU_KVCACHE_SPACE=24"
+      - vllm/vllm-openai-cpu:latest-x86_64
+      - --model
+      - /models/served
+      - --served-model-name
+      - "{served_name}"
+      - --dtype
+      - bfloat16
+      - --max-model-len
+      - "16384"
+      - --max-num-seqs
+      - "8"
+      - --enable-prefix-caching
+      - --reasoning-parser
+      - qwen3
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+    stop:
+      - docker
+      - stop
+      - "{container_name}"
+
+# ─────────────────────────────────────────────────────────────────────
+# Qwen3-30B-A3B — MoE; NUMA-pinned single socket (the prior r1 replica
+# was unused, so this is one container per .env slot).
+# ─────────────────────────────────────────────────────────────────────
+Qwen3-30B-A3B:
+  description: "Qwen 3 30B-A3B MoE Instruct (2507). CPU + NUMA pin."
+  container_name: "vllm-{served_name}"
+  amd:
+    start:
+      - docker
+      - run
+      - -d
+      - --rm
+      - --name
+      - "{container_name}"
+      - --network
+      - host
+      - --shm-size
+      - 4g
+      - -v
+      - "/data/ml/models/Qwen3-30B-A3B-Instruct-2507:/models/served"
+      - -v
+      - "/data/ml/huggingface:/root/.cache/huggingface"
+      - --cpuset-cpus
+      - "0-31"
+      - --cpuset-mems
+      - "0"
+      - -e
+      - "VLLM_CPU_KVCACHE_SPACE=40"
+      - -e
+      - "VLLM_CPU_OMP_THREADS_BIND=0-31"
+      - -e
+      - "OMP_NUM_THREADS=32"
+      - vllm/vllm-openai-cpu:latest-x86_64
+      - --model
+      - /models/served
+      - --served-model-name
+      - "{served_name}"
+      - --dtype
+      - bfloat16
+      - --max-model-len
+      - "8192"
+      - --block-size
+      - "32"
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "{port}"
+    stop:
+      - docker
+      - stop
+      - "{container_name}"
