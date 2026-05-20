@@ -693,23 +693,25 @@ def _emit_tier5_embedding_frontier_lane(embedding_signal_id: str) -> dict:
     """Override decision: route to tier5 from inside tier4_band when the
     `frontier_synthesis` embedding signal matches.
 
-    Embedding signals fire as `matched` when their cosine similarity
-    exceeds the configured threshold (0.55 in our exemplars). For a
-    query that looks frontier-coded on at least one of the bank's
-    archetype patterns, this lane catches it even without any complexity
-    signal reaching :hard.
+    Lane condition requires THREE matches in conjunction:
+      1. score lands in tier4_band (≥ 0.18 difficulty)
+      2. the embedding signal soft-matches (≥ ~0.50 cosine)
+      3. complexity classifier flips to :hard
 
-    Empirically this is the most-likely-to-fire of the three T5 lanes
-    with the current exemplar set, because the frontier embedding bank
-    is specifically tuned to the kind of prompts the new T5 queries
-    look like (long-form, formal, multi-part, commitment-demanding).
+    The third condition is what stops the lane from promoting
+    heterogeneous short prompts (q00111 "Summarize this paragraph",
+    q00013 "What is the plural of 'analysis'?", q00492 "Briefly
+    explain Newton's three laws") that softly match frontier_synthesis
+    at ~0.50 but are NOT actually frontier-grade. Genuine T5 prompts
+    typically clear the contrastive :hard threshold; spurious soft
+    matches don't.
     """
     return {
         "name": "route_tier5_embedding_frontier",
         "description": (
             f"Promote tier4_band queries to tier5 when the "
-            f"{embedding_signal_id!r} embedding signal matches — "
-            "continuous-evidence path to T5."
+            f"{embedding_signal_id!r} embedding signal matches AND "
+            "query_difficulty:hard fires — combined-evidence path to T5."
         ),
         "priority": LANE_DECISION_PRIORITY,
         "rules": {
@@ -717,6 +719,7 @@ def _emit_tier5_embedding_frontier_lane(embedding_signal_id: str) -> dict:
             "conditions": [
                 {"type": "projection", "name": "tier4_band"},
                 {"type": "embedding", "name": embedding_signal_id},
+                {"type": "complexity", "name": "query_difficulty:hard"},
             ],
         },
         "modelRefs": [{"model": "tier5", "use_reasoning": False}],
