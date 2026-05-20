@@ -373,25 +373,23 @@ def _emit_backend_ref_openai(cfg: dict) -> dict:
 def _emit_provider_model(tier_id: str, cfg: dict) -> dict:
     """Choose the right backend ref shape based on the configured base_url.
 
-    Three paths:
+    The model card's `name:` is the **tier id** (tier1…tier5), not the
+    upstream model identifier. The router uses this name in
+    `x-vsr-selected-model` and in decision modelRefs. `make route`
+    routes through the local OAI mock by default — the mock ACKs any
+    model name — so the tier-level abstraction is the right shape:
+    routing decisions, headers, and TierLookup all speak tier IDs.
+
+    `make answers` is what actually calls real upstream models, and it
+    bypasses the router entirely (uses OAIClient / AnthropicClient
+    directly), so the per-vendor model names live in `.env` rather than
+    leaking into the router's compiled config.
+
+    Three backend_ref shapes (chosen by base_url):
       • anthropic.com → Anthropic provider (handles OAI→Anthropic shape).
       • Any other HTTPS → generic OpenAI-compatible vendor (api.openai.com,
         OpenRouter, etc.). Uses Bearer auth, `provider: openai`.
       • HTTP (localhost) → the existing local-OAI shape (`protocol: http`).
-
-    The model card's `name` is the **upstream model identifier**, not the
-    tier alias. Reason: the router's Anthropic adapter
-    (pkg/extproc/processor_req_body_anthropic.go:64) does
-    `openAIRequest.Model = targetModel` and serializes that verbatim into
-    the Anthropic body — it does NOT consult `external_model_ids`. So the
-    only reliable cross-path (OpenAI + Anthropic) rewrite is to make the
-    model card's `name:` already be the upstream identifier. Decisions
-    reference this same identifier (see `_emit_decision_for_band`), so
-    routing logic still works; the tier alias survives in band names
-    (`tier3_band`) which are pure routing-internal labels.
-
-    `tier_id` parameter is the build-internal tier key ("tier1"…"tier5");
-    `cfg["model"]` is the env-resolved upstream name.
     """
     base_url = cfg["base_url"]
     if _is_anthropic(base_url):
@@ -404,25 +402,20 @@ def _emit_provider_model(tier_id: str, cfg: dict) -> dict:
         api_format = "openai"
         ref = _emit_backend_ref_oai(cfg)
     return {
-        "name": cfg["model"],  # upstream model name — see docstring
+        "name": tier_id,
         "provider_model_id": cfg["model"],
         "api_format": api_format,
         "backend_refs": [ref],
     }
 
 
-def _emit_provider_model_mock(tier_id: str, cfg: dict, mock_endpoint: str) -> dict:
+def _emit_provider_model_mock(tier_id: str, mock_endpoint: str) -> dict:
     """All tiers point at the local mock; api_format forced to openai.
-
-    The model card `name:` mirrors `cfg["model"]` (the upstream
-    identifier) for the same reason as `_emit_provider_model`: it must
-    match what `TierConfig.model_id` reports so x-vsr-selected-model →
-    tier lookup round-trips under MOCK=true too. The mock OAI server
-    ACKs whatever model name comes through — it doesn't validate.
-    """
+    The mock ACKs any model name — naming the card after the tier id
+    keeps the abstraction clean."""
     return {
-        "name": cfg["model"],
-        "provider_model_id": cfg["model"],
+        "name": tier_id,
+        "provider_model_id": tier_id,
         "api_format": "openai",
         "backend_refs": [
             {
@@ -435,16 +428,12 @@ def _emit_provider_model_mock(tier_id: str, cfg: dict, mock_endpoint: str) -> di
     }
 
 
-def _emit_model_card(tier: dict, model_name: str) -> dict:
-    """One routing.modelCards[] entry. `name:` must match what
-    `providers.models[].name` uses — i.e. the upstream model identifier
-    so the Anthropic path's body-rewrite (which uses targetModel verbatim)
-    works. See `_emit_provider_model` docstring."""
+def _emit_model_card(tier: dict) -> dict:
     desc_parts = [p for p in (tier.get("label"), tier.get("role")) if p]
     return {
-        "name": model_name,
+        "name": tier["id"],
         "modality": "text",
-        "description": " — ".join(desc_parts) if desc_parts else model_name,
+        "description": " — ".join(desc_parts) if desc_parts else tier["id"],
     }
 
 
@@ -652,7 +641,6 @@ def _emit_tier_band_mapping(tier_ids: list[str], cutoffs: list[float]) -> dict:
 
 def _emit_decisions(
     tier_ids: list[str],
-    model_name_for_tier: dict[str, str],
     complexity_signals: list[dict],
     emb_signals: list[dict],
 ) -> list[dict]:
@@ -672,49 +660,36 @@ def _emit_decisions(
     emb_ids = {s["id"] for s in emb_signals or []}
     decisions: list[dict] = []
 
-    tier5_model = model_name_for_tier.get("tier5", "tier5")
-
     # Lane decisions FIRST, so a quick read of the generated config shows
     # the higher-priority overrides up top. Each is conditional on its
     # referenced signals being defined.
     if {"needs_reasoning", "needs_expertise"} <= complexity_ids:
-        decisions.append(_emit_tier5_frontier_lane(tier5_model))
+        decisions.append(_emit_tier5_frontier_lane())
     if {"needs_judgment", "demands_commitment"} <= complexity_ids:
-        decisions.append(_emit_tier5_committed_judgment_lane(tier5_model))
+        decisions.append(_emit_tier5_committed_judgment_lane())
     if "frontier_synthesis" in emb_ids:
-        decisions.append(_emit_tier5_embedding_frontier_lane(
-            "frontier_synthesis", tier5_model,
-        ))
+        decisions.append(_emit_tier5_embedding_frontier_lane("frontier_synthesis"))
 
     # Band decisions (one per tier) always emit.
-    decisions.extend(
-        _emit_decision_for_band(tier_id, model_name_for_tier[tier_id])
-        for tier_id in tier_ids
-    )
+    decisions.extend(_emit_decision_for_band(tier_id) for tier_id in tier_ids)
     return decisions
 
 
-def _emit_decision_for_band(tier_id: str, model_name: str) -> dict:
-    """One `routing.decisions[]` entry — fires when its band is active.
-
-    `model_name` is the upstream identifier from env (e.g. "gpt-5.4-mini")
-    so the Anthropic path's verbatim body-rewrite produces the right name.
-    The decision name and band reference still use `tier_id` so routing
-    logs stay readable.
-    """
+def _emit_decision_for_band(tier_id: str) -> dict:
+    """One `routing.decisions[]` entry — fires when its band is active."""
     return {
         "name": f"route_{tier_id}",
-        "description": f"Route to {model_name} when request_difficulty lands in {tier_id}_band.",
+        "description": f"Route to {tier_id} when request_difficulty lands in {tier_id}_band.",
         "priority": DEFAULT_DECISION_PRIORITY,
         "rules": {
             "operator": "AND",
             "conditions": [{"type": "projection", "name": f"{tier_id}_band"}],
         },
-        "modelRefs": [{"model": model_name, "use_reasoning": False}],
+        "modelRefs": [{"model": tier_id, "use_reasoning": False}],
     }
 
 
-def _emit_tier5_embedding_frontier_lane(embedding_signal_id: str, tier5_model: str) -> dict:
+def _emit_tier5_embedding_frontier_lane(embedding_signal_id: str) -> dict:
     """Override decision: route to tier5 from inside tier4_band when the
     `frontier_synthesis` embedding signal matches.
 
@@ -744,11 +719,11 @@ def _emit_tier5_embedding_frontier_lane(embedding_signal_id: str, tier5_model: s
                 {"type": "embedding", "name": embedding_signal_id},
             ],
         },
-        "modelRefs": [{"model": tier5_model, "use_reasoning": False}],
+        "modelRefs": [{"model": "tier5", "use_reasoning": False}],
     }
 
 
-def _emit_tier5_committed_judgment_lane(tier5_model: str) -> dict:
+def _emit_tier5_committed_judgment_lane() -> dict:
     """Override decision: route to tier5 from inside tier4_band when the
     query hits BOTH `needs_judgment:hard` AND `demands_commitment:hard`.
 
@@ -777,11 +752,11 @@ def _emit_tier5_committed_judgment_lane(tier5_model: str) -> dict:
                 {"type": "complexity", "name": "demands_commitment:hard"},
             ],
         },
-        "modelRefs": [{"model": tier5_model, "use_reasoning": False}],
+        "modelRefs": [{"model": "tier5", "use_reasoning": False}],
     }
 
 
-def _emit_tier5_frontier_lane(tier5_model: str) -> dict:
+def _emit_tier5_frontier_lane() -> dict:
     """Override decision: route to tier5 from inside tier4_band when the
     query hits BOTH `needs_reasoning:hard` AND `needs_expertise:hard`.
 
@@ -817,7 +792,7 @@ def _emit_tier5_frontier_lane(tier5_model: str) -> dict:
                 {"type": "complexity", "name": "needs_expertise:hard"},
             ],
         },
-        "modelRefs": [{"model": tier5_model, "use_reasoning": False}],
+        "modelRefs": [{"model": "tier5", "use_reasoning": False}],
     }
 
 
@@ -856,15 +831,6 @@ def build(
     tier_ids = [t["id"] for t in ex["tiers"]]
     _validate_backends(be, set(tier_ids))
 
-    # tier_id → upstream model name. After env overrides this is e.g.
-    # {"tier1": "Qwen3-1.7B", "tier5": "claude-opus-4-7"}. We thread this
-    # through every emitter that references a model name (modelCards,
-    # decisions, modelRefs) so the Anthropic path's verbatim body-rewrite
-    # (processor_req_body_anthropic.go:64) lands the right upstream name.
-    model_name_for_tier = {
-        tier_id: be["backends"][tier_id]["model"] for tier_id in tier_ids
-    }
-
     signals = ex["complexity_signals"]
     emb_signals = ex.get("embedding_signals", [])
     structure_signals = ex.get("structure_signals", [])
@@ -891,17 +857,14 @@ def build(
         "providers": {
             "defaults": {"default_model": be.get("default_tier", tier_ids[0])},
             "models": [
-                _emit_provider_model_mock(tier_id, cfg, mock_endpoint)
+                _emit_provider_model_mock(tier_id, mock_endpoint)
                 if mock_endpoint
                 else _emit_provider_model(tier_id, cfg)
                 for tier_id, cfg in be["backends"].items()
             ],
         },
         "routing": {
-            "modelCards": [
-                _emit_model_card(t, model_name_for_tier[t["id"]])
-                for t in ex["tiers"]
-            ],
+            "modelCards": [_emit_model_card(t) for t in ex["tiers"]],
             "signals": {
                 "complexity": [_emit_complexity_signal(s) for s in signals],
                 **(
@@ -933,7 +896,7 @@ def build(
                 "mappings": [_emit_tier_band_mapping(tier_ids, cutoffs)],
             },
             "decisions": _emit_decisions(
-                tier_ids, model_name_for_tier, signals, emb_signals
+                tier_ids, signals, emb_signals
             ),
         },
         # Disable semantic cache: avoids Milvus startup dependency for the

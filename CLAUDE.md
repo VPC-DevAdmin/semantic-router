@@ -30,15 +30,23 @@ rows and re-seed before running. Errors in `answers` don't fail the pass —
 they stay as `status='error'` and get retried automatically on the next
 invocation.
 
-**`make route` defaults to the local OAI mock.** Pass 1 only needs the
-router's decision headers (`x-vsr-selected-*`); it doesn't need a real
-completion. The vllm-sr router is an Envoy proxy that always forwards
-upstream, so without a mock every routed query would consume a token
-and surface vendor quirks (max_tokens vs max_completion_tokens,
-temperature=0 on gpt-5, etc.). The mock (`tools/oai_mock.py`, port 8811)
-ACKs with a tier-tagged canned reply. `make route` depends on `mock-bg`
-so the mock auto-starts. Use `REAL_BACKENDS=1` to bypass the mock when
-you specifically want to validate end-to-end connectivity.
+**`make route` ALWAYS routes through the local OAI mock.** Pass 1 only
+needs the router's decision headers (`x-vsr-selected-*`); it doesn't
+need a real completion. The vllm-sr router is an Envoy proxy that
+always forwards upstream, so without a mock every routed query would
+consume a token AND surface vendor quirks (max_tokens vs
+max_completion_tokens, temperature=0 on gpt-5, Anthropic adapter
+body-rewrite, etc.). The mock (`tools/oai_mock.py`, port 8811) ACKs
+with a tier-tagged canned reply. `make route` depends on `mock-bg` so
+the mock auto-starts.
+
+The router-config's model card names are the **tier ids**
+(`tier1`…`tier5`) — not real model identifiers. The mock accepts
+anything, so the routing pass stays purely tier-level: decisions,
+headers, and TierLookup all speak tier IDs. `make answers` calls the
+real upstream models directly (TIER{N}_{i}_MODEL from .env) and
+bypasses the router entirely, so per-vendor names never need to flow
+through the router-config.
 
 Plus `resume`, `clean-results`, `router-smoke`, `router-stop`, `test`,
 `fmt`, `lint`.

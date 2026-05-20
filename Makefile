@@ -28,7 +28,7 @@ help:
 	@echo "Production pass:"
 	@echo "  setup                          venv + deps + init DB + install vllm-sr (if missing)"
 	@echo "  load [MOCK=true]               validate exemplars; build router-config; load queries.json into DB"
-	@echo "  route [RUN_NEW=true] [REAL_BACKENDS=1]   rebuild router-config; routing pass (defaults to mock — see below)"
+	@echo "  route [RUN_NEW=true]           rebuild router-config; routing pass via local OAI mock"
 	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true] [TIER=<1-5>] [CONC=<N>] [MAXTOK=<N>] [SMOKE=true]  routed-tier answers (SMOKE: connectivity probe only)"
 	@echo "  import-answers FILE=<path> TIER=<1-5> MODEL=<id> [PROVIDER=<name>] [RUN=<id>]  load externally-generated answers for one model"
 	@echo "  update-gold [QID=<id[,id]>] [TIER=<1-5>] [YES=true]  regenerate gold via top tier (no scope = ALL, confirms)"
@@ -38,7 +38,7 @@ help:
 	@echo "  resume [RUN=<id>]              re-run pending/error rows; mark done if clean"
 	@echo ""
 	@echo "  MOCK=true (load/answers)   routes the build/answers through the local OAI mock (port \$$MOCK_PORT)."
-	@echo "  REAL_BACKENDS=1 (route)    routes pass-1 through real upstreams instead of the mock (rare)."
+	@echo "                             (route ALWAYS uses the mock — routing pass doesn't need real upstreams.)"
 	@echo "              Used for pipeline verification before real backends are stood up."
 	@echo ""
 	@echo "Backends:"
@@ -149,32 +149,22 @@ load:
 # 1 completion token × ~110 queries × every per-vendor quirk
 # (max_tokens vs max_completion_tokens, temperature=0 on gpt-5, etc.).
 #
-# `make route` routes every tier through the local OAI mock by default —
-# the mock ACKs cheaply with no token cost and no auth, while the
+# `make route` routes every tier through the local OAI mock unconditionally.
+# The mock ACKs cheaply with a tier-tagged canned reply while the
 # routing classifier + decision rules still run end-to-end. The
 # expensive real model calls happen in `make answers`, which bypasses
 # the router and calls every model in the routed tier directly.
 #
-# RUN_NEW=true     → drop pass1_results for the active run; re-seed.
-# REAL_BACKENDS=1  → escape hatch: route through real upstreams instead
-#                    of the mock. Validates end-to-end connectivity
-#                    (auth, model names, vendor quirks). Use this when
-#                    debugging the router's real-world behavior.
+# RUN_NEW=true → drop pass1_results for the active run; re-seed.
 #
 # Depends on mock-bg so the mock is guaranteed running before the build
 # emits a router-config that points at it. mock-bg is idempotent.
-ifeq ($(REAL_BACKENDS),1)
-route:
-	$(BUILD_ROUTER_CONFIG)
-	$(BENCHMARK) route --db $(DB) $(if $(filter true,$(RUN_NEW)),--run-new,)
-else
 route: mock-bg
 	$(PYTHON) -m benchmark.build_router_config \
 	    --exemplars $(EXEMPLARS) --backends $(BACKENDS) --out $(ROUTER_CONFIG) \
 	    --check-against-eval data/queries.json \
 	    --mock-endpoint $(MOCK_FROM_ROUTER)
 	$(BENCHMARK) route --db $(DB) $(if $(filter true,$(RUN_NEW)),--run-new,)
-endif
 
 # RUN_NEW=true → drop existing tier_answers for the active run and re-seed.
 #                With TIER=<N>, only that tier's rows are deleted.
