@@ -47,6 +47,58 @@ def test_tier_env_overrides_ignore_blank(monkeypatch) -> None:
     assert t4.resolved_models() == []
 
 
+def test_localhost_backend_url_translated_to_host_docker_internal(monkeypatch) -> None:
+    """`.env`'s TIER{N}_1_URL is host-side ('localhost'). The router
+    runs in docker, where localhost is the container's loopback —
+    Envoy 503s every request because the configured upstream isn't
+    reachable. The build must rewrite localhost → host.docker.internal
+    in router-backends.yaml so the router container can reach the host."""
+    monkeypatch.setenv("TIER1_1_URL", "http://localhost:8001/v1")
+    monkeypatch.setenv("TIER1_1_MODEL", "Qwen3-1.7B")
+    monkeypatch.setenv("TIER2_1_URL", "http://127.0.0.1:8002/v1")
+    monkeypatch.setenv("TIER2_1_MODEL", "Qwen3-30B-A3B")
+    monkeypatch.setenv("TIER3_1_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("TIER3_1_MODEL", "gpt-5-mini")
+    monkeypatch.setenv("TIER3_1_API_KEY", "sk-test")
+
+    from benchmark.build_router_config import build
+    cfg = build(
+        exemplars_path=ROOT / "config" / "router-exemplars.yaml",
+        backends_path=ROOT / "config" / "router-backends.yaml",
+        eval_set_path=None,
+    )
+
+    def ref_for(tier_name):
+        m = next(m for m in cfg["providers"]["models"] if m["name"] == tier_name)
+        ref = m["backend_refs"][0]
+        # Local-HTTP shape uses `endpoint:` (host:port/path); HTTPS/vendor
+        # shapes use `base_url:`. Concatenate both for the substring check.
+        return ref.get("endpoint", "") + " " + ref.get("base_url", "")
+
+    # Both localhost variants translated.
+    assert "host.docker.internal:8001" in ref_for("tier1")
+    assert "host.docker.internal:8002" in ref_for("tier2")
+    # Vendor URL untouched.
+    assert "api.openai.com" in ref_for("tier3")
+    assert "host.docker.internal" not in ref_for("tier3")
+
+
+def test_translate_host_unit() -> None:
+    """Direct test of the URL rewrite — covers edge cases without
+    going through the full router-config build."""
+    from benchmark.build_router_config import _translate_host_for_router_container as t
+    # localhost/127.0.0.1 → host.docker.internal, preserving port & path.
+    assert t("http://localhost:8001/v1") == "http://host.docker.internal:8001/v1"
+    assert t("http://127.0.0.1:8002/v1") == "http://host.docker.internal:8002/v1"
+    # Case-insensitive host match.
+    assert t("http://LOCALHOST:8001/v1") == "http://host.docker.internal:8001/v1"
+    # Non-loopback hosts pass through unchanged.
+    assert t("https://api.openai.com/v1") == "https://api.openai.com/v1"
+    assert t("http://192.168.1.10:8001/v1") == "http://192.168.1.10:8001/v1"
+    # No port → still rewritten.
+    assert t("http://localhost/v1") == "http://host.docker.internal/v1"
+
+
 def test_openai_https_backend_emits_provider_openai(monkeypatch, tmp_path) -> None:
     """An HTTPS non-Anthropic backend should emit `provider: openai`
     with Bearer auth headers, not the `protocol: http` localhost shape."""

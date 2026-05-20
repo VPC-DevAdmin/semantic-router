@@ -187,6 +187,31 @@ def _validate_exemplars(ex: dict, eval_prompts: set[str] | None = None) -> None:
             seen_ids.add(sid)
 
 
+def _translate_host_for_router_container(url: str) -> str:
+    """Swap a host-side localhost URL for the docker-equivalent.
+
+    `.env` carries URLs from the perspective of `make answers`, which
+    runs on the host and reaches local vLLM containers via `localhost`.
+    The router service, however, runs INSIDE a docker container, where
+    `localhost` is the container's own loopback (no vLLM there). The
+    docker convention for "the host's network" is `host.docker.internal`
+    (resolved via Docker's host-gateway DNS).
+
+    Two forms get translated; everything else passes through:
+      http://localhost:8001/v1  →  http://host.docker.internal:8001/v1
+      http://127.0.0.1:8001/v1  →  http://host.docker.internal:8001/v1
+    """
+    from urllib.parse import urlparse, urlunparse
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host not in ("localhost", "127.0.0.1"):
+        return url
+    new_netloc = "host.docker.internal"
+    if parsed.port is not None:
+        new_netloc = f"{new_netloc}:{parsed.port}"
+    return urlunparse(parsed._replace(netloc=new_netloc))
+
+
 def _apply_backend_env_overrides(be: dict) -> None:
     """Apply `TIER{N}_1_*` env overrides to the router-backends.yaml schema.
 
@@ -220,7 +245,7 @@ def _apply_backend_env_overrides(be: dict) -> None:
 
         url = os.environ.get(f"TIER{n}_1_URL", "").strip()
         if url:
-            cfg["base_url"] = url
+            cfg["base_url"] = _translate_host_for_router_container(url)
 
         model = os.environ.get(f"TIER{n}_1_MODEL", "").strip()
         if model:
