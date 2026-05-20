@@ -9,8 +9,12 @@ timeout_s: 180  # CPU inference of 200-500 tokens on Qwen3-1.7B at concurrency >
 
 # What the router emits in `x-vsr-selected-model` (used for tier lookup).
 router_alias: tier1
-# What gets sent in the body's `model` field on direct OAI calls.
-# vLLM is launched with `--served-model-name tier1` so this matches.
+# Fallback served-model name. `make start_LLM` reads slot 1's resolved
+# served name (TIER1_1_MODEL from .env if set, else this value) and
+# passes it to vLLM as --served-model-name. `make answers` sends the
+# same name in the request body. So .env is the single source for the
+# per-tier model name; this YAML value only matters when .env hasn't
+# overridden TIER1_1_MODEL.
 served_model_name: tier1
 
 # Direct OAI endpoint for `make answers`. Matches the container's

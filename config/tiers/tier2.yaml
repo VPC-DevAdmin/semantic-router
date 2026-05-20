@@ -7,6 +7,9 @@ specializations: [general, coding]
 timeout_s: 300  # Qwen3-30B-A3B MoE on CPU; long code-gen prompts (e.g. "implement a Bloom filter") can run 2-4 min. 300s headroom.
 
 router_alias: tier2
+# Fallback served-model name; .env's TIER2_1_MODEL overrides this for
+# both `make start_LLM` (--served-model-name) and `make answers` (the
+# request body's `model` field). See tier1.yaml for the full note.
 served_model_name: tier2
 
 # Direct OAI endpoint for `make answers`. r0 is the canonical for direct

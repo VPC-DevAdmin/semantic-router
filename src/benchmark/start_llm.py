@@ -133,7 +133,13 @@ def _start_docker_vllm_dual_socket(tier: TierConfig) -> None:
                 "--trust-remote-code",
                 "--host", "0.0.0.0",
                 "--port", str(port),
-                "--served-model-name", tier.served_model_name,
+                # Take the served name from slot 1's resolved model — that
+                # ties `--served-model-name` to whatever `.env` has set in
+                # TIER{N}_1_MODEL, with the YAML's served_model_name as a
+                # silent fallback. Keeps `.env` as the single source for
+                # the per-tier model name across both the docker launcher
+                # and the request body sent by `make answers`.
+                "--served-model-name", tier.resolved_models()[0].served_model_name,
                 "--block-size", str(block_size),
             ]
         )
@@ -232,7 +238,8 @@ def _start_docker_vllm_zendnn_single(tier: TierConfig) -> None:
         "-e", "ZENDNNL_MATMUL_ALGO=1",
         image,
         "vllm", "serve", "/models/served",
-        "--served-model-name", tier.served_model_name,
+        # See comment in _start_docker_vllm_dual_socket above — env wins.
+        "--served-model-name", tier.resolved_models()[0].served_model_name,
         "--dtype", dtype,
         "--max-model-len", str(max_model_len),
         "--max-num-seqs", str(max_num_seqs),
