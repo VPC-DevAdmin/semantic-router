@@ -45,7 +45,9 @@ config/router-config.yaml
 config/.vllm-sr/
 # Hash of the router-config.yaml the running stack was last launched with.
 # Used by `ensure_router_stack` to skip the docker restart on the fast path
-# (config unchanged + stack healthy). Local-only state.
+# (config unchanged + stack healthy). Local-only state. Lives under data/
+# now; legacy root-level path kept ignored for older checkouts.
+data/.router-config-hash
 .router-config-hash
 
 # vllm-sr's auto-generated artifacts in the project root.

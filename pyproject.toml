@@ -1,9 +1,23 @@
 [project]
 name = "semantic-router-benchmark"
-version = "0.0.0"
-description = "Benchmark harness for the vLLM Semantic Router"
+version = "0.1.0"
+description = "Reproducible benchmark harness for the vLLM Semantic Router — drives a curated query set through the router, captures per-tier answers, and emits a single JSON artifact for downstream replay + judging."
 requires-python = ">=3.11"
 readme = "README.md"
+license = { text = "Apache-2.0" }
+keywords = ["vllm", "llm", "routing", "benchmark", "evaluation", "semantic-router"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 
 dependencies = [
     "sqlalchemy>=2.0",
@@ -14,6 +28,12 @@ dependencies = [
     "httpx>=0.27",
     "python-dotenv>=1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/VPC-DevAdmin/semantic-router"
+Repository = "https://github.com/VPC-DevAdmin/semantic-router"
+Issues = "https://github.com/VPC-DevAdmin/semantic-router/issues"
+"vLLM Semantic Router" = "https://github.com/vllm-project/semantic-router"
 
 [project.optional-dependencies]
 dev = [

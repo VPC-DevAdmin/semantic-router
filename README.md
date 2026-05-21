@@ -1,69 +1,84 @@
-# Semantic routing demo
+# Semantic routing benchmark
 
-A production-pass harness that drives the
+A reproducible harness that drives the
 [vLLM Semantic Router](https://github.com/vllm-project/semantic-router)
-through a curated query set and emits a single
-`data/evaluated_queries_with_answers.json` artifact. The export is then
-replayed (and judged) downstream — this repo doesn't do any judging or
-live inference at presentation time.
+through a curated 110-query set and emits a single
+`data/evaluated_queries_with_answers.json` artifact. That export is
+consumed downstream by a separate replay UI and an independent judging
+workflow — this repo does no judging and no live inference at demo time.
 
-The full project scope, design rationale, and current status live in
-[**PLAN.md**](PLAN.md). What follows is the operational quickstart.
+Full design and rationale: [**PLAN.md**](PLAN.md).
+Working with this repo from a Claude session: [**CLAUDE.md**](CLAUDE.md).
 
 ## Quickstart
 
 ```sh
 git clone git@github.com:VPC-DevAdmin/semantic-router.git
 cd semantic-router
+cp .env.example .env       # fill in API keys + per-tier model env
 
-make setup         # venv + Python deps + DB schema + installs `vllm-sr` if missing
-make load          # 110 curated queries (with embedded gold answers) → DB
-make route         # for each query: capture which tier the router picks
-make answers       # for each query × each tier: capture that tier's response
-make export        # emit data/evaluated_queries_with_answers.json for downstream replay + judging
+make setup     # venv, Python deps, DB schema, installs vllm-sr if missing
+make load      # data/queries.json → data/router_benchmark.db
+make route     # routing pass (via local OAI mock — no per-query token cost)
+make answers   # for each routed query × each model in the picked tier, get a real answer
+make export    # write data/evaluated_queries_with_answers.json
 ```
 
-Other targets:
+That's the whole pipeline. Pass-1 (`route`) and pass-2 (`answers`) are
+each **per-row resumable**: kill mid-run, re-run, and only `pending`
+or `error` rows are re-processed. Errors in `answers` don't fail the
+pass — they stay as `status='error'` and retry on the next invocation.
+
+## Other targets
 
 ```sh
 make resume                              # pick up pending/error rows from latest run
-make clean-results                       # wipe runs/results (preserves queries + gold)
-make router-smoke PROMPT='What is 7+5?'  # send one query, print routing decision
+make clean-results                       # wipe routing/answer data (preserves queries + gold)
+make router-smoke PROMPT='What is 7+5?'  # send one query through the router, print decision
 make router-stop                         # tear down the vllm-sr Docker stack
-make help                                # full target list
+make mock-bg / mock-stop                 # start/stop the local OAI mock (port 18811)
+make start_LLM / stop_LLM                # launch/teardown local-CPU tier backends
+make test / make lint                    # unit tests (~2s) + ruff
+make help                                # full target list with flag docs
 ```
 
 ## Repository layout
 
 ```
-config/           # everything the operator tunes — YAML configs
-    tiers/            # single source of truth for direct-call tier identity
-                      # (router_alias, endpoint, backend.kind, ...)
-    router-exemplars.yaml  # contrastive-embedding training data — the
-                           # source of truth for the router's decision logic
-    router-backends.yaml   # router-side per-tier endpoints (flat schema)
-    router-config.yaml     # GENERATED (gitignored) from the two files above
-                           # by `make load` / `make route`; the router's
-                           # INTERNAL config passed via --config flag
-    router.yaml       # process-management config for the `vllm-sr` subprocess
+config/                            # everything the operator tunes (YAML)
+    tiers/                         # tier metadata (level, label, specializations,
+                                   # router_alias, timeout_s)
+    router-exemplars.yaml          # contrastive-embedding training data — the
+                                   # source of truth for the router's decision logic
+    router-backends.yaml           # router-side per-tier endpoints
+    router-config.yaml             # GENERATED from the two above by `make load` /
+                                   # `make route`; passed to `vllm-sr --config`
+    router.yaml                    # process-management config for the vllm-sr
+                                   # subprocess (ports, log path, etc.)
+    local_models.yaml              # per-vendor launch recipes for tier 1/2 local vLLM
 
 data/
-    queries.json                            # 110 queries with embedded gold (per-provider)
-    router_benchmark.db                     # generated SQLite store (gitignored)
-    evaluated_queries_with_answers.json     # generated export artifact (gitignored)
+    queries.json                            # 110 curated queries with per-provider
+                                            # gold answers (the only committed dataset)
+    router_benchmark.db                     # SQLite — generated (gitignored)
+    evaluated_queries_with_answers.json     # final export — generated (gitignored)
+    .router-config-hash                     # cached hash for fast no-op restarts
 
-src/benchmark/    # the harness itself
-tests/            # unit tests covering everything except the live router
-PLAN.md           # full project scope and current status
-CLAUDE.md         # context primer for fresh Claude sessions
+src/benchmark/                     # the harness itself (Python package: `benchmark`)
+tests/                             # unit tests — 167 of them, ~2 seconds total
+tools/oai_mock.py                  # stdlib OAI mock — used by `make route`
+.env.example                       # template for per-slot env vars (the actual .env
+                                   # is gitignored — your secrets live there)
+PLAN.md                            # full project scope and rationale
+CLAUDE.md                          # primer for Claude sessions working on this repo
 ```
 
-## What's where in the workflow
+## Pipeline
 
 ```
 queries.json ──[make load]──> SQLite ──┬─[make route]──> tier routing decisions
                                        │
-                                       └─[make answers]──> per-tier responses
+                                       └─[make answers]──> per-(query × model) responses
                                                                       │
                                                                       ▼
                                                                [make export]
@@ -75,25 +90,19 @@ queries.json ──[make load]──> SQLite ──┬─[make route]──> tie
                                                           external judge + replay UI
 ```
 
+`make route` always uses the local OAI mock — the routing decision is
+all pass-1 needs, and the mock ACKs cheaply with no token cost. The
+real per-model calls happen in `make answers`, which bypasses the
+router and talks to each tier's models directly.
+
 ## Status
 
-The harness is feature-complete and being dogfooded against a real
-`vllm-sr` install. `make setup`, `make load`, `make answers`, and
-`make export` all work; `make route` reaches the router but its chat
-completions return 404 from Envoy — an active integration issue. See
-[PLAN.md § 13](PLAN.md#13-current-state-and-roadmap) for the live status.
+Feature-complete and dogfooded end-to-end. `make load`, `make route`,
+`make answers`, and `make export` produce a complete demo artifact
+against the real `vllm-sr` install plus a mix of vLLM, OpenAI,
+Anthropic, and Google upstream backends.
 
-## Tests
+## License
 
-```sh
-make test       # unit tests, ~2 seconds
-make lint       # ruff
-```
-
-## Acknowledgements
-
-This harness is one project; the thing it measures is
-[vLLM Semantic Router](https://github.com/vllm-project/semantic-router),
-an Apache-2.0 routing system from the vLLM project. The demo exists to
-illustrate their claim that intelligent routing produces matching answer
-quality at a fraction of the cost.
+Apache-2.0 — matches upstream [`vllm-project/semantic-router`](https://github.com/vllm-project/semantic-router).
+See [LICENSE](LICENSE).

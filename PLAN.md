@@ -43,7 +43,7 @@ tier label the router emits, `endpoint` is the actual backend.
 - `expected_answers: [{ answer, model, provider? }, …]` — one or more
   reference answers, ALWAYS a list (a single gold is a one-entry list).
   `model` is required and is the per-query unique key that becomes
-  `gold_answers.model_id` and `demo.json`'s `model`. `provider` is an
+  `gold_answers.model_id` and `data/evaluated_queries_with_answers.json`'s `model`. `provider` is an
   optional label (Anthropic / OpenAI / Google). `model_id` must be
   unique within the query. Extra fields are rejected (the loader
   validates with `extra=forbid`).
@@ -134,20 +134,20 @@ make setup     # one-time
 make load      # data/queries.json → SQLite
 make route     # for each query: ask router which tier it picks
 make answers   # for each query × each of T1..T5: get the answer
-make export    # emit demo.json (the single artifact downstream uses)
+make export    # emit data/evaluated_queries_with_answers.json (the single artifact downstream uses)
 ```
 
-The resulting `demo.json` is the only output anyone outside this repo
+The resulting `data/evaluated_queries_with_answers.json` is the only output anyone outside this repo
 needs. It is the source of truth for the external judge, the replay UI,
 slides, and plots.
 
 **Replay (downstream, not in this repo):**
-- Walks through queries one at a time from `demo.json`.
+- Walks through queries one at a time from `data/evaluated_queries_with_answers.json`.
 - Shows prompt, routed tier, routed answer, adequacy verdict.
 - Optional drill-down: signal trace, what other tiers produced for the
   same query.
 
-## 7. The `demo.json` shape
+## 7. The `data/evaluated_queries_with_answers.json` shape
 
 `make export` writes a single JSON file containing, per query (MULTI-MODEL
 shape — a tier can front several provider models and they're all called):
@@ -224,7 +224,7 @@ semantic-router/
 │   ├── runs.py                   # run lifecycle + per-row resume + RUN_NEW resets
 │   ├── pass1.py                  # `make route` — routing decisions
 │   ├── answers.py                # `make answers` — one-call-per-query, error-tolerant
-│   └── export.py                 # `make export` — produces demo.json
+│   └── export.py                 # `make export` — produces data/evaluated_queries_with_answers.json
 ├── tools/
 │   └── oai_mock.py               # stdlib OAI mock for pipeline validation
 └── tests/                        # unit tests covering everything except live router
@@ -238,7 +238,7 @@ semantic-router/
 | `make load` | validate exemplars; build `config/router-config.yaml`; `data/queries.json` → DB |
 | `make route` | rebuild router-config; send each query through router with `max_tokens=1`, capture `x-vsr-selected-model` |
 | `make answers` | For each routed query: call the tier the router picked. **One call per query**, errors don't fail the pass — they get retried on the next invocation |
-| `make export` | Read DB → write `demo.json` |
+| `make export` | Read DB → write `data/evaluated_queries_with_answers.json` |
 | `make start_LLM` / `make stop_LLM` | Bring up / tear down local-CPU tier backends from `config/tiers/*.yaml` |
 | `make mock-bg` / `make mock-stop` | Local OAI mock for pipeline validation |
 
@@ -256,7 +256,7 @@ tier from `pass1_results` and dials the tier's endpoint directly.
 ## 10. Data model (SQLite intermediate)
 
 SQLite is the resumable intermediate store. `make export` reads from here
-and produces `demo.json`. The DB is gitignored; `demo.json` is the
+and produces `data/evaluated_queries_with_answers.json`. The DB is gitignored; `data/evaluated_queries_with_answers.json` is the
 output artifact.
 
 ```
@@ -376,113 +376,16 @@ vendor id while the router still emits `tier5` in its header. Confirm
 vllm-sr forwards the body's `model` field verbatim (or rewrites it to
 `provider_model_id`) before relying on this.
 
-## 13. Current state and roadmap
+## 13. Current state
 
-### What works (HEAD)
+Feature-complete and dogfooded end-to-end. `make load → make route →
+make answers → make export` produces a full
+`data/evaluated_queries_with_answers.json` artifact against the real
+`vllm-sr` install plus a mix of vLLM, OpenAI, Anthropic, and Google
+upstream backends.
 
-- ✅ `make setup` installs vllm-sr, venv, DB schema
-- ✅ `make load` reads 110 queries with embedded gold into the DB
-- ✅ `make load` / `make route` build `config/router-config.yaml` from
-  `config/router-exemplars.yaml` + `config/router-backends.yaml` and
-  validate that exemplars don't overlap the eval set.
-- ✅ `make route` — build router-config + run pass; verified 110/110
-  succeed against the mock. Routing-accuracy is a separate data-quality
-  story tracked elsewhere. `RUN_NEW=true` wipes pass1_results first.
-- ✅ `make answers` — **one call per query** (routed tier from
-  `pass1_results`), error-tolerant: failures stay as `status='error'` and
-  retry on the next run. Verified 110/110 against the mock with the new
-  semantics. `RUN_NEW=true` wipes tier_answers first.
-- ✅ `make export` emits a complete `demo.json`: every query has
-  `routed_tier`, routed answer; `all_tier_answers` has one entry (the
-  routed tier).
-- ✅ Local OAI mock (`tools/oai_mock.py`) + `make mock-bg` / `mock-stop`.
-- ✅ `make start_LLM` / `make stop_LLM` — YAML-driven dispatch over
-  `backend.kind`. Today: `docker_vllm_dual_socket` (T2 Qwen procedure)
-  and `placeholder` / `remote` (no-ops).
-- ✅ `.env` for secrets, auto-loaded by the CLI via `python-dotenv`.
-  Gitignored; `.env.example` is the template.
-
-### Active blocker
-
-None. The previously-documented Envoy 404 was misdiagnosed: Envoy was
-routing correctly all along, and the bundled `vllm-sr-sim` was the
-404-source — it speaks the FleetSim API (`/api/fleets`, `/api/jobs`),
-not `/v1/chat/completions`. Replaced with `tools/oai_mock.py`.
-
-### Roadmap (in order)
-
-1. **Add ~8–10 more T4 queries** to `data/queries.json` (per §3).
-2. **Phase B — T1 + T2 rollout:**
-   - Wire the user-provided T1 runner: edit `config/tiers/tier1.yaml`,
-     change `backend.kind: placeholder` to the real runner kind, fill in
-     `endpoint.url`. Mirror the host:port on the matching `tier1` entry
-     in `config/router-backends.yaml`.
-   - Point `config/tiers/tier2.yaml` at the real T2 backend; mirror in
-     `config/router-backends.yaml`.
-   - Run `make start_LLM && make router-stop && make route && make answers`.
-3. **Phase C — T3 + Anthropic:**
-   - T3: external GPU endpoint goes into `config/tiers/tier3.yaml`
-     (endpoint; `backend.kind: remote`). Mirror in
-     `config/router-backends.yaml`.
-   - T4/T5: decide on the vendor-model-name approach (see §12 open
-     question), then update `config/tiers/tier4.yaml` and `tier5.yaml`.
-4. **First production pass** — `make route && make answers && make export`
-   produces a real `demo.json`. Hand to external judging workflow.
-
-### Done
-
-- ~~**Multi-model tiers.**~~ A non-top tier fronts N provider models
-  via indexed env slots `TIER{N}_{i}_*` (i ≥ 1; no bare/slot-0 form,
-  the loader raises on stale single-model vars). Each slot takes an
-  optional `PROVIDER` label. `make answers` calls every model in the
-  routed tier but
-  SKIPS top-tier-routed queries (the top tier is the gold reference —
-  routed-vs-top, never top-vs-top). `gold_answers` holds the
-  per-provider expected set (upstream + update-gold + import);
-  `make update-gold` calls every top-tier model. `demo.json` reshaped
-  to `expected_answers[]` / `routed_answers[]` (§7). Lexical/keyword
-  routing removed (semantic only).
-- ~~**Implement `make answers`.**~~ `src/benchmark/answers.py`;
-  `tier_answers` PK `(run_id, query_id, tier_level, model_id)`.
-- ~~**Implement `make export`.**~~ `src/benchmark/export.py`; emits
-  `demo.json` per §7. Resilient to missing data — emits null fields
-  where pass1 or tier_answers haven't run.
-- ~~**Unblock `make route`.**~~ Bundled simulator doesn't speak OAI;
-  replaced with `tools/oai_mock.py`. Pipeline now verified end-to-end.
-- ~~**Plumbing for real backends.**~~ Per-tier YAMLs under `config/tiers/`
-  are the single source of truth; swapping a backend is a one-file edit
-  (endpoint + router_backend_refs + backend.kind). `make start_LLM` /
-  `make stop_LLM` wraps the T2 dual-replica docker-run procedure via the
-  `backend.kind` dispatcher in `src/benchmark/start_llm.py`.
-- ~~**Router config emits real v0.3 schema.**~~ `build_router_config.py`
-  rewritten to produce `routing.signals.embeddings[]` (two per axis:
-  `<axis>_hard` and `<axis>_easy`) and `routing.decisions[]` with v0.3
-  AND/OR/NOT composition, plus `providers.models[].backend_refs[]` for
-  both OAI-compatible and Anthropic backends. Band-based exemplars file
-  is unchanged (it's the audience-facing artifact); the builder does the
-  band → Boolean translation. All 27 band combinations still reach all
-  5 tiers per the routing test.
-- ~~**Migrated to projections (v0.3 canonical pattern).**~~ The DIY
-  hard/easy embedding signals + AND/OR/NOT rule tree hit a structural
-  ceiling at ~84% routing accuracy because vllm-sr's `matched_signals`
-  uses single-winner semantics — only the top-scoring signal globally is
-  reported as matched, so rules that depended on multiple hard signals
-  firing were structurally impossible to satisfy. Rewrote the builder
-  and exemplars to the canonical projections shape:
-    • `routing.signals.complexity[]` — one contrastive signal per axis
-      with `hard` / `easy` candidate banks (`needs_reasoning`,
-      `needs_expertise`, `needs_judgment`). Each emits a confidence ∈ [0, 1].
-    • `routing.projections.scores.request_difficulty` (`weighted_sum`)
-      combines per-signal confidences into a single continuous score.
-    • `routing.projections.mappings.tier_band` (`threshold_bands`)
-      partitions that score into 5 mutually-exclusive bands.
-    • `routing.decisions[]` — one per tier, each conditioning on a
-      single `{type: projection, name: tierN_band}`.
-  Tuning surface is two human-readable knobs in `router-exemplars.yaml`:
-  per-signal `weight:` (contribution to difficulty) and `tier_cutoffs:`
-  (where to split the bands). Tests in `test_shipped_configs.py` assert
-  the bands cover [0, 1] with no gaps/overlap and that scores at each
-  cutoff land in the expected tier.
+Implementation chronology — what shipped when, and what surprised us
+along the way — lives in [`docs/history.md`](docs/history.md).
 
 ## 14. Known open design questions
 
@@ -519,106 +422,17 @@ not `/v1/chat/completions`. Replaced with `tools/oai_mock.py`.
 
 ## 16. Maintaining this document
 
-PLAN.md is the project's source of truth. When state changes, update the
-relevant section in the same commit:
+PLAN.md is the project's source of truth for **current design**. When
+state changes, update the relevant section in the same commit:
 
-- **§13 Current state** must reflect what works and what's broken at HEAD.
-  When a bug is fixed, remove it from "active blocker" and add a one-line
-  note in §17 history.
-- **§13 Roadmap** gets reordered or pruned as items ship.
-- **§14 Open questions** gets new entries when we hit an unknown;
-  resolved questions move to §17 with the answer.
-- **§17 History** captures the chronology of what we built and what
-  surprised us.
+- **§13 Current state** stays a one-paragraph summary. Detailed status
+  belongs in tests or in the active TODO file, not here.
+- **§14 Open questions** gets new entries when we hit an unknown.
+- **`docs/history.md`** captures the chronology of what we built and
+  what surprised us. New entries land there; nothing moves the other
+  direction.
 
-A fresh Claude session opening this repo should be able to read PLAN.md +
-CLAUDE.md and know what's true, what's not, and what to do next.
+A fresh Claude session opening this repo should be able to read
+PLAN.md + CLAUDE.md and know what's true. If they need *why* a
+decision was made, history.md is the next stop.
 
-## 17. Implementation history
-
-Chronological record of what we built and what surprised us. New entries
-go at the bottom.
-
-- **M0** — Plan + skeleton: PLAN.md, README, Makefile stubs.
-- **M1** — DB schema, config loaders, idempotent loader (SQLAlchemy +
-  pydantic).
-- **M2** — `tiers.py` OAI-compatible client (Pass 2 backbone).
-- **M3** — Router subprocess + client + `x-vsr-*` header extraction.
-  *Surprise: initially modeled `vllm-sr serve` as a daemon; it's actually
-  a launcher that spawns a Docker stack and exits. Corrected during
-  dogfooding.*
-- **M4** — Pass 1 + Pass 2 + run lifecycle + per-row resume; bounded
-  concurrency.
-- **M5** — *(deleted)* Originally added LLM-as-judge + human review TUI.
-  Removed when we narrowed scope to "harness produces inputs; judging is
-  external."
-- **M6** — *(deleted)* Originally added aggregate report. Removed; the
-  demo consumes `demo.json` directly via the replay UI.
-- **Simplification pass** — queries.json (not YAML), folded `seed` and
-  `gold` targets into `make load`, dropped `validate-config`.
-- **Dogfood fixes** — RouterProcess launcher pattern; `make setup`
-  installs vllm-sr; shipped first real `config/vllm-sr.yaml` with 5 tiers.
-- **Scope reframe** — pivoted from "continuously-runnable benchmark
-  harness with internal scoring" to "production-pass that emits a single
-  `demo.json` consumed by external judging + replay UI." Dropped M5+M6
-  surface area; added `make answers` (per-tier collection) and
-  `make export` as the new top-level targets.
-- **Prune** — deleted `judge.py`, `review.py`, `report.py`, `pass2.py`,
-  the `Score` table, and related configs/tests; folded `install-router`
-  into `make setup`. Net −1,729 lines.
-- **answers + export landed** — new `src/benchmark/answers.py` and
-  `src/benchmark/export.py`; new `tier_answers` table with PK
-  `(run_id, query_id, tier_level)`; CLI commands `answers` and `export`
-  wired; `make answers` and `make export` no longer stubs. End-to-end
-  `make load && make export` produces a valid `demo.json` with null
-  fields for parts that haven't run yet.
-- **Active-blocker misdiagnosis corrected** — the Envoy 404 wasn't an
-  Envoy route-generation bug. The autogenerated `.vllm-sr/envoy.yaml`
-  did have correct routes (default `prefix: /` + per-tier
-  `x-selected-model` header matches); the router's ext_proc emitted
-  correct `routing_decision: default-tier1` logs; envoy forwarded
-  successfully. The 404 came from the bundled `vllm-sr-sim` itself,
-  which speaks the FleetSim API (`/api/fleets`, `/api/jobs`) and has
-  no `/v1/chat/completions` endpoint. *Surprise: never substitute a
-  simulator without checking its protocol.*
-- **Mock + plumbing landed** — `tools/oai_mock.py` (stdlib-only,
-  ~120 lines) replaces the bundled sim for pipeline validation.
-  `make mock-bg` / `mock-stop` manage it. Each tier block in
-  `config/vllm-sr.yaml` and `config/models.yaml` got a `# REAL:`
-  comment marking the swap line so each tier could independently flip
-  to its real backend with no code changes. End-to-end verified:
-  `make route` 110/110, `make answers` 550/550, `make export`
-  produces complete `demo.json`. (Superseded by the per-tier YAML
-  refactor below; `# REAL:` markers are gone and `models.yaml` is
-  removed.)
-- **start_LLM / stop_LLM landed** — new Makefile targets wrap the
-  documented vLLM dual-socket T2 procedure (NUMA-pinned r0/r1 on host
-  ports 8000/8001, `--block-size 32`, 120 GB KV per replica). Stable
-  container names so stop is straightforward. Env-var overrides for
-  cores / NUMA / KV / ports. T1 is a clearly-marked placeholder
-  block awaiting the user-provided runner.
-- **Per-tier YAML refactor (source-of-truth split)** — `config/models.yaml`
-  removed; each tier now has its own YAML in `config/tiers/`. The YAML
-  drives every backend-aware code path (answers, gen-router-config,
-  start_LLM). vllm-sr.yaml is now GENERATED (gitignored) from per-tier
-  YAMLs + a hand-maintained `vllm-sr.routing.yaml` template; that means
-  swapping a tier's backend (local docker → remote URL) is a single-file
-  edit. `make start_LLM` is now a YAML-driven Python dispatcher
-  (`src/benchmark/start_llm.py`) keyed off `backend.kind`.
-- **make answers semantics flip** — was: 5 calls per query (one per
-  tier). Now: 1 call per query (the routed tier from `pass1_results`).
-  Unreachable upstreams mark rows `status='error'` instead of failing the
-  pass; retries happen automatically on the next `make answers`.
-- **RUN_NEW=true flag** — env-var passthrough to `--run-new` on
-  `make route` and `make answers`; deletes the relevant rows for the
-  active run before re-seeding.
-- **.env support** — `python-dotenv` added; CLI auto-loads `.env` from
-  CWD. Each tier's `endpoint.api_key_env` names which env var to read;
-  for now T1-T3 are unauthed (mock or local), T4/T5 reference
-  `ANTHROPIC_API_KEY`.
-- **LOGICAL_DNS discovery** — vllm-sr generates envoy clusters of type
-  LOGICAL_DNS, which only accept a single endpoint per cluster. Multi-
-  ref `router_backend_refs` in a tier YAML breaks envoy at startup.
-  Workaround: keep one ref per tier in vllm-sr.yaml; if T2 dual-replica
-  load balancing is needed, front r0+r1 with haproxy/nginx exposing one
-  port and reference that.

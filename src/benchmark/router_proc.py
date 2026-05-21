@@ -46,8 +46,11 @@ class RouterStartupError(RuntimeError):
 # Hash of the router-config.yaml the running stack was launched with.
 # Written here by `ensure_router_stack` after a successful start/restart;
 # consulted on the next call to decide whether the stack is still running
-# the right config. Lives at repo root, gitignored.
-ROUTER_CONFIG_HASH_FILE = Path(".router-config-hash")
+# the right config. Lives under data/ alongside the run database;
+# gitignored. (Older checkouts had this at `.router-config-hash` in the
+# repo root — `ensure_router_stack` writes the new path; the old file
+# can be deleted manually.)
+ROUTER_CONFIG_HASH_FILE = Path("data/.router-config-hash")
 
 
 class RouterProcess:
@@ -228,6 +231,7 @@ def _read_stored_hash(hash_file: Path) -> str | None:
 
 
 def _write_stored_hash(hash_file: Path, h: str) -> None:
+    hash_file.parent.mkdir(parents=True, exist_ok=True)
     hash_file.write_text(h + "\n")
 
 
