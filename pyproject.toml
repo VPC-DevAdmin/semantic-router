@@ -43,6 +43,13 @@ dev = [
     "mypy>=1.10",
     "types-PyYAML",
 ]
+# Optional: tiktoken gives the demo preprocessor accurate frontier token
+# estimates (cl100k_base). Without it, build_demo_data.py falls back to a
+# chars/4 heuristic — the demo still builds, just slightly less precise on
+# the frontier-cost side.
+demo = [
+    "tiktoken>=0.7",
+]
 
 [project.scripts]
 benchmark = "benchmark.cli:app"

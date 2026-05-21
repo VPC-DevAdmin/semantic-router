@@ -66,9 +66,11 @@ data/.router-config-hash
 data/evaluated_queries_with_answers.json
 demo.json
 
-# Generated demo dataset — rebuilt by `make demo-data` from the committed
-# exports + demo/pricing.json. pricing.json itself IS committed.
-demo/data/demo_data.json
+# demo/data/demo_data.json is COMMITTED — it's the canonical, ready-to-serve
+# demo dataset so a fresh clone can `make demo` (or just serve demo/) without
+# rebuilding. `make demo-data` overwrites it from whatever exports are present;
+# running your own pipeline therefore replaces it with your run (git restores
+# the canonical copy). Not gitignored — see the demo section in README.
 
 # Editor / OS
 .DS_Store
