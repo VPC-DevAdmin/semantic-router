@@ -27,9 +27,6 @@ external judging, slide plots) read. Multi-model shape:
        "answer": "...", "status": "success", "latency_ms": 1234},
       ...
     ],
-
-    # Grouped by tier; each value a list of {provider, model, answer}.
-    "all_tier_answers": {"tier3": [{...}, {...}]}
   }
 
 Whatever's in the DB at export time is what lands, with empty lists /
@@ -117,22 +114,6 @@ def _build_query_entry(
             "raw": p1.raw_routing_metadata,
         }
 
-    successful = [
-        ta for ta in tier_answers
-        if ta.status == "success" and ta.response_text is not None
-    ]
-
-    # Per-tier grouping (stable order: tier, then slot, then model).
-    all_tier_answers: dict[str, list[dict[str, Any]]] = {}
-    for ta in sorted(successful, key=lambda r: (r.tier_level, r.model_slot, r.model_id)):
-        all_tier_answers.setdefault(f"tier{ta.tier_level}", []).append(
-            {
-                "provider": ta.provider,
-                "model": ta.model_id,
-                "answer": ta.response_text,
-            }
-        )
-
     routed_answers: list[dict[str, Any]] = []
     if routed_tier is not None:
         for ta in sorted(
@@ -170,7 +151,6 @@ def _build_query_entry(
         "routing_metadata": routing_metadata,
         "expected_answers": expected_answers,
         "routed_answers": routed_answers,
-        "all_tier_answers": all_tier_answers,
     }
 
 

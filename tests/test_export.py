@@ -105,12 +105,8 @@ def test_export_basic_multimodel_shape(tmp_path: Path) -> None:
          "answer": "Paris (Google)", "status": "success", "latency_ms": 10},
     ]
 
-    assert q1["all_tier_answers"] == {
-        "tier3": [
-            {"provider": "OpenAI", "model": "gpt-5-mini", "answer": "Paris (OpenAI)"},
-            {"provider": "Google", "model": "gemini-flash", "answer": "Paris (Google)"},
-        ]
-    }
+    # `all_tier_answers` no longer emitted — `make answers` only calls
+    # the routed tier, so it was always a subset of `routed_answers`.
 
 
 def test_export_missing_routing_is_null(tmp_path: Path) -> None:
@@ -126,13 +122,12 @@ def test_export_missing_routing_is_null(tmp_path: Path) -> None:
     assert q1["routed_answers"] == []
     # Declared gold still present even with no routing.
     assert q1["expected_answers"][0]["answer"] == "Paris."
-    # Answer still surfaces in the per-tier map.
-    assert q1["all_tier_answers"]["tier2"][0]["model"] == "m2"
 
 
 def test_export_routed_tier_with_error_model(tmp_path: Path) -> None:
-    """Routed-tier model that errored appears in routed_answers (status=error,
-    answer null) but is excluded from all_tier_answers."""
+    """A routed-tier model that errored appears in routed_answers with
+    `status='error'` and `answer=null` so downstream consumers can see
+    the failure rather than silently missing it."""
     db, rid = _setup(tmp_path)
     _add_pass1(db, rid, "q1", tier=3)
     _add_tier_answer(db, rid, "q1", 3, "ok-model", "good", provider="A", slot=0)
@@ -145,9 +140,11 @@ def test_export_routed_tier_with_error_model(tmp_path: Path) -> None:
 
     statuses = {r["model"]: r["status"] for r in q1["routed_answers"]}
     assert statuses == {"ok-model": "success", "bad-model": "error"}
-    assert q1["all_tier_answers"] == {
-        "tier3": [{"provider": "A", "model": "ok-model", "answer": "good"}]
-    }
+    # The errored model's row has status='error' and answer=None.
+    bad = next(r for r in q1["routed_answers"] if r["model"] == "bad-model")
+    assert bad["answer"] is None
+    ok = next(r for r in q1["routed_answers"] if r["model"] == "ok-model")
+    assert ok["answer"] == "good"
 
 
 def test_export_per_provider_expected_answers(tmp_path: Path) -> None:

@@ -173,10 +173,7 @@ shape — a tier can front several provider models and they're all called):
   "routed_answers": [
     { "tier": 3, "provider": "OpenAI", "model": "gpt-5-mini",   "answer": "Paris.", "status": "success", "latency_ms": 1234 },
     { "tier": 3, "provider": "Google", "model": "gemini-flash", "answer": "Paris.", "status": "success", "latency_ms":  980 }
-  ],
-
-  // Grouped by tier; each a list of {provider, model, answer}.
-  "all_tier_answers": { "tier3": [ { "provider": "OpenAI", "model": "gpt-5-mini", "answer": "Paris." }, ... ] }
+  ]
 }
 ```
 
