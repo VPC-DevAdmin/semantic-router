@@ -6,7 +6,7 @@ Surface (one command per make target):
   load           upsert data/queries.json into the DB (golds from `expected_answers[]`)
   route          for each query: send through router, capture routing decision
   answers        for each query × each tier: call the tier backend directly
-  export         emit demo.json from the DB
+  export         write data/evaluated_queries_with_answers.json from the DB
   resume         continue an in-progress run over pending/error rows
   clean-results  wipe runs/results; preserves queries and gold
   router-smoke   one-shot routing diagnostic
@@ -435,7 +435,7 @@ def import_answers_cmd(
     ),
     provider: str | None = typer.Option(
         None, "--provider",
-        help="Optional provider label (Anthropic / OpenAI / Google) → demo.json.",
+        help="Optional provider label (Anthropic / OpenAI / Google) → export JSON.",
     ),
     db: Path = typer.Option(DEFAULT_DB_PATH),
     models: Path = typer.Option(DEFAULT_TIERS),
@@ -593,9 +593,15 @@ def update_gold_cmd(
 def export_cmd(
     db: Path = typer.Option(DEFAULT_DB_PATH),
     run: int | None = typer.Option(None, "--run"),
-    output: Path = typer.Option(Path("demo.json"), "--output", "-o"),
+    output: Path = typer.Option(
+        Path("data/evaluated_queries_with_answers.json"), "--output", "-o",
+    ),
 ) -> None:
-    """Write demo.json from the DB. Defaults to the latest active run."""
+    """Write the evaluated-queries-with-answers JSON from the DB.
+
+    Defaults to the latest active run and to
+    `data/evaluated_queries_with_answers.json` if --output isn't given.
+    """
     rid = _resolve_run(db, run)
     summary = export_demo_json(db, rid, output)
     console.print(f"[bold]export[/] (run {rid})")

@@ -29,7 +29,7 @@ from sqlalchemy.orm import (
     sessionmaker,
 )
 
-DEFAULT_DB_PATH = Path("benchmark.db")
+DEFAULT_DB_PATH = Path("data/router_benchmark.db")
 
 
 class Base(DeclarativeBase):
@@ -100,7 +100,7 @@ class TierAnswer(Base):
     # PK. One row per model that the routed tier fronts.
     model_id: Mapped[str] = mapped_column(String, primary_key=True)
     model_slot: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    provider: Mapped[str | None] = mapped_column(String)  # optional label → demo.json
+    provider: Mapped[str | None] = mapped_column(String)  # optional label → export JSON
     tier_name: Mapped[str] = mapped_column(String, nullable=False)  # router_alias
     response_text: Mapped[str | None] = mapped_column(Text)
     prompt_tokens: Mapped[int | None] = mapped_column(Integer)
@@ -135,6 +135,7 @@ class GoldAnswer(Base):
 def make_engine(db_path: Path = DEFAULT_DB_PATH):
     # check_same_thread=False lets the async passes share a connection pool safely
     # under our per-row commit pattern; we still serialize writes via the session.
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     engine = create_engine(
         f"sqlite:///{db_path}",
         future=True,

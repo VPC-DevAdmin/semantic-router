@@ -1,6 +1,6 @@
-"""Emit `demo.json` from the DB — backs `make export`.
+"""Emit `the evaluated-queries JSON` from the DB — backs `make export`.
 
-`demo.json` is the single artifact downstream consumers (replay UI,
+`the evaluated-queries JSON` is the single artifact downstream consumers (replay UI,
 external judging, slide plots) read. Multi-model shape:
 
   {
@@ -100,7 +100,7 @@ def _build_query_entry(
     tier_answers: list[TierAnswer],
     gold_answers: list[GoldAnswer],
 ) -> dict[str, Any]:
-    """Build one demo.json entry for a single query."""
+    """Build one the evaluated-queries JSON entry for a single query."""
     routed_tier = p1.router_selected_tier if p1 is not None else None
 
     routing_metadata: dict[str, Any] | None = None
@@ -179,7 +179,7 @@ def export_demo_json(
     run_id: int,
     output_path: Path,
 ) -> ExportSummary:
-    """Read the DB for `run_id` and write demo.json to `output_path`."""
+    """Read the DB for `run_id` and write the evaluated-queries JSON to `output_path`."""
     summary = ExportSummary(output_path=output_path)
     entries: list[dict[str, Any]] = []
 

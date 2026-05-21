@@ -15,7 +15,14 @@ venv/
 build/
 dist/
 
-# Benchmark database (canonical run state — should be regenerable)
+# Benchmark database (canonical run state — should be regenerable).
+# Lives under data/ now; legacy root-level paths kept ignored so a
+# stale benchmark.db from earlier checkouts doesn't accidentally land
+# in a commit.
+data/router_benchmark.db
+data/router_benchmark.db-journal
+data/router_benchmark.db-wal
+data/router_benchmark.db-shm
 benchmark.db
 benchmark.db-journal
 benchmark.db-wal
@@ -45,7 +52,9 @@ config/.vllm-sr/
 /config.yaml
 /.vllm-sr/
 
-# Generated demo artifact — re-emitted by `make export`.
+# Generated export artifact — re-emitted by `make export`. Legacy
+# root-level demo.json kept ignored for old checkouts.
+data/evaluated_queries_with_answers.json
 demo.json
 
 # Editor / OS

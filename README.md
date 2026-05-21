@@ -2,9 +2,10 @@
 
 A production-pass harness that drives the
 [vLLM Semantic Router](https://github.com/vllm-project/semantic-router)
-through a curated query set and emits a single `demo.json` artifact. The
-demo is then replayed (and judged) downstream — this repo doesn't do any
-judging or live inference at presentation time.
+through a curated query set and emits a single
+`data/evaluated_queries_with_answers.json` artifact. The export is then
+replayed (and judged) downstream — this repo doesn't do any judging or
+live inference at presentation time.
 
 The full project scope, design rationale, and current status live in
 [**PLAN.md**](PLAN.md). What follows is the operational quickstart.
@@ -19,7 +20,7 @@ make setup         # venv + Python deps + DB schema + installs `vllm-sr` if miss
 make load          # 110 curated queries (with embedded gold answers) → DB
 make route         # for each query: capture which tier the router picks
 make answers       # for each query × each tier: capture that tier's response
-make export        # emit demo.json for downstream replay + judging
+make export        # emit data/evaluated_queries_with_answers.json for downstream replay + judging
 ```
 
 Other targets:
@@ -47,7 +48,9 @@ config/           # everything the operator tunes — YAML configs
     router.yaml       # process-management config for the `vllm-sr` subprocess
 
 data/
-    queries.json      # 110 queries with `expected_answer` (Opus-level gold)
+    queries.json                            # 110 queries with embedded gold (per-provider)
+    router_benchmark.db                     # generated SQLite store (gitignored)
+    evaluated_queries_with_answers.json     # generated export artifact (gitignored)
 
 src/benchmark/    # the harness itself
 tests/            # unit tests covering everything except the live router
@@ -66,7 +69,7 @@ queries.json ──[make load]──> SQLite ──┬─[make route]──> tie
                                                                [make export]
                                                                       │
                                                                       ▼
-                                                                  demo.json
+                                              data/evaluated_queries_with_answers.json
                                                                       │
                                                                       ▼
                                                           external judge + replay UI

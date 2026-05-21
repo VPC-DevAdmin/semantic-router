@@ -41,7 +41,7 @@ class TierModel(BaseModel):
     Google Gemini, …) so `make answers` shows "how the answer changes
     across providers". Each entry corresponds to one indexed env slot
     `TIER{N}_{i}_*`. `served_model_name` must be unique within a tier
-    (it's the per-tier DB / demo.json key). `provider` is an optional
+    (it's the per-tier DB / the evaluated-queries JSON export key). `provider` is an optional
     human label.
     """
     slot: int
@@ -264,13 +264,13 @@ class ExpectedAnswer(BaseModel):
     """One gold/reference answer for a query.
 
     A query can carry several (e.g. one per provider). Each becomes a
-    row in the `gold_answers` table and a `demo.json` `expected_answers[]`
+    row in the `gold_answers` table and a `the evaluated-queries JSON export` `expected_answers[]`
     entry.
 
       answer    the reference text (required)
       model     per-query unique key (→ gold_answers.model_id and
-                demo.json `model`) — required
-      provider  optional label (Anthropic / OpenAI / Google) → demo.json
+                the evaluated-queries JSON export `model`) — required
+      provider  optional label (Anthropic / OpenAI / Google) → the evaluated-queries JSON export
 
     Extra fields are rejected — keeps queries.json strictly conformant
     so a downstream loader can rely on the shape.
@@ -298,7 +298,7 @@ class QuerySpec(BaseModel):
     prompt: str
     # One or more gold/reference answers. A single-gold query is just a
     # one-entry list — there is no separate scalar form. `model` is the
-    # per-query unique key (becomes gold_answers.model_id and demo.json
+    # per-query unique key (becomes gold_answers.model_id and the evaluated-queries JSON export
     # `model`).
     expected_answers: list[ExpectedAnswer] = Field(default_factory=list)
     expected_min_tier: int = Field(ge=1, le=5)
@@ -487,7 +487,7 @@ def apply_tier_env_overrides(tier: TierConfig) -> TierConfig:
         different model name).
       • API_KEY — env var NAME is recorded on the slot; the actual key
         lives in os.environ.
-      • PROVIDER — optional label, surfaces verbatim in demo.json.
+      • PROVIDER — optional label, surfaces verbatim in the evaluated-queries JSON export.
       • TIMEOUT / MAX_TOKENS — per-slot overrides; else inherit the tier
         YAML's `timeout_s` / `max_tokens`.
       • THINKING (true/false) — flips Qwen3's chat_template_kwargs
@@ -495,7 +495,7 @@ def apply_tier_env_overrides(tier: TierConfig) -> TierConfig:
         controls go in the tier YAML's backend.extra_body instead).
 
     `served_model_name` must be unique within a tier — it's the per-tier
-    key in the DB and in demo.json.
+    key in the DB and in the evaluated-queries JSON export.
 
     If a stale bare `TIER{N}_*` env var is set (the old single-model
     form, no longer supported), we raise with a migration hint so it
