@@ -14,7 +14,20 @@ Re-running the pipeline (below) regenerates it.
 Full design and rationale: [**PLAN.md**](PLAN.md).
 Working with this repo from a Claude session: [**CLAUDE.md**](CLAUDE.md).
 
-## Quickstart
+## Just want to see it?
+
+```sh
+git clone git@github.com:VPC-DevAdmin/semantic-router.git
+cd semantic-router
+make demo        # builds nothing heavy — serves the committed dataset + opens your browser
+```
+
+`make demo` is a single command that works on a bare clone with **no
+`make setup`** — it needs only `python3`. It replays the committed,
+already-judged benchmark dataset (real routing, real answers, real
+verdicts). Everything below is for *reproducing* that dataset yourself.
+
+## Quickstart (reproduce the dataset)
 
 ```sh
 git clone git@github.com:VPC-DevAdmin/semantic-router.git
@@ -27,7 +40,8 @@ make route     # routing pass (via local OAI mock — no per-query token cost)
 make answers   # for each routed query × each model in the picked tier, get a real answer
 make evaluate  # LLM-judge routed vs gold (batched, per-row resumable)
 make export    # write data/routed_queries_with_answers.json + data/evaluations.json (if judged)
-make demo      # build the demo dataset + serve the cost-routing replay at localhost:8000
+make demo      # serve the cost-routing replay + open the browser — SINGLE COMMAND,
+               # works on a bare clone with no `make setup` (just needs python3)
 ```
 
 That's the whole pipeline. Pass-1 (`route`) and pass-2 (`answers`) are

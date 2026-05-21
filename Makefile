@@ -34,8 +34,8 @@ help:
 	@echo "  import-answers FILE=<path> TIER=<1-5> MODEL=<id> [PROVIDER=<name>] [RUN=<id>]  load externally-generated answers for one model"
 	@echo "  update-gold [QID=<id[,id]>] [TIER=<1-5>] [YES=true]  regenerate gold via top tier (no scope = ALL, confirms)"
 	@echo "  export [RUN=<id>] [OUTPUT=<path>]  emit the routed-queries JSON (default: data/routed_queries_with_answers.json)"
-	@echo "  demo-data [CONC=<N>]           build demo/data/demo_data.json from the exports + demo/pricing.json"
-	@echo "  demo [DEMO_PORT=<n>]           serve the cost-routing replay demo (default port 8000)"
+	@echo "  demo-data [CONC=<N>]           force-rebuild demo/data/demo_data.json from the exports + demo/pricing.json"
+	@echo "  demo [DEMO_PORT=<n>]           serve the cost-routing replay demo + open browser (single command, no setup needed)"
 	@echo "  misroutes [RUN=<id>]           diagnostic: list queries routed BELOW their min tier"
 	@echo "  scores [RUN=<id>]              diagnostic: per-signal score + threshold gap for each misroute"
 	@echo "  resume [RUN=<id>]              re-run pending/error rows; mark done if clean"
@@ -257,29 +257,51 @@ export:
 	$(BENCHMARK) export --db $(DB) --output $(OUTPUT) $(if $(RUN),--run $(RUN),)
 
 # ---- cost-routing replay demo ----
-# `make demo-data` builds the self-contained dataset the demo front-end
-# consumes (demo/data/demo_data.json) from the exports + demo/pricing.json.
-# CONC=<N> sets the concurrency used for the throughput stat (default 8 —
-# what the route pass ran at). `make demo` serves the demo/ directory.
+# Design goal: `make demo` is a SINGLE COMMAND that works on a bare clone
+# with NO `make setup` — the committed demo dataset + a stdlib-only
+# preprocessor + stdlib http.server mean it needs nothing but python3.
 #
-# If the source exports are missing (fresh clone after a clean, or
-# someone deleted them), run `make export` first to regenerate them from
-# the DB. evaluations.json only appears if the run was judged — the
-# preprocessor tolerates its absence (the demo just shows no verdicts),
-# so a single export attempt is enough; we don't loop on it.
+# DEMO_PY picks the venv python if `make setup` has run, else falls back
+# to system python3. The demo never touches vllm-sr / the dev toolchain,
+# so we deliberately don't force `make setup` (which would download the
+# vllm-sr binary the demo doesn't use).
+#
+# `make demo` serves the COMMITTED demo_data.json as-is unless the source
+# exports are newer (i.e. you re-ran the pipeline), in which case it
+# rebuilds first — so a replicator's run shows their data while a fresh
+# clone shows the canonical data. `make demo-data` forces a rebuild.
 DEMO_PORT ?= 8000
 ROUTED_JSON := data/routed_queries_with_answers.json
 EVALS_JSON  := data/evaluations.json
+DEMO_DATA   := demo/data/demo_data.json
+DEMO_PY     := $(shell [ -x $(VENV)/bin/python ] && echo $(VENV)/bin/python || command -v python3)
+# Cross-platform "open a URL in the default browser" (no-op if neither found).
+OPEN_CMD    := $(shell command -v open 2>/dev/null || command -v xdg-open 2>/dev/null || echo true)
+
+# Force a rebuild of the demo dataset from whatever exports are present.
 demo-data:
 	@if [ ! -f $(ROUTED_JSON) ] || [ ! -f $(EVALS_JSON) ]; then \
 	    echo "[demo] source export(s) missing — running 'make export' to regenerate from the DB"; \
 	    $(MAKE) export; \
 	fi
-	$(PYTHON) tools/build_demo_data.py $(if $(CONC),--concurrency $(CONC),)
+	$(DEMO_PY) tools/build_demo_data.py $(if $(CONC),--concurrency $(CONC),)
 
-demo: demo-data
+demo:
+	@if [ -z "$(DEMO_PY)" ]; then \
+	    echo "[demo] no python3 found. Install Python 3, or run 'make setup'."; exit 1; \
+	fi
+	@# Rebuild only if the dataset is missing or the source exports changed
+	@# (a fresh clone serves the committed canonical dataset untouched).
+	@if [ ! -f $(DEMO_DATA) ] || [ $(ROUTED_JSON) -nt $(DEMO_DATA) ] \
+	     || [ demo/pricing.json -nt $(DEMO_DATA) ]; then \
+	    echo "[demo] building demo dataset ($(DEMO_PY))"; \
+	    $(MAKE) demo-data; \
+	else \
+	    echo "[demo] using committed demo dataset (run 'make demo-data' to force a rebuild)"; \
+	fi
 	@echo "Serving demo at http://localhost:$(DEMO_PORT)/  (Ctrl-C to stop)"
-	$(PYTHON) -m http.server $(DEMO_PORT) --directory demo
+	@( sleep 1 && $(OPEN_CMD) http://localhost:$(DEMO_PORT)/ >/dev/null 2>&1 & ) || true
+	@$(DEMO_PY) -m http.server $(DEMO_PORT) --directory demo
 
 resume:
 	$(BENCHMARK) resume --db $(DB) $(if $(RUN),--run $(RUN),)

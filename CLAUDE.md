@@ -30,10 +30,19 @@ make mock-stop          # stop the mock
 
 ## Replay demo (`demo/`)
 
-`make demo` builds a self-contained dataset (`tools/build_demo_data.py`
-→ `demo/data/demo_data.json`) from the committed exports +
-`demo/pricing.json`, then serves a browser front-end that replays the
-benchmark: queries flow through a router animation at the **real
+**`make demo` is a single command that works on a bare clone with no
+`make setup`** — it needs only `python3` (the preprocessor is
+stdlib-only + optional tiktoken; the server is stdlib http.server). It
+serves the COMMITTED `demo/data/demo_data.json` as-is and opens the
+browser, rebuilding only if the source exports are newer than the
+dataset (i.e. you re-ran the pipeline). `make demo-data` forces a
+rebuild. We deliberately don't force `make setup` from `make demo` —
+the demo never touches vllm-sr or the dev toolchain, so pulling them
+in would just slow down "show me the demo."
+
+The dataset itself is built by `tools/build_demo_data.py` →
+`demo/data/demo_data.json` from the committed exports +
+`demo/pricing.json`, and the front-end replays the benchmark: queries flow through a router animation at the **real
 measured throughput** (~22 qps), each carrying its **real routing
 latency**; the readable detail panel samples ~1 query/1.5s. Per-query
 cost is **real** (routed-side token counts from the export × supplier
