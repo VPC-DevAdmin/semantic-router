@@ -20,11 +20,29 @@ make route              # rebuild router-config.yaml; routing pass via the local
 make answers            # for each routed query: call EVERY model the picked tier fronts (real upstreams)
 make evaluate           # LLM-judge routed vs gold answers (per-row resumable, batched 50 queries/call)
 make export             # emit data/routed_queries_with_answers.json + data/evaluations.json (if rows exist)
+make demo-data          # build demo/data/demo_data.json from the exports + demo/pricing.json
+make demo               # build demo data + serve the browser replay at :8000
 make start_LLM          # YAML-driven launch of local-CPU tier backends (T2 docker procedure today)
 make stop_LLM           # tear down local-CPU tier backends
 make mock-bg            # local OAI mock on :18811 for pipeline validation
 make mock-stop          # stop the mock
 ```
+
+## Replay demo (`demo/`)
+
+`make demo` builds a self-contained dataset (`tools/build_demo_data.py`
+→ `demo/data/demo_data.json`) from the committed exports +
+`demo/pricing.json`, then serves a browser front-end that replays the
+benchmark: queries flow through a router animation at the **real
+measured throughput** (~22 qps), each carrying its **real routing
+latency**; the readable detail panel samples ~1 query/1.5s. Per-query
+cost is **real** (routed-side token counts from the export × supplier
+pricing; frontier completion tokens tiktoken-estimated). Five tier
+dropdowns + a frontier dropdown re-key the displayed answer, cost, and
+the two judge verdicts live. The whole front-end is **data-driven** —
+tiers, models, pricing, throughput all come from `demo_data.json`, so
+dropping in a fresh dataset needs no code change. Editing supplier
+rates = edit `demo/pricing.json` + re-run `make demo-data`.
 
 `route` and `answers` both accept `RUN_NEW=true` to wipe the active run's
 rows and re-seed before running. Errors in `answers` don't fail the pass —

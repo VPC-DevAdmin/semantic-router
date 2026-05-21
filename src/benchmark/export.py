@@ -24,7 +24,8 @@ external judging, slide plots) read. Multi-model shape:
     # Every model the ROUTED tier fronts got called — one entry each.
     "routed_answers": [
       {"tier": 3, "provider": "OpenAI", "model": "gpt-5-mini",
-       "answer": "...", "status": "success", "latency_ms": 1234},
+       "answer": "...", "status": "success", "latency_ms": 1234,
+       "prompt_tokens": 42, "completion_tokens": 380},
       ...
     ],
   }
@@ -138,6 +139,11 @@ def _build_query_entry(
                     "answer": ta.response_text if ta.status == "success" else None,
                     "status": ta.status,
                     "latency_ms": ta.latency_ms,
+                    # Real token counts (from the model's API response) so
+                    # downstream consumers — e.g. the cost demo — can
+                    # compute actual per-call cost without re-tokenizing.
+                    "prompt_tokens": ta.prompt_tokens,
+                    "completion_tokens": ta.completion_tokens,
                 }
             )
 

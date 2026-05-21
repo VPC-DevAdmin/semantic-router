@@ -8,7 +8,7 @@
 #   make export       # write data/routed_queries_with_answers.json
 
 .PHONY: help setup load route answers evaluate export resume misroutes scores \
-        import-answers update-gold \
+        import-answers update-gold demo-data demo \
         clean-results router-smoke router-stop test fmt lint \
         mock-bg mock-stop start_LLM stop_LLM
 
@@ -34,6 +34,8 @@ help:
 	@echo "  import-answers FILE=<path> TIER=<1-5> MODEL=<id> [PROVIDER=<name>] [RUN=<id>]  load externally-generated answers for one model"
 	@echo "  update-gold [QID=<id[,id]>] [TIER=<1-5>] [YES=true]  regenerate gold via top tier (no scope = ALL, confirms)"
 	@echo "  export [RUN=<id>] [OUTPUT=<path>]  emit the routed-queries JSON (default: data/routed_queries_with_answers.json)"
+	@echo "  demo-data [CONC=<N>]           build demo/data/demo_data.json from the exports + demo/pricing.json"
+	@echo "  demo [DEMO_PORT=<n>]           serve the cost-routing replay demo (default port 8000)"
 	@echo "  misroutes [RUN=<id>]           diagnostic: list queries routed BELOW their min tier"
 	@echo "  scores [RUN=<id>]              diagnostic: per-signal score + threshold gap for each misroute"
 	@echo "  resume [RUN=<id>]              re-run pending/error rows; mark done if clean"
@@ -253,6 +255,20 @@ update-gold:
 OUTPUT ?= data/routed_queries_with_answers.json
 export:
 	$(BENCHMARK) export --db $(DB) --output $(OUTPUT) $(if $(RUN),--run $(RUN),)
+
+# ---- cost-routing replay demo ----
+# `make demo-data` builds the self-contained dataset the demo front-end
+# consumes (demo/data/demo_data.json) from the committed exports +
+# demo/pricing.json. CONC=<N> sets the concurrency used for the
+# throughput stat (default 8 — what the route pass ran at).
+# `make demo` serves the demo/ directory; open the printed URL.
+DEMO_PORT ?= 8000
+demo-data:
+	$(PYTHON) tools/build_demo_data.py $(if $(CONC),--concurrency $(CONC),)
+
+demo: demo-data
+	@echo "Serving demo at http://localhost:$(DEMO_PORT)/  (Ctrl-C to stop)"
+	$(PYTHON) -m http.server $(DEMO_PORT) --directory demo
 
 resume:
 	$(BENCHMARK) resume --db $(DB) $(if $(RUN),--run $(RUN),)

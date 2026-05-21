@@ -97,12 +97,15 @@ def test_export_basic_multimodel_shape(tmp_path: Path) -> None:
         {"provider": "Anthropic", "model": "Opus", "answer": "Paris."},
     ]
 
-    # Both routed-tier models present, ordered by slot.
+    # Both routed-tier models present, ordered by slot. Token counts come
+    # from _add_tier_answer's defaults (prompt=5, completion=10).
     assert q1["routed_answers"] == [
         {"tier": 3, "provider": "OpenAI", "model": "gpt-5-mini",
-         "answer": "Paris (OpenAI)", "status": "success", "latency_ms": 10},
+         "answer": "Paris (OpenAI)", "status": "success", "latency_ms": 10,
+         "prompt_tokens": 5, "completion_tokens": 10},
         {"tier": 3, "provider": "Google", "model": "gemini-flash",
-         "answer": "Paris (Google)", "status": "success", "latency_ms": 10},
+         "answer": "Paris (Google)", "status": "success", "latency_ms": 10,
+         "prompt_tokens": 5, "completion_tokens": 10},
     ]
 
     # `all_tier_answers` no longer emitted — `make answers` only calls

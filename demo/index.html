@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Semantic Routing on Dell PowerEdge R770</title>
+<link rel="stylesheet" href="demo.css">
+</head>
+<body>
+
+<header>
+  <div class="container header-inner">
+    <div class="brand">
+      <div class="brand-logo">D</div>
+      <div>PowerEdge R770 <span class="brand-sub">· Semantic Router</span></div>
+    </div>
+    <div class="by-vp">prepared by <strong>Vector Path</strong></div>
+  </div>
+</header>
+
+<!-- HERO + CALCULATOR -->
+<section class="hero">
+  <div class="container">
+    <h1>Most AI queries don't need a frontier model.<br><span class="accent">Stop paying as if they do.</span></h1>
+    <p class="lede">A Dell PowerEdge R770 sits in front of your AI stack and classifies every query in milliseconds, then forwards it to the cheapest tier that can answer it well. These numbers are computed from a real 797-query benchmark run — actual routing decisions, actual answers, actual judge verdicts.</p>
+
+    <div class="calc-card">
+      <div class="calc-input">
+        <label for="qslider">Your AI queries per day</label>
+        <div class="calc-value" id="qvalue">100,000 <span>queries/day</span></div>
+        <input type="range" id="qslider" class="slider" min="10000" max="1000000" step="10000" value="100000">
+        <div class="slider-range"><span>10K</span><span>250K</span><span>500K</span><span>750K</span><span>1M</span></div>
+      </div>
+      <div class="calc-output">
+        <div class="savings-amount" id="savings">$0</div>
+        <div class="savings-label">saved per year</div>
+        <span class="savings-pct" id="pct">— lower than frontier-only</span>
+        <div class="savings-vs" id="vsline">computed from the observed routing mix + your supplier pricing</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- LIVE ROUTING -->
+<section class="routing-section">
+  <div class="container">
+    <div class="section-eyebrow">See it in action</div>
+    <h2 class="section-title">Watch queries get routed in real time</h2>
+    <p class="section-lede">Every query is classified on the R770 and dispatched to the cheapest tier that can answer it well. Pick a model per tier and the frontier baseline — the cost math and the judge verdicts re-key instantly to match. Queries replay from the actual benchmark dataset.</p>
+
+    <div id="loadStatus" class="loading">Loading benchmark data…</div>
+
+    <div id="demoRoot" style="display:none;">
+      <!-- Model pickers (populated from meta) -->
+      <div class="picker-bar" id="pickerBar"></div>
+
+      <!-- Stats -->
+      <div class="stats-bar">
+        <div class="stat"><div class="label">Queries routed</div><div class="value" id="liveCount">0</div></div>
+        <div class="stat"><div class="label">Routing throughput</div><div class="value" id="liveQps">0.0</div><div class="sub">decisions / second (measured)</div></div>
+        <div class="stat"><div class="label">Routed cost</div><div class="value" id="liveRouted">$0.0000</div><div class="sub">smart routing</div></div>
+        <div class="stat"><div class="label">Frontier-only</div><div class="value" id="liveBaseline">$0.0000</div><div class="sub" id="baselineSub">if every query → frontier</div></div>
+        <div class="stat savings"><div class="label">Saved so far</div><div class="value" id="liveSavings">$0.0000</div><div class="sub" id="livePct">0% lower</div></div>
+      </div>
+
+      <!-- Stage -->
+      <div class="stage-wrap">
+        <svg class="stage-svg" id="stageSvg" viewBox="0 0 1200 560" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+          <text x="170" y="30" class="small">INCOMING QUERIES</text>
+          <text x="600" y="30" class="small" text-anchor="middle">DELL POWEREDGE R770 · SEMANTIC ROUTER</text>
+          <text x="1040" y="30" class="small" text-anchor="middle">MODEL TIERS</text>
+          <g id="pathLayer"></g>
+          <g id="tierBoxLayer"></g>
+          <!-- router box -->
+          <g id="serverGroup" transform="translate(486, 232)">
+            <rect x="0" y="0" width="228" height="96" rx="8" fill="#13283c" stroke="#3a5470"/>
+            <rect x="10" y="14" width="208" height="34" rx="4" fill="#06121e" stroke="#1c3148"/>
+            <text x="20" y="30" class="label-md" fill="#9DEBFF" style="font-size:12px;letter-spacing:0.1em;">DELL POWEREDGE R770</text>
+            <text x="20" y="44" class="small" style="fill:#5A89A8;">XEON 6 · SEMANTIC ROUTER</text>
+            <text x="208" y="30" class="small mono" text-anchor="end" style="fill:#9DEBFF;" id="serverStatus">CLASSIFYING</text>
+            <text x="208" y="44" class="small mono" text-anchor="end" style="fill:#5A89A8;"><tspan id="qpsInSvg">0.0</tspan> q/s</text>
+            <g transform="translate(12, 62)">
+              <circle cx="6" cy="6" r="3" fill="#1FB67A"/><text x="14" y="9" class="small" style="font-size:9px;">PWR</text>
+              <circle cx="42" cy="6" r="3" fill="#009BD7" id="ledAct"/><text x="50" y="9" class="small" style="font-size:9px;">ACT</text>
+              <circle cx="78" cy="6" r="3" fill="#1FB67A"/><text x="86" y="9" class="small" style="font-size:9px;">NET</text>
+            </g>
+            <rect x="200" y="62" width="20" height="22" rx="2" fill="#007DB8"/>
+            <text x="210" y="77" text-anchor="middle" fill="white" style="font-size:11px;font-weight:800;">D</text>
+          </g>
+          <g id="pulseLayer"></g>
+          <g id="queueLayer"></g>
+          <g id="ballLayer"></g>
+        </svg>
+        <div class="overlay-layer" id="overlayLayer"></div>
+      </div>
+
+      <!-- Chart -->
+      <div class="chart-wrap">
+        <div class="chart-header">
+          <span class="chart-title">Cumulative cost over time · last 60s</span>
+          <div class="chart-legend">
+            <span><span class="sw" style="background:#E64B5C;"></span>Frontier-only</span>
+            <span><span class="sw" style="background:#1FB67A;"></span>Routed</span>
+            <span><span class="sw" style="background:rgba(31,182,122,0.35);"></span>Savings</span>
+          </div>
+        </div>
+        <svg class="chart-svg" viewBox="0 0 1200 130" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="routedFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#1FB67A" stop-opacity="0.5"/><stop offset="100%" stop-color="#1FB67A" stop-opacity="0.05"/></linearGradient>
+            <linearGradient id="savingsFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#1FB67A" stop-opacity="0.4"/><stop offset="100%" stop-color="#1FB67A" stop-opacity="0.06"/></linearGradient>
+          </defs>
+          <g stroke="rgba(255,255,255,0.05)"><line x1="0" y1="32" x2="1200" y2="32"/><line x1="0" y1="65" x2="1200" y2="65"/><line x1="0" y1="98" x2="1200" y2="98"/></g>
+          <path id="savingsArea" fill="url(#savingsFill)" d=""/>
+          <path id="routedArea" fill="url(#routedFill)" stroke="#1FB67A" stroke-width="1.5" d=""/>
+          <path id="frontierLine" fill="none" stroke="#E64B5C" stroke-width="1.5" stroke-dasharray="3,3" d=""/>
+          <text x="6" y="13" class="mono" fill="#8AA0B5" style="font-size:9px;" id="chartYMax">$0.00</text>
+        </svg>
+      </div>
+
+      <!-- Controls -->
+      <div class="controls">
+        <div class="control-group">
+          <button class="ctrl-btn primary" id="playBtn">⏸ Pause</button>
+          <button class="ctrl-btn" id="resetBtn">↻ Reset</button>
+        </div>
+        <div class="control-group">
+          <span class="inject-label">Speed</span>
+          <div class="speed-pill" id="speedPill">
+            <button data-s="1" class="active">1×</button>
+            <button data-s="2">2×</button>
+            <button data-s="4">4×</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Last routed query + verdicts -->
+      <div class="recent">
+        <div class="recent-header">
+          <span class="recent-tag">Last routed query</span>
+          <div class="recent-q" id="recentQ">Waiting for first query…</div>
+          <span class="recent-pill" id="recentPill" style="background:rgba(31,182,122,0.12);color:#1FB67A;">Tier 1</span>
+        </div>
+        <div class="comparison">
+          <div class="ans">
+            <div class="ans-head"><span class="ans-title">Routed answer</span><span class="ans-cost" id="ansCostR">—</span></div>
+            <div class="ans-model" id="ansModelR">—</div>
+            <div class="ans-body" id="ansBodyR">The router picks the cheapest tier that can answer the incoming query.</div>
+          </div>
+          <div class="ans baseline">
+            <div class="ans-head"><span class="ans-title">Frontier baseline</span><span class="ans-cost" id="ansCostB">—</span></div>
+            <div class="ans-model" id="ansModelB">—</div>
+            <div class="ans-body" id="ansBodyB">—</div>
+          </div>
+        </div>
+        <div class="verdicts">
+          <div class="verdicts-title">Judge verdicts · routed answer vs. frontier baseline</div>
+          <div id="verdictRows"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TIER DIAGRAM -->
+<section class="body-section">
+  <div class="container">
+    <div class="section-eyebrow">The lineup</div>
+    <h2 class="section-title">Five tiers. Each query goes to the cheapest one that fits.</h2>
+    <p class="section-lede">Models and per-1M-token pricing below come straight from the dataset and your supplier rates. Tier share is the observed routing distribution across the benchmark.</p>
+    <div class="diagram"><div class="tier-row" id="tierRow"></div></div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section class="cta">
+  <div class="container">
+    <h2>Right-size every query.</h2>
+    <p>The R770 turns "send everything to the frontier" into "send everything to the model that's actually good enough" — and the savings compound every single day.</p>
+  </div>
+</section>
+
+<footer><div class="container">Demo · Vector Path Consulting · Dell PowerEdge R770 semantic routing · data-driven replay</div></footer>
+
+<script src="demo.js"></script>
+</body>
+</html>
