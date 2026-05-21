@@ -6,7 +6,7 @@ Surface (one command per make target):
   load           upsert data/queries.json into the DB (golds from `expected_answers[]`)
   route          for each query: send through router, capture routing decision
   answers        for each query × each tier: call the tier backend directly
-  export         write data/evaluated_queries_with_answers.json from the DB
+  export         write data/routed_queries_with_answers.json from the DB
   resume         continue an in-progress run over pending/error rows
   clean-results  wipe runs/results; preserves queries and gold
   router-smoke   one-shot routing diagnostic
@@ -594,13 +594,13 @@ def export_cmd(
     db: Path = typer.Option(DEFAULT_DB_PATH),
     run: int | None = typer.Option(None, "--run"),
     output: Path = typer.Option(
-        Path("data/evaluated_queries_with_answers.json"), "--output", "-o",
+        Path("data/routed_queries_with_answers.json"), "--output", "-o",
     ),
 ) -> None:
-    """Write the evaluated-queries-with-answers JSON from the DB.
+    """Write the routed-queries-with-answers JSON from the DB.
 
     Defaults to the latest active run and to
-    `data/evaluated_queries_with_answers.json` if --output isn't given.
+    `data/routed_queries_with_answers.json` if --output isn't given.
     """
     rid = _resolve_run(db, run)
     summary = export_demo_json(db, rid, output)

@@ -54,8 +54,13 @@ data/.router-config-hash
 /config.yaml
 /.vllm-sr/
 
-# Generated export artifact — re-emitted by `make export`. Legacy
-# root-level demo.json kept ignored for old checkouts.
+# NOTE: `data/routed_queries_with_answers.json` is INTENTIONALLY COMMITTED.
+# Cloners can inspect the most recent run without re-executing the pipeline.
+# `make export` overwrites it in-place — commit the new version when you
+# re-run if you want the repo to reflect updated results.
+#
+# Older export filenames kept ignored so old checkouts don't accidentally
+# commit a stale artifact under a defunct name.
 data/evaluated_queries_with_answers.json
 demo.json
 

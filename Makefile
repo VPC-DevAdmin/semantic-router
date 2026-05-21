@@ -5,7 +5,7 @@
 #   make load         # data/queries.json → DB (idempotent)
 #   make route        # for each query: ask the router which tier it picks
 #   make answers      # for each query × tier: collect that tier's response  [TODO]
-#   make export       # write data/evaluated_queries_with_answers.json
+#   make export       # write data/routed_queries_with_answers.json
 
 .PHONY: help setup load route answers export resume misroutes scores \
         import-answers update-gold \
@@ -32,7 +32,7 @@ help:
 	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true] [TIER=<1-5>] [CONC=<N>] [MAXTOK=<N>] [SMOKE=true]  routed-tier answers (SMOKE: connectivity probe only)"
 	@echo "  import-answers FILE=<path> TIER=<1-5> MODEL=<id> [PROVIDER=<name>] [RUN=<id>]  load externally-generated answers for one model"
 	@echo "  update-gold [QID=<id[,id]>] [TIER=<1-5>] [YES=true]  regenerate gold via top tier (no scope = ALL, confirms)"
-	@echo "  export [RUN=<id>] [OUTPUT=<path>]  emit the evaluated-queries JSON (default: data/evaluated_queries_with_answers.json)"
+	@echo "  export [RUN=<id>] [OUTPUT=<path>]  emit the routed-queries JSON (default: data/routed_queries_with_answers.json)"
 	@echo "  misroutes [RUN=<id>]           diagnostic: list queries routed BELOW their min tier"
 	@echo "  scores [RUN=<id>]              diagnostic: per-signal score + threshold gap for each misroute"
 	@echo "  resume [RUN=<id>]              re-run pending/error rows; mark done if clean"
@@ -207,7 +207,7 @@ answers:
 #   FILE=<path>      — markdown file with `## qNNNNN — Title` sections
 #   TIER=<N>         — tier level (1-5) these answers represent
 #   MODEL=<id>       — the model id these answers are from (per-tier key)
-#   PROVIDER=<name>  — optional label (Anthropic/OpenAI/Google) → data/evaluated_queries_with_answers.json
+#   PROVIDER=<name>  — optional label (Anthropic/OpenAI/Google) → data/routed_queries_with_answers.json
 # Idempotent: re-run to refresh the same (tier, model) rows.
 import-answers:
 	@if [ -z "$(FILE)" ] || [ -z "$(TIER)" ] || [ -z "$(MODEL)" ]; then \
@@ -225,14 +225,14 @@ import-answers:
 #   (neither)          — ALL queries (prompts to confirm unless YES=true)
 # `make answers` doesn't depend on this — top-tier-routed queries are
 # already skipped — but downstream consumers read these rows as the
-# per-provider `expected_answers[]` in data/evaluated_queries_with_answers.json.
+# per-provider `expected_answers[]` in data/routed_queries_with_answers.json.
 update-gold:
 	$(BENCHMARK) update-gold --db $(DB) \
 	    $(foreach q,$(subst $(comma), ,$(QID)),--query-id $(q)) \
 	    $(if $(TIER),--tier $(TIER),) \
 	    $(if $(filter true,$(YES)),--yes,)
 
-OUTPUT ?= data/evaluated_queries_with_answers.json
+OUTPUT ?= data/routed_queries_with_answers.json
 export:
 	$(BENCHMARK) export --db $(DB) --output $(OUTPUT) $(if $(RUN),--run $(RUN),)
 

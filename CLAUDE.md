@@ -18,7 +18,7 @@ make setup              # one-time: venv + deps + DB + installs vllm-sr if missi
 make load               # validate exemplars, build router-config.yaml, load queries.json → DB
 make route              # rebuild router-config.yaml; routing pass via the local OAI mock (auto-started)
 make answers            # for each routed query: call EVERY model the picked tier fronts (real upstreams)
-make export             # emit data/evaluated_queries_with_answers.json
+make export             # emit data/routed_queries_with_answers.json
 make start_LLM          # YAML-driven launch of local-CPU tier backends (T2 docker procedure today)
 make stop_LLM           # tear down local-CPU tier backends
 make mock-bg            # local OAI mock on :18811 for pipeline validation
@@ -53,7 +53,7 @@ Plus `resume`, `clean-results`, `router-smoke`, `router-stop`, `test`,
 
 **Judging is intentionally out of scope.** PLAN.md §4 documents the
 adequacy rubric for context, but no `make judge` or `make review` exists
-in this repo. The data/evaluated_queries_with_answers.json that `make export` produces is consumed by an
+in this repo. The data/routed_queries_with_answers.json that `make export` produces is consumed by an
 external judging workflow.
 
 ## Key files (canonical, don't be confused by lookalikes)
@@ -177,7 +177,7 @@ the laptop).
 
 End-to-end mock pipeline works: `make setup` → `make load` →
 `make route` → `make answers` → `make export` produces a complete
-`data/evaluated_queries_with_answers.json`. Router is driven by the v0.3 canonical projections pattern
+`data/routed_queries_with_answers.json`. Router is driven by the v0.3 canonical projections pattern
 (`routing.signals.complexity[]` + `routing.projections.{scores,mappings}`
 + per-tier decisions), compiled from `config/router-exemplars.yaml` into
 `config/router-config.yaml`. Lexical/keyword routing has been removed —
@@ -194,7 +194,7 @@ never top-vs-top), so queries routed to the top tier are SKIPPED by
 `make answers` — no model calls. The per-provider gold set lives in the
 `gold_answers` table: an `upstream` row from queries.json at
 `make load`, plus per-model rows from `make update-gold` (which DOES
-call every top-tier model) and `make import-answers`. `data/evaluated_queries_with_answers.json` carries `expected_answers[]`,
+call every top-tier model) and `make import-answers`. `data/routed_queries_with_answers.json` carries `expected_answers[]`,
 `routed_answers[]`, and per-tier lists of `{provider, model, answer}`.
 The DB schema changed: a fresh DB or `make clean-results` + reseed is
 required (no migration script).

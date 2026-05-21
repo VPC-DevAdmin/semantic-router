@@ -43,7 +43,7 @@ tier label the router emits, `endpoint` is the actual backend.
 - `expected_answers: [{ answer, model, provider? }, …]` — one or more
   reference answers, ALWAYS a list (a single gold is a one-entry list).
   `model` is required and is the per-query unique key that becomes
-  `gold_answers.model_id` and `data/evaluated_queries_with_answers.json`'s `model`. `provider` is an
+  `gold_answers.model_id` and `data/routed_queries_with_answers.json`'s `model`. `provider` is an
   optional label (Anthropic / OpenAI / Google). `model_id` must be
   unique within the query. Extra fields are rejected (the loader
   validates with `extra=forbid`).
@@ -134,20 +134,20 @@ make setup     # one-time
 make load      # data/queries.json → SQLite
 make route     # for each query: ask router which tier it picks
 make answers   # for each query × each of T1..T5: get the answer
-make export    # emit data/evaluated_queries_with_answers.json (the single artifact downstream uses)
+make export    # emit data/routed_queries_with_answers.json (the single artifact downstream uses)
 ```
 
-The resulting `data/evaluated_queries_with_answers.json` is the only output anyone outside this repo
+The resulting `data/routed_queries_with_answers.json` is the only output anyone outside this repo
 needs. It is the source of truth for the external judge, the replay UI,
 slides, and plots.
 
 **Replay (downstream, not in this repo):**
-- Walks through queries one at a time from `data/evaluated_queries_with_answers.json`.
+- Walks through queries one at a time from `data/routed_queries_with_answers.json`.
 - Shows prompt, routed tier, routed answer, adequacy verdict.
 - Optional drill-down: signal trace, what other tiers produced for the
   same query.
 
-## 7. The `data/evaluated_queries_with_answers.json` shape
+## 7. The `data/routed_queries_with_answers.json` shape
 
 `make export` writes a single JSON file containing, per query (MULTI-MODEL
 shape — a tier can front several provider models and they're all called):
@@ -221,7 +221,7 @@ semantic-router/
 │   ├── runs.py                   # run lifecycle + per-row resume + RUN_NEW resets
 │   ├── pass1.py                  # `make route` — routing decisions
 │   ├── answers.py                # `make answers` — one-call-per-query, error-tolerant
-│   └── export.py                 # `make export` — produces data/evaluated_queries_with_answers.json
+│   └── export.py                 # `make export` — produces data/routed_queries_with_answers.json
 ├── tools/
 │   └── oai_mock.py               # stdlib OAI mock for pipeline validation
 └── tests/                        # unit tests covering everything except live router
@@ -235,7 +235,7 @@ semantic-router/
 | `make load` | validate exemplars; build `config/router-config.yaml`; `data/queries.json` → DB |
 | `make route` | rebuild router-config; send each query through router with `max_tokens=1`, capture `x-vsr-selected-model` |
 | `make answers` | For each routed query: call the tier the router picked. **One call per query**, errors don't fail the pass — they get retried on the next invocation |
-| `make export` | Read DB → write `data/evaluated_queries_with_answers.json` |
+| `make export` | Read DB → write `data/routed_queries_with_answers.json` |
 | `make start_LLM` / `make stop_LLM` | Bring up / tear down local-CPU tier backends from `config/tiers/*.yaml` |
 | `make mock-bg` / `make mock-stop` | Local OAI mock for pipeline validation |
 
@@ -253,7 +253,7 @@ tier from `pass1_results` and dials the tier's endpoint directly.
 ## 10. Data model (SQLite intermediate)
 
 SQLite is the resumable intermediate store. `make export` reads from here
-and produces `data/evaluated_queries_with_answers.json`. The DB is gitignored; `data/evaluated_queries_with_answers.json` is the
+and produces `data/routed_queries_with_answers.json`. The DB is gitignored; `data/routed_queries_with_answers.json` is the
 output artifact.
 
 ```
@@ -377,7 +377,7 @@ vllm-sr forwards the body's `model` field verbatim (or rewrites it to
 
 Feature-complete and dogfooded end-to-end. `make load → make route →
 make answers → make export` produces a full
-`data/evaluated_queries_with_answers.json` artifact against the real
+`data/routed_queries_with_answers.json` artifact against the real
 `vllm-sr` install plus a mix of vLLM, OpenAI, Anthropic, and Google
 upstream backends.
 

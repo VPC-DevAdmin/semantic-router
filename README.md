@@ -3,9 +3,13 @@
 A reproducible harness that drives the
 [vLLM Semantic Router](https://github.com/vllm-project/semantic-router)
 through a curated 110-query set and emits a single
-`data/evaluated_queries_with_answers.json` artifact. That export is
+`data/routed_queries_with_answers.json` artifact. That export is
 consumed downstream by a separate replay UI and an independent judging
 workflow — this repo does no judging and no live inference at demo time.
+
+The most recent export is **checked in** under `data/` — clone the
+repo and you can inspect a complete result set without running anything.
+Re-running the pipeline (below) regenerates it.
 
 Full design and rationale: [**PLAN.md**](PLAN.md).
 Working with this repo from a Claude session: [**CLAUDE.md**](CLAUDE.md).
@@ -21,7 +25,7 @@ make setup     # venv, Python deps, DB schema, installs vllm-sr if missing
 make load      # data/queries.json → data/router_benchmark.db
 make route     # routing pass (via local OAI mock — no per-query token cost)
 make answers   # for each routed query × each model in the picked tier, get a real answer
-make export    # write data/evaluated_queries_with_answers.json
+make export    # write data/routed_queries_with_answers.json
 ```
 
 That's the whole pipeline. Pass-1 (`route`) and pass-2 (`answers`) are
@@ -59,10 +63,13 @@ config/                            # everything the operator tunes (YAML)
 
 data/
     queries.json                            # 110 curated queries with per-provider
-                                            # gold answers (the only committed dataset)
-    router_benchmark.db                     # SQLite — generated (gitignored)
-    evaluated_queries_with_answers.json     # final export — generated (gitignored)
-    .router-config-hash                     # cached hash for fast no-op restarts
+                                            # gold answers (committed)
+    routed_queries_with_answers.json        # latest export — COMMITTED so a fresh clone
+                                            # has results visible without re-running
+    external_answers/                       # externally-generated answers loaded via
+                                            # `make import-answers` (committed)
+    router_benchmark.db                     # SQLite run state — generated (gitignored)
+    .router-config-hash                     # cached config hash — generated (gitignored)
 
 src/benchmark/                     # the harness itself (Python package: `benchmark`)
 tests/                             # unit tests — 167 of them, ~2 seconds total
@@ -84,7 +91,7 @@ queries.json ──[make load]──> SQLite ──┬─[make route]──> tie
                                                                [make export]
                                                                       │
                                                                       ▼
-                                              data/evaluated_queries_with_answers.json
+                                                  data/routed_queries_with_answers.json
                                                                       │
                                                                       ▼
                                                           external judge + replay UI
