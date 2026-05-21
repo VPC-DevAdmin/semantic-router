@@ -258,12 +258,23 @@ export:
 
 # ---- cost-routing replay demo ----
 # `make demo-data` builds the self-contained dataset the demo front-end
-# consumes (demo/data/demo_data.json) from the committed exports +
-# demo/pricing.json. CONC=<N> sets the concurrency used for the
-# throughput stat (default 8 — what the route pass ran at).
-# `make demo` serves the demo/ directory; open the printed URL.
+# consumes (demo/data/demo_data.json) from the exports + demo/pricing.json.
+# CONC=<N> sets the concurrency used for the throughput stat (default 8 —
+# what the route pass ran at). `make demo` serves the demo/ directory.
+#
+# If the source exports are missing (fresh clone after a clean, or
+# someone deleted them), run `make export` first to regenerate them from
+# the DB. evaluations.json only appears if the run was judged — the
+# preprocessor tolerates its absence (the demo just shows no verdicts),
+# so a single export attempt is enough; we don't loop on it.
 DEMO_PORT ?= 8000
+ROUTED_JSON := data/routed_queries_with_answers.json
+EVALS_JSON  := data/evaluations.json
 demo-data:
+	@if [ ! -f $(ROUTED_JSON) ] || [ ! -f $(EVALS_JSON) ]; then \
+	    echo "[demo] source export(s) missing — running 'make export' to regenerate from the DB"; \
+	    $(MAKE) export; \
+	fi
 	$(PYTHON) tools/build_demo_data.py $(if $(CONC),--concurrency $(CONC),)
 
 demo: demo-data

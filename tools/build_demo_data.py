@@ -87,7 +87,10 @@ def build(
     concurrency: int,
 ) -> dict[str, Any]:
     routed = json.loads(routed_path.read_text())
-    evals = json.loads(evals_path.read_text())
+    # Evaluations are optional: a run that wasn't judged (no `make
+    # evaluate`) produces no evaluations.json. The demo just shows no
+    # verdicts in that case rather than failing the build.
+    evals = json.loads(evals_path.read_text()) if evals_path.exists() else []
     pricing_doc = json.loads(pricing_path.read_text())
     pricing = pricing_doc["models"]
 
@@ -240,10 +243,13 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    for path in (args.routed, args.evals, args.pricing):
+    # routed + pricing are required; evals is optional (unjudged runs).
+    for path in (args.routed, args.pricing):
         if not path.exists():
             print(f"error: {path} does not exist", file=__import__("sys").stderr)
             return 2
+    if not args.evals.exists():
+        print(f"note: {args.evals} not found — building without judge verdicts")
 
     data = build(args.routed, args.evals, args.pricing, concurrency=args.concurrency)
     args.out.parent.mkdir(parents=True, exist_ok=True)

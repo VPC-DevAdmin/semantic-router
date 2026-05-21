@@ -105,6 +105,32 @@ def test_build_estimates_missing_routed_tokens(tmp_path) -> None:
     assert ra["cost_usd"] > 0.0  # mid has a non-zero rate
 
 
+def test_build_tolerates_missing_evals_file(tmp_path) -> None:
+    """An unjudged run has no evaluations.json — the build proceeds with
+    empty verdict maps rather than failing."""
+    routed = [
+        {
+            "id": "q1", "prompt": "hi", "routed_tier": 1,
+            "routing_metadata": {"latency_ms": 300},
+            "routed_answers": [
+                {"tier": 1, "provider": "Local", "model": "tiny",
+                 "answer": "yo", "status": "success",
+                 "prompt_tokens": 10, "completion_tokens": 20},
+            ],
+            "expected_answers": [],
+        },
+    ]
+    rp = tmp_path / "routed.json"
+    rp.write_text(json.dumps(routed))
+    pp = tmp_path / "pricing.json"
+    pp.write_text(json.dumps(PRICING))
+    missing_evals = tmp_path / "does_not_exist.json"
+
+    data = bdd.build(rp, missing_evals, pp, concurrency=8)
+    assert data["meta"]["evaluators"] == []
+    assert data["queries"][0]["evaluations"] == {}
+
+
 def test_build_handles_t5_query_with_no_routed_answers(tmp_path) -> None:
     """A query routed to the top tier has no routed_answers — the
     preprocessor keeps it (framed downstream as 'right tier')."""
