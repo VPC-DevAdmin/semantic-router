@@ -24,7 +24,7 @@ from typing import Any
 
 import httpx
 
-from .config import Attachment, TierModel
+from .config import Attachment, EvaluatorSlot, TierModel
 
 
 @dataclass
@@ -284,4 +284,14 @@ def client_from_model(model: TierModel) -> OAIClient:
         model_id=model.served_model_name,
         api_key=_resolve_api_key(model.api_key_env),
         timeout_s=float(model.timeout_s),
+    )
+
+
+def client_from_evaluator(slot: EvaluatorSlot) -> OAIClient:
+    """A client for one EVALUATOR_N_* env-discovered judge slot."""
+    return OAIClient(
+        endpoint=slot.url,
+        model_id=slot.served_model_name,
+        api_key=_resolve_api_key(slot.api_key_env),
+        timeout_s=float(slot.timeout_s),
     )

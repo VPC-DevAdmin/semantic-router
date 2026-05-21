@@ -72,36 +72,42 @@ tier YAMLs do enforce a whitelist (small, author-edited).
   highest-leverage input to eval quality but is consumed by the external
   judging workflow, not by this harness.
 
-## 4. Adequacy rubric (documented for context — implemented externally)
+## 4. Adequacy rubric (implemented by `make evaluate`)
 
-Four dimensions, same for every query, judged independently:
+Three dimensions per (routed answer × gold answer × judge), each
+scored 1-4:
 
-1. **Correctness** — facts, code, math, reasoning all correct.
-2. **Completeness** — covers the query-specific required key points
-   extracted from the gold answer.
-3. **Fitness for purpose** — right form (code/prose/recommendation) and
-   right depth.
-4. **No serious defects** — no refusals, padding, wrong-language responses,
-   made-up citations, or instruction-following failures.
+| | Definition | 4 | 3 | 2 | 1 |
+|---|---|---|---|---|---|
+| **correctness** | factually and logically correct | fully correct | correct, minor issues | partially correct | incorrect on the substance |
+| **completeness** | covers what the question requires | covers everything | covers most, minor gaps | significant gaps | does not cover what's needed |
+| **fitness_for_purpose** | format, length, tone | well-suited | suitable, minor issues | partially appropriate | inappropriate |
 
-**Verdict:** Adequate (all four pass), Inadequate (any fail), or Borderline
-(uncertain — flagged for human review).
+**Verdict** is an overall call, distinct from the per-dimension scores:
+
+- **Adequate** — routed answer is correct and fit for purpose. Minor
+  verbosity / formatting / style differences vs the gold are fine; the
+  routed answer doesn't have to match the gold exactly, it just has to
+  serve the user correctly.
+- **Marginal** — partially correct or useful but has notable gaps,
+  factual errors in supporting content, or quality issues that would
+  matter to a real user.
+- **Failure** — factually wrong on the core question, misleading, or so
+  incomplete it fails the user.
 
 The framing put to the judge:
 > *"A user who would have received the gold answer received this candidate
 > instead. Would they be satisfied?"*
 
-Two judges run independently (Sonnet + one open model). Both Adequate =
-pass. Both Inadequate = fail. Disagreement = human review.
-
-Creative-writing queries (n=9) get a narrower adequacy definition (follows
-requested form, engages with topic) or are shown qualitatively rather than
-scored.
-
-**This harness does NOT implement the judge.** The judging step happens
-outside this repo, consuming the file produced by `make export`. The rubric
-lives in PLAN.md so the broader story is legible and so the export shape
-is justifiable.
+**Implemented in this repo.** `make evaluate` reads one or more
+`EVALUATOR_N_*` env slots, batches 50 queries per judge call (each
+query carries up to 6 (routed × gold) pairs), and writes results to
+the `evaluations` DB table. `make export` writes
+`data/evaluations.json` alongside the routed-queries export. The
+external judging workflow that produced the seed dataset is still
+welcome — the one-off `benchmark import-evaluations <path>` CLI loads
+externally-produced JSON into the same table, after which future
+exports emit it in the standard schema.
 
 ## 5. Unified per-query outcome (downstream framing)
 

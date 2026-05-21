@@ -25,7 +25,8 @@ make setup     # venv, Python deps, DB schema, installs vllm-sr if missing
 make load      # data/queries.json → data/router_benchmark.db
 make route     # routing pass (via local OAI mock — no per-query token cost)
 make answers   # for each routed query × each model in the picked tier, get a real answer
-make export    # write data/routed_queries_with_answers.json
+make evaluate  # LLM-judge routed vs gold (batched, per-row resumable)
+make export    # write data/routed_queries_with_answers.json + data/evaluations.json (if judged)
 ```
 
 That's the whole pipeline. Pass-1 (`route`) and pass-2 (`answers`) are
@@ -64,8 +65,11 @@ config/                            # everything the operator tunes (YAML)
 data/
     queries.json                            # 110 curated queries with per-provider
                                             # gold answers (committed)
-    routed_queries_with_answers.json        # latest export — COMMITTED so a fresh clone
-                                            # has results visible without re-running
+    routed_queries_with_answers.json        # latest routed export — COMMITTED so a fresh
+                                            # clone has results visible without re-running
+    evaluations.json                        # latest judge verdicts — COMMITTED (when
+                                            # `make evaluate` has been run for the
+                                            # active export)
     external_answers/                       # externally-generated answers loaded via
                                             # `make import-answers` (committed)
     router_benchmark.db                     # SQLite run state — generated (gitignored)

@@ -383,6 +383,229 @@ def answers_cmd(
     # Errors are now expected (retry on next run); always exit 0.
 
 
+@app.command("evaluate")
+def evaluate_cmd(
+    db: Path = typer.Option(DEFAULT_DB_PATH),
+    run: int | None = typer.Option(
+        None, "--run", help="Run id (default: latest active)."
+    ),
+    batch_size: int = typer.Option(
+        50, "--batch-size",
+        help="Queries per judge call. Each query carries up to "
+             "(routed models × gold models) comparisons, so the actual "
+             "evaluations per call is larger. Lower this if a judge "
+             "exhausts its context or max_tokens budget.",
+    ),
+    run_new: bool = typer.Option(
+        False, "--run-new",
+        help="Delete existing evaluation rows for the active run, then re-seed.",
+    ),
+) -> None:
+    """LLM-judge the routed answers against the gold answers.
+
+    Walks `EVALUATOR_N_*` env slots to discover one or more judge
+    endpoints, seeds pending Evaluation rows for every
+    (query × routed model × gold model × evaluator) combination, then
+    issues batched judge calls. Per-row resumable.
+    """
+    from .config import load_evaluators
+    from .evaluations import (
+        run_evaluations,
+        seed_pending_evaluations,
+    )
+
+    if not db.exists():
+        console.print(f"[red]error[/]: db {db} does not exist; run `make setup` first")
+        raise typer.Exit(code=2)
+
+    evaluators = load_evaluators()
+    if not evaluators:
+        console.print(
+            "[red]error[/]: no judge evaluators configured. Set EVALUATOR_1_URL + "
+            "EVALUATOR_1_MODEL (and friends) in .env. See .env.example."
+        )
+        raise typer.Exit(code=2)
+
+    rid = run if run is not None else latest_active_run(db)
+    if rid is None:
+        console.print(
+            "[red]error[/]: no active run found. Run `make route` and "
+            "`make answers` first."
+        )
+        raise typer.Exit(code=2)
+
+    if run_new:
+        from sqlalchemy import delete
+
+        from .db import Evaluation, session_scope
+        with session_scope(db) as session:
+            n = session.execute(
+                delete(Evaluation).where(Evaluation.run_id == rid)
+            ).rowcount
+        console.print(f"[yellow]--run-new[/]: deleted {n} evaluation row(s)")
+
+    seed = seed_pending_evaluations(db, rid, evaluators)
+    if seed.seeded:
+        console.print(
+            f"[green]seeded[/] {seed.seeded} new pending evaluation row(s) "
+            f"(across {len(evaluators)} evaluator(s))"
+        )
+    if seed.kept:
+        console.print(
+            f"[dim]note[/]: {seed.kept} row(s) already existed (will retry "
+            f"pending/error ones)."
+        )
+    if not seed.seeded and not seed.kept:
+        console.print(
+            "[yellow]note[/]: nothing to evaluate. Did `make answers` run for "
+            "this run? Or are there no gold answers yet (`make update-gold`)?"
+        )
+        raise typer.Exit(code=0)
+
+    evlist = ", ".join(
+        f"{e.served_model_name} ({e.provider or 'unknown'})" for e in evaluators
+    )
+    console.print(f"[bold]evaluators[/]: {evlist}")
+    console.print(f"[bold]batch_size[/]: {batch_size} queries per call")
+
+    def _progress(line: str) -> None:
+        console.print(line, markup=False, highlight=False)
+
+    report = asyncio.run(
+        run_evaluations(
+            db, rid,
+            evaluators=evaluators,
+            batch_size=batch_size,
+            progress=_progress,
+        )
+    )
+    console.print(f"[bold]evaluate[/] (run {rid})")
+    console.print(
+        f"  batches attempted:  {report.attempted_batches}\n"
+        f"  rows succeeded:     {report.succeeded_rows}\n"
+        f"  rows errored:       {report.errored_rows}"
+    )
+    for evname, counts in sorted(report.by_evaluator.items()):
+        console.print(
+            f"  {evname}: success={counts.get('success', 0)} "
+            f"error={counts.get('error', 0)}"
+        )
+
+
+@app.command("import-evaluations")
+def import_evaluations_cmd(
+    path: Path = typer.Argument(
+        ...,
+        help="Path to a JSON file in the legacy externally-derived shape "
+             "(list of eval entries with query_id, routed_*, expected_*, "
+             "evaluator, verdict, rationale, scores).",
+    ),
+    db: Path = typer.Option(DEFAULT_DB_PATH),
+    run: int | None = typer.Option(
+        None, "--run", help="Run id to attach rows to (default: latest active).",
+    ),
+) -> None:
+    """One-off: load externally-produced evaluations into the DB.
+
+    For migrating an existing data/evaluations.json into the new schema
+    so a future `make export` writes it from the DB in the standard
+    shape. Idempotent: re-running upserts.
+
+    Drops `soundness` from `scores` (the new schema is three
+    dimensions: correctness / completeness / fitness_for_purpose).
+    """
+    import json as _json
+
+    from sqlalchemy import select
+
+    from .db import Evaluation, session_scope
+
+    if not db.exists():
+        console.print(f"[red]error[/]: db {db} does not exist")
+        raise typer.Exit(code=2)
+    if not path.exists():
+        console.print(f"[red]error[/]: file {path} does not exist")
+        raise typer.Exit(code=2)
+
+    rid = run if run is not None else latest_active_run(db)
+    if rid is None:
+        console.print(
+            "[red]error[/]: no active run found; pass --run <id> explicitly."
+        )
+        raise typer.Exit(code=2)
+
+    raw = _json.loads(path.read_text())
+    if not isinstance(raw, list):
+        console.print(f"[red]error[/]: expected a JSON array, got {type(raw).__name__}")
+        raise typer.Exit(code=2)
+
+    dropped_soundness = 0
+    inserted = 0
+    updated = 0
+    with session_scope(db) as session:
+        for entry in raw:
+            scores = entry.get("scores") or {}
+            if "soundness" in scores:
+                dropped_soundness += 1
+            # Tier comes from the routed_model — we don't have it in the
+            # legacy file, so fall back to looking it up by joining to
+            # TierAnswer in this run.
+            from .db import TierAnswer
+            ta = session.execute(
+                select(TierAnswer)
+                .where(TierAnswer.run_id == rid)
+                .where(TierAnswer.query_id == entry["query_id"])
+                .where(TierAnswer.model_id == entry["routed_model"])
+            ).scalar_one_or_none()
+            if ta is None:
+                # Skip — we have no record of this routed model running
+                # for this query in this run, so we can't reliably attach
+                # the evaluation.
+                continue
+            existing = session.execute(
+                select(Evaluation)
+                .where(Evaluation.run_id == rid)
+                .where(Evaluation.query_id == entry["query_id"])
+                .where(Evaluation.routed_tier == ta.tier_level)
+                .where(Evaluation.routed_model == entry["routed_model"])
+                .where(Evaluation.gold_model_id == entry["expected_model"])
+                .where(Evaluation.evaluator == entry["evaluator"])
+            ).scalar_one_or_none()
+            payload = dict(
+                run_id=rid,
+                query_id=entry["query_id"],
+                routed_tier=ta.tier_level,
+                routed_model=entry["routed_model"],
+                gold_model_id=entry["expected_model"],
+                evaluator=entry["evaluator"],
+                routed_provider=entry.get("routed_provider"),
+                gold_provider=entry.get("expected_provider"),
+                verdict=entry.get("verdict"),
+                rationale=entry.get("rationale") or "",
+                correctness=int(scores.get("correctness", 0)) or None,
+                completeness=int(scores.get("completeness", 0)) or None,
+                fitness_for_purpose=int(scores.get("fitness_for_purpose", 0)) or None,
+                status="success",
+            )
+            if existing is None:
+                session.add(Evaluation(**payload))
+                inserted += 1
+            else:
+                for k, v in payload.items():
+                    setattr(existing, k, v)
+                updated += 1
+
+    console.print(f"[bold]import-evaluations[/] (run {rid})")
+    console.print(f"  file:               {path}")
+    console.print(f"  inserted:           {inserted}")
+    console.print(f"  updated:            {updated}")
+    if dropped_soundness:
+        console.print(
+            f"  [dim]dropped[/] `soundness` scores from {dropped_soundness} "
+            f"entry/ies (not part of the new schema)."
+        )
+
+
 @app.command("misroutes")
 def misroutes_cmd(
     db: Path = typer.Option(DEFAULT_DB_PATH),

@@ -111,6 +111,67 @@ class TierAnswer(Base):
     attempted_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class Evaluation(Base):
+    """One LLM-judge verdict for a (routed answer × gold answer) pair.
+
+    Keyed by (run_id, query_id, routed_tier, routed_model, gold_model_id,
+    evaluator) so every comparison can be judged independently and so
+    multiple evaluators can be run side-by-side without collisions.
+
+    Populated by `make evaluate` (the batched judge worker) and by the
+    one-off `benchmark import-evaluations` CLI for externally-produced
+    judgments. `make export` reads these rows to emit
+    `data/evaluations.json`.
+
+    Score scale (per dimension, 1-4):
+      4 — fully meets the dimension
+      3 — meets with minor issues
+      2 — partially meets
+      1 — does not meet
+
+    Verdict alphabet:
+      Adequate  — correct and fit for purpose; minor verbosity /
+                  formatting / style differences vs the gold are fine.
+      Marginal  — partially correct or useful but has notable gaps,
+                  factual errors in supporting content, or quality
+                  issues a real user would notice.
+      Failure   — factually wrong on the core question, misleading,
+                  or so incomplete it fails the user.
+    """
+
+    __tablename__ = "evaluations"
+
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.run_id"), primary_key=True)
+    query_id: Mapped[str] = mapped_column(
+        ForeignKey("queries.query_id"), primary_key=True
+    )
+    # Which routed answer was being evaluated.
+    routed_tier: Mapped[int] = mapped_column(Integer, primary_key=True)
+    routed_model: Mapped[str] = mapped_column(String, primary_key=True)
+    # Which gold answer it was compared against (gold_answers.model_id).
+    gold_model_id: Mapped[str] = mapped_column(String, primary_key=True)
+    # Which judge model produced this verdict.
+    evaluator: Mapped[str] = mapped_column(String, primary_key=True)
+
+    # Optional labels mirrored from the source row for export readability.
+    routed_provider: Mapped[str | None] = mapped_column(String)
+    gold_provider: Mapped[str | None] = mapped_column(String)
+    evaluator_provider: Mapped[str | None] = mapped_column(String)
+
+    # Judge outputs.
+    verdict: Mapped[str | None] = mapped_column(String)
+    rationale: Mapped[str | None] = mapped_column(Text)
+    correctness: Mapped[int | None] = mapped_column(Integer)
+    completeness: Mapped[int | None] = mapped_column(Integer)
+    fitness_for_purpose: Mapped[int | None] = mapped_column(Integer)
+
+    # Lifecycle (mirrors TierAnswer for resume semantics).
+    status: Mapped[str] = mapped_column(String, nullable=False)  # pending|success|error
+    error_msg: Mapped[str | None] = mapped_column(Text)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class GoldAnswer(Base):
     """Per-provider expected answer for a query (the gold set).
 

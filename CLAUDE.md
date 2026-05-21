@@ -18,7 +18,8 @@ make setup              # one-time: venv + deps + DB + installs vllm-sr if missi
 make load               # validate exemplars, build router-config.yaml, load queries.json → DB
 make route              # rebuild router-config.yaml; routing pass via the local OAI mock (auto-started)
 make answers            # for each routed query: call EVERY model the picked tier fronts (real upstreams)
-make export             # emit data/routed_queries_with_answers.json
+make evaluate           # LLM-judge routed vs gold answers (per-row resumable, batched 50 queries/call)
+make export             # emit data/routed_queries_with_answers.json + data/evaluations.json (if rows exist)
 make start_LLM          # YAML-driven launch of local-CPU tier backends (T2 docker procedure today)
 make stop_LLM           # tear down local-CPU tier backends
 make mock-bg            # local OAI mock on :18811 for pipeline validation
@@ -51,10 +52,20 @@ through the router-config.
 Plus `resume`, `clean-results`, `router-smoke`, `router-stop`, `test`,
 `fmt`, `lint`.
 
-**Judging is intentionally out of scope.** PLAN.md §4 documents the
-adequacy rubric for context, but no `make judge` or `make review` exists
-in this repo. The data/routed_queries_with_answers.json that `make export` produces is consumed by an
-external judging workflow.
+**Judging runs in this repo via `make evaluate`.** Reads one or more
+`EVALUATOR_N_*` env slots (Anthropic / OpenAI / Google — same OAI-
+compatible shape as the tier slots), batches 50 queries per judge call
+(each query carrying its full (routed × gold) pair set so the judge
+sees the cross-product once), writes verdicts to the `evaluations` DB
+table with per-row resume. `make export` then writes
+`data/evaluations.json` alongside `routed_queries_with_answers.json`
+when any evaluation rows exist. The rubric (three 1-4 dimensions +
+Adequate/Marginal/Failure verdict) lives in PLAN.md §4.
+
+The external judging workflow that produced the seed
+`data/evaluations.json` is still supported — the one-off
+`benchmark import-evaluations <path>` CLI loads it into the same DB
+table so future exports write it from there.
 
 ## Key files (canonical, don't be confused by lookalikes)
 

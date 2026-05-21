@@ -7,7 +7,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from benchmark.db import GoldAnswer, Pass1Result, TierAnswer, session_scope
+from benchmark.db import Evaluation, GoldAnswer, Pass1Result, TierAnswer, session_scope
 from benchmark.export import export_demo_json
 from benchmark.runs import create_run
 
@@ -207,3 +207,90 @@ def test_export_summary_counts(tmp_path: Path) -> None:
     }
     # q2 has no pass1 row (not routed) — doesn't count as top-tier.
     assert summary.top_tier_routed == 0
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Sibling evaluations.json export
+# ─────────────────────────────────────────────────────────────────────
+
+def _add_evaluation(
+    db: Path, rid: int, qid: str, *, tier: int, routed: str, gold: str,
+    evaluator: str, verdict: str = "Adequate",
+    correctness: int = 4, completeness: int = 4, fitness: int = 4,
+    routed_provider: str | None = None, gold_provider: str | None = None,
+) -> None:
+    with session_scope(db) as s:
+        s.add(Evaluation(
+            run_id=rid, query_id=qid,
+            routed_tier=tier, routed_model=routed,
+            gold_model_id=gold, evaluator=evaluator,
+            routed_provider=routed_provider, gold_provider=gold_provider,
+            verdict=verdict, rationale="ok",
+            correctness=correctness, completeness=completeness,
+            fitness_for_purpose=fitness,
+            status="success", latency_ms=10,
+            evaluated_at=datetime.now(UTC),
+        ))
+
+
+def test_export_emits_evaluations_when_rows_exist(tmp_path: Path) -> None:
+    db, rid = _setup(tmp_path)
+    _add_pass1(db, rid, "q1", tier=3)
+    _add_tier_answer(db, rid, "q1", 3, "gpt-5-mini", "Paris (OpenAI)", provider="OpenAI")
+    _add_evaluation(
+        db, rid, "q1", tier=3, routed="gpt-5-mini", gold="Opus",
+        evaluator="claude-sonnet-4-6", verdict="Adequate",
+        routed_provider="OpenAI", gold_provider="Anthropic",
+    )
+    out = tmp_path / "demo.json"
+    summary = export_demo_json(db, rid, out)
+
+    assert summary.evaluations_path == tmp_path / "evaluations.json"
+    assert summary.evaluations_written == 1
+    assert summary.evaluations_by_evaluator == {"claude-sonnet-4-6": 1}
+
+    evs = json.loads((tmp_path / "evaluations.json").read_text())
+    assert len(evs) == 1
+    e = evs[0]
+    # Evaluator suffix in eval_id (the new format).
+    assert "--claude-sonnet-4-6" in e["eval_id"]
+    # The expected/routed labels mirror the input.
+    assert e["query_id"] == "q1"
+    assert e["routed_model"] == "gpt-5-mini"
+    assert e["expected_model"] == "Opus"
+    assert e["evaluator"] == "claude-sonnet-4-6"
+    assert e["verdict"] == "Adequate"
+    # Three-dimension scores (no `soundness`).
+    assert set(e["scores"].keys()) == {"correctness", "completeness", "fitness_for_purpose"}
+
+
+def test_export_skips_evaluations_when_no_rows(tmp_path: Path) -> None:
+    """If no Evaluation rows exist for the run, no file is written
+    (clean signal — downstream readers see absence vs. an empty list)."""
+    db, rid = _setup(tmp_path)
+    _add_pass1(db, rid, "q1", tier=1)
+    _add_tier_answer(db, rid, "q1", 1, "m1", "ans")
+    out = tmp_path / "demo.json"
+    summary = export_demo_json(db, rid, out)
+
+    assert summary.evaluations_path is None
+    assert summary.evaluations_written == 0
+    assert not (tmp_path / "evaluations.json").exists()
+
+
+def test_export_evaluations_ordered_stably(tmp_path: Path) -> None:
+    """The sibling export sorts evaluation entries by (query, tier,
+    routed_model, gold_model, evaluator) so reruns produce byte-stable
+    files — important when the export is committed."""
+    db, rid = _setup(tmp_path)
+    _add_pass1(db, rid, "q1", tier=2)
+    _add_tier_answer(db, rid, "q1", 2, "m1", "a", slot=0)
+    _add_evaluation(db, rid, "q1", tier=2, routed="m1", gold="Opus",
+                     evaluator="judge-Z")
+    _add_evaluation(db, rid, "q1", tier=2, routed="m1", gold="Opus",
+                     evaluator="judge-A")
+    out = tmp_path / "demo.json"
+    export_demo_json(db, rid, out)
+    evs = json.loads((tmp_path / "evaluations.json").read_text())
+    # Sort key has evaluator last → judge-A before judge-Z.
+    assert [e["evaluator"] for e in evs] == ["judge-A", "judge-Z"]

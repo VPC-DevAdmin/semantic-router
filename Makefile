@@ -7,7 +7,7 @@
 #   make answers      # for each query × tier: collect that tier's response  [TODO]
 #   make export       # write data/routed_queries_with_answers.json
 
-.PHONY: help setup load route answers export resume misroutes scores \
+.PHONY: help setup load route answers evaluate export resume misroutes scores \
         import-answers update-gold \
         clean-results router-smoke router-stop test fmt lint \
         mock-bg mock-stop start_LLM stop_LLM
@@ -30,6 +30,7 @@ help:
 	@echo "  load [MOCK=true]               validate exemplars; build router-config; load queries.json into DB"
 	@echo "  route [RUN_NEW=true]           rebuild router-config; routing pass via local OAI mock"
 	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true] [TIER=<1-5>] [CONC=<N>] [MAXTOK=<N>] [SMOKE=true]  routed-tier answers (SMOKE: connectivity probe only)"
+	@echo "  evaluate [RUN=<id>] [BATCH=<N>] [RUN_NEW=true]   LLM-judge routed vs gold, batched (default 50 queries/call)"
 	@echo "  import-answers FILE=<path> TIER=<1-5> MODEL=<id> [PROVIDER=<name>] [RUN=<id>]  load externally-generated answers for one model"
 	@echo "  update-gold [QID=<id[,id]>] [TIER=<1-5>] [YES=true]  regenerate gold via top tier (no scope = ALL, confirms)"
 	@echo "  export [RUN=<id>] [OUTPUT=<path>]  emit the routed-queries JSON (default: data/routed_queries_with_answers.json)"
@@ -201,6 +202,23 @@ answers:
 	    $(if $(filter true,$(RUN_NEW)),--run-new,) \
 	    $(if $(filter true,$(SMOKE)),--smoke,) \
 	    $(if $(filter true,$(MOCK)),--mock-endpoint $(MOCK_FROM_HOST),)
+
+# Judge the routed answers against the gold answers using one or more
+# LLM evaluators configured via EVALUATOR_N_* env vars. Per-row resumable.
+#
+# RUN_NEW=true     → drop existing evaluation rows for the active run; re-seed.
+# BATCH=<N>        → queries per judge call (default 50). Each query packs
+#                    its (routed × gold) pairs into the same call, so the
+#                    actual evaluations per call is ~6× this. Lower if
+#                    your judge runs out of context or max_tokens budget.
+#
+# Each EVALUATOR_N_* slot is independent. Add as many as you want
+# (EVALUATOR_1, EVALUATOR_2, …); see .env.example for the shape.
+evaluate:
+	$(BENCHMARK) evaluate --db $(DB) \
+	    $(if $(RUN),--run $(RUN),) \
+	    $(if $(BATCH),--batch-size $(BATCH),) \
+	    $(if $(filter true,$(RUN_NEW)),--run-new,)
 
 # Import externally-generated answers (e.g., manually prompted from a
 # chat UI) into the tier_answers table, attributed to one model.

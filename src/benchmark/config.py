@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Specialization names as they appear in queries.json. Extend here if upstream
 # data adds a new category.
@@ -222,6 +222,87 @@ class ModelsConfig(BaseModel):
             if t.level == level:
                 return t
         raise KeyError(f"no tier with level {level}")
+
+
+class EvaluatorSlot(BaseModel):
+    """One LLM-judge endpoint discovered from `EVALUATOR_N_*` env vars.
+
+    Flat indexing (no nested slots) — each evaluator is independent.
+    Required: URL + MODEL. Optional: API_KEY (env-var name),
+    PROVIDER (label), TIMEOUT, MAX_TOKENS.
+
+    `make evaluate` walks all configured slots and runs each across
+    the pending evaluation rows in the active run.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    slot: int  # the N in EVALUATOR_N_*
+    url: str
+    served_model_name: str
+    api_key_env: str | None = None
+    provider: str | None = None
+    timeout_s: int = 60
+    max_tokens: int = 4096  # judge responses (with rationales for a 50-q batch)
+
+
+def _build_evaluator_slot(i: int) -> EvaluatorSlot | None:
+    """Read EVALUATOR_{i}_* env vars; return None if the slot is empty
+    (URL and MODEL both unset). Raise if URL set without MODEL or vice
+    versa. Mirrors `_build_tier_model` discipline."""
+
+    def g(suffix: str) -> str:
+        return os.environ.get(f"EVALUATOR_{i}_{suffix}", "").strip()
+
+    url = g("URL")
+    model = g("MODEL")
+    if not url and not model:
+        return None
+    if not url:
+        raise ValueError(
+            f"EVALUATOR_{i}_MODEL is set but EVALUATOR_{i}_URL is not — "
+            "both are required for a judge slot."
+        )
+    if not model:
+        raise ValueError(
+            f"EVALUATOR_{i}_URL is set but EVALUATOR_{i}_MODEL is not — "
+            "both are required for a judge slot."
+        )
+    key_env = f"EVALUATOR_{i}_API_KEY" if g("API_KEY") else None
+    timeout = (
+        _int_env(f"EVALUATOR_{i}_TIMEOUT", g("TIMEOUT"), "seconds")
+        if g("TIMEOUT") else 60
+    )
+    max_tokens = (
+        _int_env(f"EVALUATOR_{i}_MAX_TOKENS", g("MAX_TOKENS"))
+        if g("MAX_TOKENS") else 4096
+    )
+    return EvaluatorSlot(
+        slot=i,
+        url=url,
+        served_model_name=model,
+        api_key_env=key_env,
+        provider=g("PROVIDER") or None,
+        timeout_s=timeout,
+        max_tokens=max_tokens,
+    )
+
+
+def load_evaluators() -> list[EvaluatorSlot]:
+    """Walk EVALUATOR_1_*, EVALUATOR_2_*, … until the first gap.
+
+    Returns slots in index order. Same discovery discipline as the tier
+    env walker: a missing slot ends discovery (so a stray
+    EVALUATOR_7_URL with nothing in 4-6 silently drops 7).
+    """
+    out: list[EvaluatorSlot] = []
+    i = 1
+    while True:
+        slot = _build_evaluator_slot(i)
+        if slot is None:
+            break
+        out.append(slot)
+        i += 1
+    return out
 
 
 class RouterProcessConfig(BaseModel):

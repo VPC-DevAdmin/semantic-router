@@ -41,7 +41,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from .db import GoldAnswer, Pass1Result, Query, TierAnswer, session_scope
+from .db import Evaluation, GoldAnswer, Pass1Result, Query, TierAnswer, session_scope
 
 
 @dataclass
@@ -56,6 +56,11 @@ class ExportSummary:
     # Queries routed to the top tier — no per-model answers needed because
     # the top tier IS the gold reference (every comparison is routed-vs-top).
     top_tier_routed: int = 0
+    # Sibling export: evaluations.json. Path is None when no evaluations
+    # exist for the run (the file is intentionally not emitted in that case).
+    evaluations_path: Path | None = None
+    evaluations_written: int = 0
+    evaluations_by_evaluator: dict[str, int] = field(default_factory=dict)
 
     def __str__(self) -> str:
         lines = [
@@ -88,6 +93,11 @@ class ExportSummary:
                 f"  top-tier routed:         {self.top_tier_routed} "
                 f"(no per-model answers — top tier is the gold reference)"
             )
+        if self.evaluations_path:
+            lines.append(f"  evaluations wrote:       {self.evaluations_path}")
+            lines.append(f"  evaluations written:     {self.evaluations_written}")
+            for evname, n in sorted(self.evaluations_by_evaluator.items()):
+                lines.append(f"    {evname}: {n}")
         return "\n".join(lines)
 
 
@@ -218,4 +228,83 @@ def export_demo_json(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(entries, indent=2, ensure_ascii=False))
+
+    # Sibling export: evaluations.json (only if rows exist for this run).
+    # Path is conventionally `data/evaluations.json` alongside the routed
+    # export, but we derive it from output_path so a custom --output
+    # doesn't drop the sibling somewhere surprising.
+    _maybe_write_evaluations(db_path, run_id, output_path, summary)
     return summary
+
+
+def _maybe_write_evaluations(
+    db_path: Path,
+    run_id: int,
+    routed_output_path: Path,
+    summary: ExportSummary,
+) -> None:
+    """Write a sibling evaluations.json next to the routed export, if
+    any Evaluation rows exist for this run. No file written on absence
+    (clean signal — downstream readers see no file vs. an empty list)."""
+    eval_path = routed_output_path.parent / "evaluations.json"
+
+    with session_scope(db_path) as session:
+        rows = list(
+            session.execute(
+                select(Evaluation, Query)
+                .join(Query, Evaluation.query_id == Query.query_id)
+                .where(Evaluation.run_id == run_id)
+                .where(Evaluation.status == "success")
+            ).all()
+        )
+
+    if not rows:
+        return
+
+    entries: list[dict[str, Any]] = []
+    for ev, _ in sorted(
+        rows,
+        key=lambda r: (r[0].query_id, r[0].routed_tier, r[0].routed_model,
+                       r[0].gold_model_id, r[0].evaluator),
+    ):
+        entries.append({
+            "eval_id": _eval_id(ev),
+            "query_id": ev.query_id,
+            "routed_provider": ev.routed_provider,
+            "routed_model": ev.routed_model,
+            "expected_provider": ev.gold_provider,
+            "expected_model": ev.gold_model_id,
+            "evaluator": ev.evaluator,
+            "verdict": ev.verdict,
+            "rationale": ev.rationale,
+            "scores": {
+                "correctness": ev.correctness,
+                "completeness": ev.completeness,
+                "fitness_for_purpose": ev.fitness_for_purpose,
+            },
+        })
+
+    eval_path.parent.mkdir(parents=True, exist_ok=True)
+    eval_path.write_text(json.dumps(entries, indent=2, ensure_ascii=False))
+
+    summary.evaluations_path = eval_path
+    summary.evaluations_written = len(entries)
+    for e in entries:
+        summary.evaluations_by_evaluator[e["evaluator"]] = (
+            summary.evaluations_by_evaluator.get(e["evaluator"], 0) + 1
+        )
+
+
+def _eval_id(ev: Evaluation) -> str:
+    """Stable eval_id with evaluator suffix so multi-evaluator runs don't
+    collide. Mirrors evaluations._eval_id; duplicated here to avoid an
+    import cycle (export imports tiers transitively)."""
+
+    def _slug(s: str | None) -> str:
+        return (s or "unknown").replace(" ", "-").replace(".", "_").lower()
+
+    return (
+        f"{ev.query_id}-{_slug(ev.routed_provider)}-{_slug(ev.routed_model)}"
+        f"-vs-{_slug(ev.gold_provider)}-{_slug(ev.gold_model_id)}"
+        f"--{_slug(ev.evaluator)}"
+    )
