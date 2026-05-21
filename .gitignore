@@ -15,14 +15,16 @@ venv/
 build/
 dist/
 
-# Benchmark database (canonical run state — should be regenerable).
-# Lives under data/ now; legacy root-level paths kept ignored so a
-# stale benchmark.db from earlier checkouts doesn't accidentally land
-# in a commit.
-data/router_benchmark.db
+# Benchmark database. The main .db IS committed — it's the canonical
+# dataset (full run lifecycle: queries, routing, per-model answers +
+# tokens, gold, evaluations). The WAL / SHM / journal sidecars are
+# transient and must NEVER be committed: checkpoint the WAL into the .db
+# first (`sqlite3 data/router_benchmark.db 'PRAGMA wal_checkpoint(TRUNCATE)'`)
+# so the committed file is self-contained, then commit just the .db.
 data/router_benchmark.db-journal
 data/router_benchmark.db-wal
 data/router_benchmark.db-shm
+# Legacy root-level paths (older checkouts) stay fully ignored.
 benchmark.db
 benchmark.db-journal
 benchmark.db-wal
