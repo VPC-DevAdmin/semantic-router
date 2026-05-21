@@ -202,5 +202,11 @@ def test_export_summary_counts(tmp_path: Path) -> None:
     assert summary.with_routed_tier == 1          # only q1
     assert summary.with_routed_answer == 1        # q1's tier-1 models answered
     assert summary.with_expected == 2             # both have upstream gold
-    # q1 had 2 successful routed models; q2 had 0.
-    assert summary.routed_models_per_query == {2: 1, 0: 1}
+    # Per-tier-per-model counts: 1 successful answer each for the two
+    # tier-1 models that ran on q1. q2 had no routed answers.
+    assert summary.routed_answers_per_model == {
+        (1, "m1a"): 1,
+        (1, "m1b"): 1,
+    }
+    # q2 has no pass1 row (not routed) — doesn't count as top-tier.
+    assert summary.top_tier_routed == 0

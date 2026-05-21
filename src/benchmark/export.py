@@ -54,21 +54,43 @@ class ExportSummary:
     with_routed_tier: int = 0
     with_routed_answer: int = 0  # queries with >=1 successful routed answer
     with_expected: int = 0       # queries with >=1 expected answer
-    # number-of-routed-models → count of queries
-    routed_models_per_query: dict[int, int] = field(default_factory=dict)
+    # (tier_level, model_id) → count of successful routed answers
+    routed_answers_per_model: dict[tuple[int, str], int] = field(default_factory=dict)
+    # Queries routed to the top tier — no per-model answers needed because
+    # the top tier IS the gold reference (every comparison is routed-vs-top).
+    top_tier_routed: int = 0
 
     def __str__(self) -> str:
         lines = [
-            f"  wrote:                  {self.output_path}",
-            f"  queries exported:       {self.queries_exported}",
-            f"  with routed tier:       {self.with_routed_tier}",
-            f"  with routed answer(s):  {self.with_routed_answer}",
-            f"  with expected answer(s):{self.with_expected}",
+            f"  wrote:                   {self.output_path}",
+            f"  queries exported:        {self.queries_exported}",
+            f"  with routed tier:        {self.with_routed_tier}",
+            f"  with routed answer(s):   {self.with_routed_answer}",
+            f"  with expected answer(s): {self.with_expected}",
         ]
-        if self.routed_models_per_query:
-            lines.append("  routed-model coverage:")
-            for n, count in sorted(self.routed_models_per_query.items()):
-                lines.append(f"    {n} model(s): {count} query(ies)")
+        if self.routed_answers_per_model:
+            lines.append("  routed answers by tier × model:")
+            # Group by tier; longest model name sets the column width.
+            by_tier: dict[int, list[tuple[str, int]]] = {}
+            for (tier, model), n in self.routed_answers_per_model.items():
+                by_tier.setdefault(tier, []).append((model, n))
+            name_width = max(
+                len(model)
+                for (_, model), _ in self.routed_answers_per_model.items()
+            )
+            total = 0
+            for tier in sorted(by_tier):
+                for model, n in sorted(by_tier[tier]):
+                    lines.append(
+                        f"    tier{tier}  {model:<{name_width}}  {n}"
+                    )
+                    total += n
+            lines.append(f"  total routed answers:    {total}")
+        if self.top_tier_routed:
+            lines.append(
+                f"  top-tier routed:         {self.top_tier_routed} "
+                f"(no per-model answers — top tier is the gold reference)"
+            )
         return "\n".join(lines)
 
 
@@ -200,9 +222,19 @@ def export_demo_json(
                 summary.with_routed_answer += 1
             if entry["expected_answers"]:
                 summary.with_expected += 1
-            summary.routed_models_per_query[n_routed_ok] = (
-                summary.routed_models_per_query.get(n_routed_ok, 0) + 1
-            )
+            # Count successful answers per (tier, model). For routed-to-top-tier
+            # queries this list is empty by design (top tier IS the gold).
+            for r in entry["routed_answers"]:
+                if r["status"] == "success":
+                    key = (r["tier"], r["model"])
+                    summary.routed_answers_per_model[key] = (
+                        summary.routed_answers_per_model.get(key, 0) + 1
+                    )
+            # Track top-tier-routed queries separately so the summary can
+            # explain the "0 routed answers" case without making it look
+            # like a coverage gap.
+            if entry["routed_tier"] is not None and not entry["routed_answers"]:
+                summary.top_tier_routed += 1
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(entries, indent=2, ensure_ascii=False))
