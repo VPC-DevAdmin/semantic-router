@@ -511,8 +511,8 @@ def import_evaluations_cmd(
     so a future `make export` writes it from the DB in the standard
     shape. Idempotent: re-running upserts.
 
-    Drops `soundness` from `scores` (the new schema is three
-    dimensions: correctness / completeness / fitness_for_purpose).
+    Four dimensions are stored: correctness, completeness,
+    fitness_for_purpose, soundness (all 1-4).
     """
     import json as _json
 
@@ -539,14 +539,14 @@ def import_evaluations_cmd(
         console.print(f"[red]error[/]: expected a JSON array, got {type(raw).__name__}")
         raise typer.Exit(code=2)
 
-    dropped_soundness = 0
+    missing_soundness = 0
     inserted = 0
     updated = 0
     with session_scope(db) as session:
         for entry in raw:
             scores = entry.get("scores") or {}
-            if "soundness" in scores:
-                dropped_soundness += 1
+            if "soundness" not in scores:
+                missing_soundness += 1
             # Tier comes from the routed_model — we don't have it in the
             # legacy file, so fall back to looking it up by joining to
             # TierAnswer in this run.
@@ -585,6 +585,7 @@ def import_evaluations_cmd(
                 correctness=int(scores.get("correctness", 0)) or None,
                 completeness=int(scores.get("completeness", 0)) or None,
                 fitness_for_purpose=int(scores.get("fitness_for_purpose", 0)) or None,
+                soundness=int(scores.get("soundness", 0)) or None,
                 status="success",
             )
             if existing is None:
@@ -599,10 +600,11 @@ def import_evaluations_cmd(
     console.print(f"  file:               {path}")
     console.print(f"  inserted:           {inserted}")
     console.print(f"  updated:            {updated}")
-    if dropped_soundness:
+    if missing_soundness:
         console.print(
-            f"  [dim]dropped[/] `soundness` scores from {dropped_soundness} "
-            f"entry/ies (not part of the new schema)."
+            f"  [yellow]warning[/]: {missing_soundness} entry/ies had no "
+            f"`soundness` score (left null in the DB; downstream consumers "
+            f"will see null for that dimension)."
         )
 
 

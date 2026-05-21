@@ -281,6 +281,7 @@ def _maybe_write_evaluations(
                 "correctness": ev.correctness,
                 "completeness": ev.completeness,
                 "fitness_for_purpose": ev.fitness_for_purpose,
+                "soundness": ev.soundness,
             },
         })
 

@@ -129,12 +129,20 @@ class Evaluation(Base):
       2 — partially meets
       1 — does not meet
 
+    Four dimensions:
+      correctness          — is the CORE answer factually/logically right?
+      completeness         — does it cover what the question requires?
+      fitness_for_purpose  — is the format, length, and tone appropriate?
+      soundness            — are the SUPPORTING claims factually accurate
+                              (no misleading errors beyond the core answer)?
+
     Verdict alphabet:
       Adequate  — correct and fit for purpose; minor verbosity /
                   formatting / style differences vs the gold are fine.
       Marginal  — partially correct or useful but has notable gaps,
-                  factual errors in supporting content, or quality
-                  issues a real user would notice.
+                  factual errors in supporting content (typically
+                  flagged by low soundness), or quality issues a real
+                  user would notice.
       Failure   — factually wrong on the core question, misleading,
                   or so incomplete it fails the user.
     """
@@ -164,6 +172,7 @@ class Evaluation(Base):
     correctness: Mapped[int | None] = mapped_column(Integer)
     completeness: Mapped[int | None] = mapped_column(Integer)
     fitness_for_purpose: Mapped[int | None] = mapped_column(Integer)
+    soundness: Mapped[int | None] = mapped_column(Integer)
 
     # Lifecycle (mirrors TierAnswer for resume semantics).
     status: Mapped[str] = mapped_column(String, nullable=False)  # pending|success|error

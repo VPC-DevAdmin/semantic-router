@@ -49,7 +49,7 @@ DEFAULT_BATCH_SIZE = 50
 DEFAULT_CONCURRENCY = 1  # one in-flight batch per evaluator; the BATCH is the parallelism
 
 # Score scale used in the judge prompt; surfaces in DB columns 1-4.
-_DIMENSIONS = ("correctness", "completeness", "fitness_for_purpose")
+_DIMENSIONS = ("correctness", "completeness", "fitness_for_purpose", "soundness")
 _VERDICTS = ("Adequate", "Marginal", "Failure")
 
 
@@ -168,10 +168,14 @@ Score scale (per dimension):
   2 — partially meets (real-user impact)
   1 — does not meet
 
-Dimensions:
-  correctness          — factually and logically correct
-  completeness         — covers what the question requires
-  fitness_for_purpose  — appropriate format, length, tone
+Dimensions (each 1-4):
+  correctness          — is the CORE answer factually and logically right?
+  completeness         — does it cover what the question requires?
+  fitness_for_purpose  — appropriate format, length, tone?
+  soundness            — are the SUPPORTING claims also factually accurate?
+                          (Distinct from correctness — a candidate can have
+                          a right core answer but include misleading
+                          supporting details. Soundness flags THAT case.)
 
 Overall verdict alphabet:
   Adequate  — correct and fit for purpose. Minor verbosity, formatting,
@@ -190,7 +194,12 @@ Respond with EXACTLY a JSON array (no markdown, no surrounding text):
     "eval_id": "<the eval_id provided for this item>",
     "verdict": "Adequate" | "Marginal" | "Failure",
     "rationale": "1-3 sentences focused on what tipped your verdict",
-    "scores": {"correctness": 1-4, "completeness": 1-4, "fitness_for_purpose": 1-4}
+    "scores": {
+      "correctness": 1-4,
+      "completeness": 1-4,
+      "fitness_for_purpose": 1-4,
+      "soundness": 1-4
+    }
   },
   ...
 ]
@@ -491,6 +500,7 @@ async def _run_one_batch(
                 row.correctness = verdict["scores"]["correctness"]
                 row.completeness = verdict["scores"]["completeness"]
                 row.fitness_for_purpose = verdict["scores"]["fitness_for_purpose"]
+                row.soundness = verdict["scores"]["soundness"]
                 row.status = "success"
                 row.error_msg = None
                 report.bump(evaluator.served_model_name, "success")

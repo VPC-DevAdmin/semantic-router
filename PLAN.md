@@ -74,14 +74,15 @@ tier YAMLs do enforce a whitelist (small, author-edited).
 
 ## 4. Adequacy rubric (implemented by `make evaluate`)
 
-Three dimensions per (routed answer × gold answer × judge), each
+Four dimensions per (routed answer × gold answer × judge), each
 scored 1-4:
 
 | | Definition | 4 | 3 | 2 | 1 |
 |---|---|---|---|---|---|
-| **correctness** | factually and logically correct | fully correct | correct, minor issues | partially correct | incorrect on the substance |
+| **correctness** | the CORE answer is factually and logically right | fully correct | correct, minor issues | partially correct | incorrect on the substance |
 | **completeness** | covers what the question requires | covers everything | covers most, minor gaps | significant gaps | does not cover what's needed |
 | **fitness_for_purpose** | format, length, tone | well-suited | suitable, minor issues | partially appropriate | inappropriate |
+| **soundness** | the SUPPORTING claims are factually accurate (distinct from `correctness` — a candidate can be right on the core answer but include misleading supporting details) | all supporting details correct | one minor imprecision that doesn't mislead | a supporting fact is wrong in a way a user could rely on | the supporting explanation contains misleading errors |
 
 **Verdict** is an overall call, distinct from the per-dimension scores:
 

@@ -157,9 +157,10 @@ def test_build_judge_prompt_dedupes_references_per_query() -> None:
 def test_parse_judge_response_happy_path() -> None:
     resp = json.dumps([
         {"eval_id": "a", "verdict": "Adequate", "rationale": "fine",
-         "scores": {"correctness": 4, "completeness": 4, "fitness_for_purpose": 4}},
+         "scores": {"correctness": 4, "completeness": 4,
+                  "fitness_for_purpose": 4, "soundness": 4}},
         {"eval_id": "b", "verdict": "Failure", "rationale": "wrong",
-         "scores": {"correctness": 1, "completeness": 2, "fitness_for_purpose": 1}},
+         "scores": {"correctness": 1, "completeness": 2, "fitness_for_purpose": 1, "soundness": 1}},
     ])
     out = parse_judge_response(resp)
     assert set(out.keys()) == {"a", "b"}
@@ -170,7 +171,8 @@ def test_parse_judge_response_happy_path() -> None:
 def test_parse_judge_response_strips_markdown_fences() -> None:
     resp = "```json\n" + json.dumps([
         {"eval_id": "a", "verdict": "Adequate", "rationale": "",
-         "scores": {"correctness": 4, "completeness": 4, "fitness_for_purpose": 4}},
+         "scores": {"correctness": 4, "completeness": 4,
+                  "fitness_for_purpose": 4, "soundness": 4}},
     ]) + "\n```"
     assert "a" in parse_judge_response(resp)
 
@@ -185,12 +187,14 @@ def test_parse_judge_response_skips_malformed_entries() -> None:
     missing eval_ids as errors so the good one doesn't waste a retry."""
     resp = json.dumps([
         {"eval_id": "a", "verdict": "Adequate", "rationale": "",
-         "scores": {"correctness": 4, "completeness": 4, "fitness_for_purpose": 4}},
+         "scores": {"correctness": 4, "completeness": 4,
+                  "fitness_for_purpose": 4, "soundness": 4}},
         {"eval_id": "b", "verdict": "Bogus",  # not a valid verdict
-         "scores": {"correctness": 4, "completeness": 4, "fitness_for_purpose": 4}},
+         "scores": {"correctness": 4, "completeness": 4,
+                  "fitness_for_purpose": 4, "soundness": 4}},
         {"eval_id": "c", "verdict": "Adequate",
          "scores": {"correctness": 5, "completeness": 4,
-          "fitness_for_purpose": 4}},  # 5 out of range
+          "fitness_for_purpose": 4, "soundness": 4}},  # 5 out of range
     ])
     out = parse_judge_response(resp)
     assert set(out.keys()) == {"a"}
@@ -302,7 +306,8 @@ def _good_response_for_items(items: list[dict]) -> str:
             "eval_id": it["eval_id"],
             "verdict": "Adequate",
             "rationale": "ok",
-            "scores": {"correctness": 4, "completeness": 4, "fitness_for_purpose": 4},
+            "scores": {"correctness": 4, "completeness": 4,
+                       "fitness_for_purpose": 4, "soundness": 4},
         }
         for it in items
     ])
@@ -328,7 +333,8 @@ async def test_worker_happy_path(tmp_path) -> None:
         return ChatResult(
             content=json.dumps([
                 {"eval_id": e, "verdict": "Adequate", "rationale": "ok",
-                 "scores": {"correctness": 4, "completeness": 4, "fitness_for_purpose": 4}}
+                 "scores": {"correctness": 4, "completeness": 4,
+                  "fitness_for_purpose": 4, "soundness": 4}}
                 for e in ids
             ]),
             model="judge", prompt_tokens=0, completion_tokens=0,
@@ -350,6 +356,7 @@ async def test_worker_happy_path(tmp_path) -> None:
     assert all(r.status == "success" for r in rows)
     assert all(r.verdict == "Adequate" for r in rows)
     assert all(r.correctness == 4 for r in rows)
+    assert all(r.soundness == 4 for r in rows)
 
 
 @pytest.mark.asyncio
@@ -371,7 +378,8 @@ async def test_worker_partial_response_marks_missing_as_error(tmp_path) -> None:
         return ChatResult(
             content=json.dumps([
                 {"eval_id": ids[0], "verdict": "Adequate", "rationale": "ok",
-                 "scores": {"correctness": 4, "completeness": 4, "fitness_for_purpose": 4}},
+                 "scores": {"correctness": 4, "completeness": 4,
+                  "fitness_for_purpose": 4, "soundness": 4}},
             ]),
             model="judge", prompt_tokens=0, completion_tokens=0,
             latency_ms=0, raw={},
@@ -432,6 +440,7 @@ async def test_worker_resumes_from_error_rows(tmp_path) -> None:
             r.correctness = 4
             r.completeness = 4
             r.fitness_for_purpose = 4
+            r.soundness = 4
             r.rationale = "from prior run"
 
     class _CountingClient:
@@ -444,7 +453,8 @@ async def test_worker_resumes_from_error_rows(tmp_path) -> None:
             return ChatResult(
                 content=json.dumps([
                     {"eval_id": e, "verdict": "Adequate", "rationale": "new",
-                     "scores": {"correctness": 3, "completeness": 3, "fitness_for_purpose": 3}}
+                     "scores": {"correctness": 3, "completeness": 3,
+                                "fitness_for_purpose": 3, "soundness": 3}}
                     for e in ids
                 ]),
                 model="judge", prompt_tokens=0, completion_tokens=0,
@@ -501,7 +511,8 @@ async def test_worker_batch_size_chunks_queries(tmp_path) -> None:
             return ChatResult(
                 content=json.dumps([
                     {"eval_id": e, "verdict": "Adequate", "rationale": "",
-                     "scores": {"correctness": 4, "completeness": 4, "fitness_for_purpose": 4}}
+                     "scores": {"correctness": 4, "completeness": 4,
+                  "fitness_for_purpose": 4, "soundness": 4}}
                     for e in ids
                 ]),
                 model="judge", prompt_tokens=0, completion_tokens=0,

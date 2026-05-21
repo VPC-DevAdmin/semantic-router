@@ -217,6 +217,7 @@ def _add_evaluation(
     db: Path, rid: int, qid: str, *, tier: int, routed: str, gold: str,
     evaluator: str, verdict: str = "Adequate",
     correctness: int = 4, completeness: int = 4, fitness: int = 4,
+    soundness: int = 4,
     routed_provider: str | None = None, gold_provider: str | None = None,
 ) -> None:
     with session_scope(db) as s:
@@ -227,7 +228,7 @@ def _add_evaluation(
             routed_provider=routed_provider, gold_provider=gold_provider,
             verdict=verdict, rationale="ok",
             correctness=correctness, completeness=completeness,
-            fitness_for_purpose=fitness,
+            fitness_for_purpose=fitness, soundness=soundness,
             status="success", latency_ms=10,
             evaluated_at=datetime.now(UTC),
         ))
@@ -260,8 +261,10 @@ def test_export_emits_evaluations_when_rows_exist(tmp_path: Path) -> None:
     assert e["expected_model"] == "Opus"
     assert e["evaluator"] == "claude-sonnet-4-6"
     assert e["verdict"] == "Adequate"
-    # Three-dimension scores (no `soundness`).
-    assert set(e["scores"].keys()) == {"correctness", "completeness", "fitness_for_purpose"}
+    # Four-dimension scores.
+    assert set(e["scores"].keys()) == {
+        "correctness", "completeness", "fitness_for_purpose", "soundness",
+    }
 
 
 def test_export_skips_evaluations_when_no_rows(tmp_path: Path) -> None:
