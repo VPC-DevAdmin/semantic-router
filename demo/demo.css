@@ -232,8 +232,8 @@ footer { padding:28px 0; color:var(--text-muted); font-size:13px; border-top:1px
 
 /* Query / category picker — custom animated dropdowns (not native select) */
 .qpicker-group { gap:12px; margin-left:auto; }
-.qpicker { position:relative; min-width:180px; }
-.qpicker.qpicker-wide { min-width:280px; }
+.qpicker { position:relative; min-width:180px; max-width:240px; flex:0 1 auto; }
+.qpicker.qpicker-wide { min-width:280px; max-width:380px; }
 .qpicker-field {
   width:100%; display:flex; align-items:center; gap:10px;
   background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.14);

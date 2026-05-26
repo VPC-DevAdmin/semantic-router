@@ -858,13 +858,16 @@ document.getElementById('expandQ').addEventListener('click', e => {
   e.currentTarget.textContent = expanded ? '⌃ Show less' : '⌄ Show full query';
 });
 document.getElementById('nextBtn').addEventListener('click', advanceDetail);
-document.getElementById('pinBtn').addEventListener('click', e => {
-  pinned = !pinned;
-  const btn = e.currentTarget;
-  btn.classList.toggle('active', pinned);
-  btn.setAttribute('aria-pressed', String(pinned));
-  btn.textContent = pinned ? '📌 Pinned' : '📌 Pin';
-  if (!pinned) nextDueAt = performance.now() + dwellMs();
+document.getElementById('pinBtn').addEventListener('click', () => {
+  if (pinned) {
+    // Unpin. If pinning was driven by selecting a specific query in the
+    // dropdown, also clear that selection so the random stream within
+    // the current category resumes.
+    if (selectedQueryId) selectQuery(null);
+    else setPinned(false);
+  } else {
+    setPinned(true);
+  }
 });
 
 // Pause the spawn loop while the stage is scrolled out of view (saves
