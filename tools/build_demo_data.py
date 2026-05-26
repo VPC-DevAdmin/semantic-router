@@ -183,6 +183,9 @@ def build(
             "routed_tier": rt,
             "routing_latency_ms": lat,
             "prompt_tokens": prompt_tokens,
+            # Topical category labels (drives the demo's category dropdown).
+            # Free-form list in queries.json; defaults to [] for safety.
+            "specializations": list(q.get("specializations") or []),
             "routed_answers": routed_by_tier,
             "frontier_answers": frontier_out,
             "evaluations": evals_by_query.get(q["id"], {}),

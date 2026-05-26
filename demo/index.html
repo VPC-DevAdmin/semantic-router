@@ -150,12 +150,27 @@
           <button class="ctrl-btn" id="pinBtn" aria-pressed="false" title="Freeze the panel on this query">📌 Pin</button>
           <span class="next-countdown" id="nextIn"></span>
         </div>
-        <div class="control-group">
-          <span class="inject-label">Router speed</span>
-          <div class="speed-pill" id="speedPill" role="group" aria-label="Router speed">
-            <button data-s="1" class="active">1×</button>
-            <button data-s="2">2×</button>
-            <button data-s="4">4×</button>
+        <div class="control-group qpicker-group">
+          <div class="qpicker" data-picker="cat">
+            <button type="button" class="qpicker-field" id="catField" aria-expanded="false" aria-haspopup="listbox">
+              <span class="qpicker-eyebrow">Category</span>
+              <span class="qpicker-value" id="catValueText">All categories</span>
+              <svg class="qpicker-caret" width="10" height="6" viewBox="0 0 10 6" aria-hidden="true"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <div class="qpicker-menu" id="catMenu" role="listbox" aria-labelledby="catField"></div>
+          </div>
+          <div class="qpicker qpicker-wide" data-picker="q">
+            <button type="button" class="qpicker-field" id="qField" aria-expanded="false" aria-haspopup="listbox">
+              <span class="qpicker-eyebrow">Query</span>
+              <span class="qpicker-value" id="qValueText">Random in category</span>
+              <svg class="qpicker-caret" width="10" height="6" viewBox="0 0 10 6" aria-hidden="true"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <div class="qpicker-menu qpicker-menu-q" id="qMenu" role="listbox" aria-labelledby="qField">
+              <div class="qpicker-search-wrap">
+                <input class="qpicker-search" id="qSearch" type="text" placeholder="Search queries…" autocomplete="off">
+              </div>
+              <div class="qpicker-list" id="qList"></div>
+            </div>
           </div>
         </div>
       </div>

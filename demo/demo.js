@@ -112,6 +112,7 @@ function init(data) {
   buildStage();
   buildTierDiagram();
   initCalculator();
+  initQueryPickers();
 
   document.getElementById('loadStatus').style.display = 'none';
   document.getElementById('demoRoot').style.display = 'block';
@@ -616,8 +617,13 @@ function spawnTick() {
   // Don't spawn while hidden/off-screen: rAF (which advances + removes
   // balls) is throttled in background tabs, so setTimeout-driven spawns
   // would pile up. Also cap concurrent balls as a belt-and-suspenders guard.
-  if (!paused && DATA && !document.hidden && onScreen && inFlight.length < 80) {
-    const q = DATA.queries[Math.floor(Math.random()*DATA.queries.length)];
+  // Skip random spawn when the user has picked a specific query - the
+  // detail panel is then pinned to it (selectQuery handles its own spawn).
+  if (!paused && DATA && !document.hidden && onScreen && !selectedQueryId && inFlight.length < 80) {
+    const pool = queriesInCategory(selectedCategory);
+    const q = pool.length
+      ? pool[Math.floor(Math.random()*pool.length)]
+      : DATA.queries[Math.floor(Math.random()*DATA.queries.length)];
     spawnQuery(q);
     pendingQ = q;   // queue it for the detail panel's next dwell window
   }
@@ -661,12 +667,192 @@ document.getElementById('resetBtn').addEventListener('click', () => {
   ballLayer().innerHTML=''; pulseLayer().innerHTML=''; overlayLayer().innerHTML='';
   updateLiveStats();
 });
-document.querySelectorAll('#speedPill button').forEach(b => {
-  b.addEventListener('click', () => {
-    document.querySelectorAll('#speedPill button').forEach(x=>x.classList.remove('active'));
-    b.classList.add('active'); speed = parseInt(b.dataset.s,10);
+// ===================================================================
+// CATEGORY + QUERY PICKERS (replace the router-speed multiplier)
+// ===================================================================
+// The stage now always runs at real measured throughput. In its place we
+// let the user explore by category, and optionally pin to one specific
+// query. State:
+//   selectedCategory: 'all' or a specializations label.
+//   selectedQueryId : null (random within category) or a specific query id.
+let selectedCategory = 'all';
+let selectedQueryId = null;
+
+const cap = s => s ? s[0].toUpperCase() + s.slice(1) : s;
+const CAT_PALETTE = {
+  general:'#9DB1C4', reasoning:'#E64B5C', math:'#F2A93B',
+  code:'#11A8C4', creative:'#1FB67A',
+};
+
+function queriesInCategory(cat) {
+  if (cat === 'all') return DATA.queries;
+  return DATA.queries.filter(q => (q.specializations || []).includes(cat));
+}
+
+function categoryCounts() {
+  const counts = { all: DATA.queries.length };
+  DATA.queries.forEach(q => (q.specializations || []).forEach(s => {
+    counts[s] = (counts[s] || 0) + 1;
+  }));
+  return counts;
+}
+
+// Sync the Pin button label/state when the picker drives pinning.
+function setPinned(b) {
+  pinned = !!b;
+  const btn = document.getElementById('pinBtn');
+  if (btn) {
+    btn.classList.toggle('active', pinned);
+    btn.setAttribute('aria-pressed', String(pinned));
+    btn.textContent = pinned ? '📌 Pinned' : '📌 Pin';
+  }
+  if (!pinned) nextDueAt = performance.now() + dwellMs();
+}
+
+function closeAllPickers() {
+  document.querySelectorAll('.qpicker.open').forEach(p => {
+    p.classList.remove('open');
+    const f = p.querySelector('.qpicker-field');
+    if (f) f.setAttribute('aria-expanded', 'false');
   });
-});
+}
+
+function selectCategory(cat) {
+  selectedCategory = cat;
+  selectedQueryId = null;
+  document.getElementById('catValueText').textContent =
+    cat === 'all' ? 'All categories' : cap(cat);
+  document.getElementById('qValueText').textContent = 'Random in category';
+  // mark selected in the category menu
+  document.querySelectorAll('#catMenu [data-cat]').forEach(b => {
+    b.classList.toggle('selected', b.dataset.cat === cat);
+  });
+  const search = document.getElementById('qSearch');
+  if (search) search.value = '';
+  renderQueryList('');
+  setPinned(false);
+}
+
+function selectQuery(id) {
+  if (!id) {
+    selectedQueryId = null;
+    document.getElementById('qValueText').textContent = 'Random in category';
+    // mark "Random in category" as selected in the menu
+    document.querySelectorAll('#qList [data-qid]').forEach(b => {
+      b.classList.toggle('selected', b.dataset.qid === '__rand');
+    });
+    setPinned(false);
+    return;
+  }
+  const q = DATA.queries.find(x => x.id === id);
+  if (!q) return;
+  selectedQueryId = id;
+  document.getElementById('qValueText').textContent =
+    truncate((q.prompt || '').replace(/\s+/g, ' '), 60);
+  document.querySelectorAll('#qList [data-qid]').forEach(b => {
+    b.classList.toggle('selected', b.dataset.qid === id);
+  });
+  // animate the picked query through the router and pin the detail panel
+  spawnQuery(q);
+  showDetail(q);
+  setPinned(true);
+}
+
+function renderQueryList(filter) {
+  const list = document.getElementById('qList');
+  if (!list) return;
+  const pool = queriesInCategory(selectedCategory);
+  const f = (filter || '').trim().toLowerCase();
+  const matches = f ? pool.filter(q => (q.prompt || '').toLowerCase().includes(f)) : pool;
+  let html = `
+    <button class="qpicker-option ${selectedQueryId ? '' : 'selected'}" type="button" role="option" data-qid="__rand">
+      <span class="opt-tier-dot" style="background:#9DB1C4"></span>
+      <span>Random in category</span>
+      <span class="opt-meta">${pool.length}</span>
+    </button>`;
+  if (!matches.length) {
+    html += `<div class="qpicker-empty">no matches</div>`;
+  } else {
+    const MAX = 200;  // cap rendered options so the DOM stays light
+    matches.slice(0, MAX).forEach(q => {
+      const t = q.routed_tier || 1;
+      const short = truncate((q.prompt || '').replace(/\s+/g, ' '), 80);
+      const isSel = q.id === selectedQueryId;
+      html += `
+        <button class="qpicker-option${isSel ? ' selected' : ''}" type="button" role="option" data-qid="${esc(q.id)}">
+          <span class="opt-tier" style="background:${TIER_HEX[t]}22;color:${TIER_HEX[t]};">
+            <span class="opt-tier-dot" style="background:${TIER_HEX[t]}"></span>T${t}
+          </span>
+          <span>${esc(short)}</span>
+        </button>`;
+    });
+    if (matches.length > MAX) {
+      html += `<div class="qpicker-empty">…${matches.length - MAX} more — type to filter</div>`;
+    }
+  }
+  list.innerHTML = html;
+}
+
+function initQueryPickers() {
+  // Build category menu
+  const counts = categoryCounts();
+  const order = ['general', 'reasoning', 'math', 'code', 'creative'];
+  const cats = [{ id: 'all', label: 'All categories', dot: '#9DB1C4' }];
+  order.forEach(k => { if (counts[k]) cats.push({ id:k, label:cap(k), dot:CAT_PALETTE[k] }); });
+  // future-proof: any extra labels in the data show up too
+  Object.keys(counts).forEach(k => {
+    if (k !== 'all' && !cats.some(c => c.id === k)) {
+      cats.push({ id:k, label:cap(k), dot:'#9DB1C4' });
+    }
+  });
+  const catMenu = document.getElementById('catMenu');
+  catMenu.innerHTML = cats.map(c => `
+    <button class="qpicker-option${c.id===selectedCategory?' selected':''}" type="button" role="option" data-cat="${esc(c.id)}">
+      <span class="opt-tier-dot" style="background:${c.dot}"></span>
+      <span>${esc(c.label)}</span>
+      <span class="opt-meta">${counts[c.id]||0}</span>
+    </button>`).join('');
+
+  catMenu.addEventListener('click', e => {
+    const btn = e.target.closest('[data-cat]');
+    if (!btn) return;
+    selectCategory(btn.dataset.cat);
+    closeAllPickers();
+  });
+
+  renderQueryList('');
+  const search = document.getElementById('qSearch');
+  search.addEventListener('input', e => renderQueryList(e.target.value));
+  document.getElementById('qList').addEventListener('click', e => {
+    const btn = e.target.closest('[data-qid]');
+    if (!btn) return;
+    if (btn.dataset.qid === '__rand') selectQuery(null);
+    else selectQuery(btn.dataset.qid);
+    closeAllPickers();
+  });
+
+  // Open / close the menus
+  document.querySelectorAll('.qpicker-field').forEach(field => {
+    field.addEventListener('click', e => {
+      const picker = e.currentTarget.closest('.qpicker');
+      const wasOpen = picker.classList.contains('open');
+      closeAllPickers();
+      if (!wasOpen) {
+        picker.classList.add('open');
+        e.currentTarget.setAttribute('aria-expanded', 'true');
+        const search = picker.querySelector('.qpicker-search');
+        if (search) setTimeout(() => search.focus(), 80);
+      }
+    });
+  });
+  // Outside click + Esc to close
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.qpicker')) closeAllPickers();
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeAllPickers();
+  });
+}
 document.getElementById('expandQ').addEventListener('click', e => {
   const expanded = el('recentQ').classList.toggle('expanded');
   e.currentTarget.textContent = expanded ? '⌃ Show less' : '⌄ Show full query';
