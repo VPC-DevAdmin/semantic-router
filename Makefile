@@ -90,20 +90,30 @@ else
 	    echo "[setup] vllm-sr already present: $$(command -v vllm-sr)"; \
 	else \
 	    echo "[setup] installing vllm-sr from $(VLLM_SR_INSTALL_URL)"; \
-	    curl -fsSL $(VLLM_SR_INSTALL_URL) | bash; \
+	    curl -fsSL $(VLLM_SR_INSTALL_URL) | bash || true; \
 	    if command -v vllm-sr >/dev/null 2>&1; then \
 	        echo "[setup] installed: $$(command -v vllm-sr)"; \
 	    else \
 	        echo ""; \
-	        echo "[setup] WARN: vllm-sr is not on PATH after install."; \
-	        echo "The installer may have placed it in ~/.local/bin or similar."; \
-	        echo "Add the install dir to PATH, then re-run \`make setup\`,"; \
-	        echo "or set \`binary:\` to the full path in config/router.yaml."; \
-	        exit 1; \
+	        echo "[setup] NOTE: vllm-sr install did not complete (upstream"; \
+	        echo "        unreachable, or installer placed it off PATH)."; \
+	        echo "        Setup will continue -- this only affects \`make route\`."; \
+	        echo "        \`make demo\`, \`make answers\`, \`make evaluate\`, and"; \
+	        echo "        \`make export\` do NOT need vllm-sr."; \
+	        echo ""; \
 	    fi; \
 	fi
 endif
 	$(BENCHMARK) init-db --db $(DB)
+	@echo ""
+	@echo "[setup] complete. DB initialized at $(DB)."
+	@if command -v vllm-sr >/dev/null 2>&1; then \
+	    echo "[setup] vllm-sr ready -- full pipeline available."; \
+	else \
+	    echo "[setup] vllm-sr not on PATH -- demo/answers/evaluate/export work;"; \
+	    echo "        re-run \`make setup\` later to retry the vllm-sr install,"; \
+	    echo "        or install it manually and place it on PATH."; \
+	fi
 
 # ---- router config (exemplar-based) ----
 #
