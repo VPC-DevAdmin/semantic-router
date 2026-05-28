@@ -95,11 +95,16 @@ else
 	        echo "[setup] installed: $$(command -v vllm-sr)"; \
 	    else \
 	        echo ""; \
-	        echo "[setup] NOTE: vllm-sr install did not complete (upstream"; \
+	        echo "[setup] WARN: vllm-sr install did not complete (upstream"; \
 	        echo "        unreachable, or installer placed it off PATH)."; \
-	        echo "        Setup will continue -- this only affects \`make route\`."; \
-	        echo "        \`make demo\`, \`make answers\`, \`make evaluate\`, and"; \
-	        echo "        \`make export\` do NOT need vllm-sr."; \
+	        echo "        vllm-sr is REQUIRED to run \`make route\` -- the"; \
+	        echo "        core routing pass this benchmark is built around."; \
+	        echo "        Setup will finish so you can still explore the"; \
+	        echo "        committed dataset (\`make demo\`) and operate on"; \
+	        echo "        already-routed rows (\`make answers\`, \`make evaluate\`,"; \
+	        echo "        \`make export\`), but a fresh routing pass needs vllm-sr."; \
+	        echo "        Re-run \`make setup\` to retry, or install vllm-sr"; \
+	        echo "        manually from vllm-project/semantic-router releases."; \
 	        echo ""; \
 	    fi; \
 	fi
@@ -110,9 +115,9 @@ endif
 	@if command -v vllm-sr >/dev/null 2>&1; then \
 	    echo "[setup] vllm-sr ready -- full pipeline available."; \
 	else \
-	    echo "[setup] vllm-sr not on PATH -- demo/answers/evaluate/export work;"; \
-	    echo "        re-run \`make setup\` later to retry the vllm-sr install,"; \
-	    echo "        or install it manually and place it on PATH."; \
+	    echo "[setup] vllm-sr NOT installed -- \`make route\` (the routing pass)"; \
+	    echo "        is blocked until you install it. Everything else works."; \
+	    echo "        Re-run \`make setup\` to retry, or install manually."; \
 	fi
 
 # ---- router config (exemplar-based) ----
@@ -176,6 +181,15 @@ load:
 # Depends on mock-bg so the mock is guaranteed running before the build
 # emits a router-config that points at it. mock-bg is idempotent.
 route: mock-bg
+	@if ! command -v vllm-sr >/dev/null 2>&1; then \
+	    echo "[route] ERROR: vllm-sr is not on PATH."; \
+	    echo "        This target runs the routing pass through vllm-sr,"; \
+	    echo "        which must be installed first. Run \`make setup\` to"; \
+	    echo "        install it (re-run if the upstream install URL was"; \
+	    echo "        previously unreachable), or install it manually from"; \
+	    echo "        vllm-project/semantic-router releases and place it on PATH."; \
+	    exit 1; \
+	fi
 	$(PYTHON) -m benchmark.build_router_config \
 	    --exemplars $(EXEMPLARS) --backends $(BACKENDS) --out $(ROUTER_CONFIG) \
 	    --check-against-eval data/queries.json \
