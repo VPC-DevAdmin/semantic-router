@@ -7,7 +7,7 @@
 #   make answers      # for each query × tier: collect that tier's response  [TODO]
 #   make export       # write data/routed_queries_with_answers.json
 
-.PHONY: help setup load route answers evaluate export resume misroutes scores \
+.PHONY: help setup install-vllm-sr-pypi load route answers evaluate export resume misroutes scores \
         import-answers update-gold demo-data demo \
         clean-results router-smoke router-stop test fmt lint \
         mock-bg mock-stop start_LLM stop_LLM
@@ -54,6 +54,9 @@ help:
 	@echo "  clean-results                  wipe runs/results; preserves queries + gold"
 	@echo "  router-smoke PROMPT='...'      diagnostic: one query through the router"
 	@echo "  router-stop                    tear down the vllm-sr Docker stack"
+	@echo "  install-vllm-sr-pypi           install vllm-sr direct from PyPI (used as"
+	@echo "                                 fallback by 'make setup' when the upstream"
+	@echo "                                 install.sh endpoint is unreachable)"
 	@echo "  test / fmt / lint"
 
 # ---- one-time setup ----
@@ -77,6 +80,12 @@ endif
 # manage vllm-sr some other way — system package, container image, etc.).
 VLLM_SR_INSTALL_URL ?= https://vllm-semantic-router.com/install.sh
 
+# Fallback install location (mirrors what upstream install.sh uses) for the
+# PyPI-direct path. Used only when the upstream install.sh endpoint is
+# unreachable. Override these to relocate.
+VLLM_SR_VENV    ?= $(HOME)/.local/share/vllm-sr/venv
+VLLM_SR_BIN_DIR ?= $(HOME)/.local/bin
+
 setup: $(VENV)/bin/python
 ifdef HAS_UV
 	uv pip install --python $(PYTHON) -e ".[dev]"
@@ -91,20 +100,27 @@ else
 	else \
 	    echo "[setup] installing vllm-sr from $(VLLM_SR_INSTALL_URL)"; \
 	    curl -fsSL $(VLLM_SR_INSTALL_URL) | bash || true; \
+	    if ! command -v vllm-sr >/dev/null 2>&1; then \
+	        echo ""; \
+	        echo "[setup] upstream installer did not produce vllm-sr on PATH."; \
+	        echo "[setup] falling back to PyPI (pip install vllm-sr)..."; \
+	        echo ""; \
+	        $(MAKE) -s install-vllm-sr-pypi || true; \
+	    fi; \
 	    if command -v vllm-sr >/dev/null 2>&1; then \
 	        echo "[setup] installed: $$(command -v vllm-sr)"; \
 	    else \
 	        echo ""; \
-	        echo "[setup] WARN: vllm-sr install did not complete (upstream"; \
-	        echo "        unreachable, or installer placed it off PATH)."; \
-	        echo "        vllm-sr is REQUIRED to run \`make route\` -- the"; \
-	        echo "        core routing pass this benchmark is built around."; \
-	        echo "        Setup will finish so you can still explore the"; \
-	        echo "        committed dataset (\`make demo\`) and operate on"; \
-	        echo "        already-routed rows (\`make answers\`, \`make evaluate\`,"; \
-	        echo "        \`make export\`), but a fresh routing pass needs vllm-sr."; \
-	        echo "        Re-run \`make setup\` to retry, or install vllm-sr"; \
-	        echo "        manually from vllm-project/semantic-router releases."; \
+	        echo "[setup] WARN: vllm-sr install did not complete and the PyPI"; \
+	        echo "        fallback also did not put it on PATH. vllm-sr is"; \
+	        echo "        REQUIRED for \`make route\` -- the core routing pass"; \
+	        echo "        this benchmark is built around. Setup will finish"; \
+	        echo "        so you can still explore the committed dataset"; \
+	        echo "        (\`make demo\`) and operate on already-routed rows"; \
+	        echo "        (\`make answers\`, \`make evaluate\`, \`make export\`),"; \
+	        echo "        but a fresh routing pass needs vllm-sr."; \
+	        echo "        If $(VLLM_SR_BIN_DIR) exists but isn't on your PATH,"; \
+	        echo "        add it via your shell rc and re-run \`make setup\`."; \
 	        echo ""; \
 	    fi; \
 	fi
@@ -118,6 +134,34 @@ endif
 	    echo "[setup] vllm-sr NOT installed -- \`make route\` (the routing pass)"; \
 	    echo "        is blocked until you install it. Everything else works."; \
 	    echo "        Re-run \`make setup\` to retry, or install manually."; \
+	fi
+
+# Direct-from-PyPI install of vllm-sr. Mirrors what upstream install.sh
+# does: isolated venv (so vllm-sr's deps don't conflict with this repo's
+# pinned versions) + a launcher symlink on PATH. Used by `make setup` as
+# a fallback when the upstream install.sh endpoint is unreachable; can
+# also be invoked directly:
+#     make install-vllm-sr-pypi
+install-vllm-sr-pypi:
+	@if ! command -v python3 >/dev/null 2>&1; then \
+	    echo "[install-vllm-sr-pypi] ERROR: python3 not found on PATH."; \
+	    exit 1; \
+	fi
+	@mkdir -p $(VLLM_SR_BIN_DIR)
+	@if [ ! -x $(VLLM_SR_VENV)/bin/python ]; then \
+	    echo "[install-vllm-sr-pypi] creating venv at $(VLLM_SR_VENV)"; \
+	    python3 -m venv $(VLLM_SR_VENV); \
+	fi
+	@echo "[install-vllm-sr-pypi] installing vllm-sr from PyPI..."
+	@$(VLLM_SR_VENV)/bin/python -m pip install --disable-pip-version-check --quiet --upgrade pip wheel setuptools
+	@$(VLLM_SR_VENV)/bin/python -m pip install --disable-pip-version-check --quiet --upgrade vllm-sr
+	@ln -sf $(VLLM_SR_VENV)/bin/vllm-sr $(VLLM_SR_BIN_DIR)/vllm-sr
+	@echo "[install-vllm-sr-pypi] installed: $(VLLM_SR_BIN_DIR)/vllm-sr -> $(VLLM_SR_VENV)/bin/vllm-sr"
+	@if ! command -v vllm-sr >/dev/null 2>&1; then \
+	    echo "[install-vllm-sr-pypi] NOTE: $(VLLM_SR_BIN_DIR) is not on your"; \
+	    echo "        current PATH. Add it to your shell rc (e.g. .bashrc):"; \
+	    echo "          export PATH=\"$(VLLM_SR_BIN_DIR):\$$PATH\""; \
+	    echo "        Then open a new shell or 'source' the rc and re-run setup."; \
 	fi
 
 # ---- router config (exemplar-based) ----
