@@ -393,10 +393,16 @@ footer { padding:28px 0; color:var(--text-muted); font-size:13px; border-top:1px
 
   /* >=44px tap targets for touch */
   .ctrl-btn { padding:12px 16px; }
-  .picker select { padding:12px 10px; }
   .qpicker-field { padding:11px 12px; }
   .qpicker-option { padding:12px; }
   .qpicker-search { padding:11px 12px; }
+
+  /* Model pickers: stack into one compact column with the dropdown inline
+     next to each tier title (squeeze vertical height). */
+  .picker-bar { grid-template-columns:1fr; gap:8px; margin-bottom:18px; }
+  .picker { display:flex; align-items:center; gap:12px; padding:7px 12px; }
+  .picker .ptier { margin-bottom:0; flex:0 0 90px; }
+  .picker select { flex:1 1 auto; width:auto; min-width:0; padding:10px; }
 
   /* 5 stats in 2 cols leaves an orphan — promote 'Saved' to a full row */
   .stats-bar .stat.savings { grid-column:1 / -1; }
