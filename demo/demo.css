@@ -360,6 +360,7 @@ footer { padding:28px 0; color:var(--text-muted); font-size:13px; border-top:1px
 .score-bar .score-num { font-family:ui-monospace,Menlo,monospace; color:var(--text-muted); text-align:right; }
 
 /* CTA button */
+.cta-actions { display:flex; gap:16px; justify-content:center; flex-wrap:wrap; }
 .cta-btn { display:inline-block; background:white; color:var(--dell-blue-dark); font-weight:800; font-size:16px; padding:14px 28px; border-radius:10px; text-decoration:none; box-shadow:0 8px 24px rgba(0,0,0,0.18); transition:transform 0.15s ease; }
 .cta-btn:hover { transform:translateY(-2px); }
 
