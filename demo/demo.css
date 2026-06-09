@@ -122,6 +122,10 @@ section.body-section { padding: 64px 0; }
 .stage-svg .small { font-size:10px; fill:#B6C6D6; letter-spacing:0.08em; }
 .stage-svg .label-md { font-size:13px; font-weight:700; }
 .stage-svg .lat-readout { font-size:13px; font-weight:700; fill:#9DEBFF; letter-spacing:0.04em; }
+/* Vertical (mobile) stage: bump text so it's legible at the smaller viewBox. */
+.stage-svg.stage-vertical .label-md { font-size:17px; }
+.stage-svg.stage-vertical .small { font-size:12.5px; }
+.stage-svg.stage-vertical .lat-readout { font-size:16px; }
 .stage-svg .tier-bg { fill:rgba(255,255,255,0.04); stroke:rgba(255,255,255,0.18); stroke-width:1; transition:stroke 0.3s ease, filter 0.3s ease; }
 .stage-svg .path-tier { fill:none; stroke-width:2; stroke-linecap:round; transition:opacity 0.25s ease; opacity:0.16; }
 .stage-svg .path-tier.glow { opacity:0.8; stroke-width:3; }

@@ -244,11 +244,14 @@ const STAGE = {
     queue: true, savedLeftPct: 820 / 1200 * 100,
   },
   v: {
-    viewBox: '0 0 600 980', vbW: 600, vbH: 980,
-    routerTx: 170, routerTy: 40, exitX: 300, exitY: 144,
-    spineX: 300,                 // straight down from the router center
-    boxX: 336, boxW: 248, boxH: 60, tierFirst: 214, tierStep: 150,
-    queue: false, savedLeftPct: 32,
+    // Narrower viewBox => the whole diagram (and its text) scales up on a
+    // phone instead of shrinking to ~0.65x. Tight tierStep removes the
+    // dead vertical space between boxes.
+    viewBox: '0 0 470 620', vbW: 470, vbH: 620,
+    routerTx: 105, routerTy: 28, exitX: 235, exitY: 132,
+    spineX: 235,                 // straight down from the router center
+    boxX: 250, boxW: 212, boxH: 58, tierFirst: 192, tierStep: 86,
+    queue: false, savedLeftPct: 26,
   },
 };
 // Robust mobile check: prefer the media query, fall back to innerWidth
@@ -304,8 +307,8 @@ function applyStageChrome(cfg) {
   } else {
     if (inc) inc.style.display = 'none';
     if (rtr) rtr.style.display = 'none';
-    setXY(tiers, 300, 198, 'middle');
-    setXY(lat, 300, 174, 'middle');
+    setXY(tiers, 235, 178, 'middle');
+    setXY(lat, 235, 156, 'middle');
   }
 }
 
@@ -313,7 +316,10 @@ function buildStage() {
   const n = TIERS.length;
   const cfg = stageCfg();
   const svg = document.getElementById('stageSvg');
-  if (svg) svg.setAttribute('viewBox', cfg.viewBox);
+  if (svg) {
+    svg.setAttribute('viewBox', cfg.viewBox);
+    svg.classList.toggle('stage-vertical', cfg === STAGE.v);
+  }
   const sg = document.getElementById('serverGroup');
   if (sg) sg.setAttribute('transform', `translate(${cfg.routerTx}, ${cfg.routerTy})`);
   applyStageChrome(cfg);
