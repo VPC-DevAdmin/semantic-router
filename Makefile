@@ -369,7 +369,7 @@ demo:
 	fi
 	@echo "Serving demo at http://localhost:$(DEMO_PORT)/  (Ctrl-C to stop)"
 	@( sleep 1 && $(OPEN_CMD) http://localhost:$(DEMO_PORT)/ >/dev/null 2>&1 & ) || true
-	@$(DEMO_PY) -m http.server $(DEMO_PORT) --directory demo
+	@$(DEMO_PY) tools/demo_server.py $(DEMO_PORT) --directory demo
 
 resume:
 	$(BENCHMARK) resume --db $(DB) $(if $(RUN),--run $(RUN),)

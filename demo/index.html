@@ -46,7 +46,7 @@
     <details class="methodology">
       <summary>How these numbers are computed</summary>
       <div class="methodology-body">
-        <p>The cost savings are calculated by comparing the actual routing decisions made by the Dell PowerEdge R770 semantic router against a hypothetical scenario where all queries are sent to the frontier model, using current supplier pricing as of June 9, 2006.</p>
+        <p>The cost savings are calculated by comparing the actual routing decisions made by the Dell PowerEdge R770 semantic router against a hypothetical scenario where all queries are sent to the frontier model, using current supplier pricing as of June 9, 2026.</p>
       </div>
     </details>
   </div>
@@ -79,9 +79,9 @@
         <svg class="stage-svg" id="stageSvg" viewBox="0 0 1200 560" preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="stageTitle stageDesc">
           <title id="stageTitle">Live semantic routing diagram</title>
           <desc id="stageDesc">Incoming queries flow into a Dell PowerEdge R770 semantic router on the left, which classifies each query and dispatches it to one of five model tiers on the right: the cheapest tier that can answer well.</desc>
-          <text x="170" y="30" class="small">INCOMING QUERIES</text>
-          <text x="600" y="30" class="small" text-anchor="middle">DELL POWEREDGE R770 · SEMANTIC ROUTER</text>
-          <text x="1040" y="30" class="small" text-anchor="middle">MODEL TIERS</text>
+          <text id="hdrIncoming" x="170" y="30" class="small">INCOMING QUERIES</text>
+          <text id="hdrRouter" x="600" y="30" class="small" text-anchor="middle">DELL POWEREDGE R770 · SEMANTIC ROUTER</text>
+          <text id="hdrTiers" x="1040" y="30" class="small" text-anchor="middle">MODEL TIERS</text>
           <text x="600" y="62" text-anchor="middle" class="mono lat-readout" id="avgLatReadout">awaiting queries…</text>
           <g id="pathLayer"></g>
           <g id="tierBoxLayer"></g>

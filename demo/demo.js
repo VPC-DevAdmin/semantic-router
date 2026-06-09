@@ -229,28 +229,104 @@ const pulseLayer = () => document.getElementById('pulseLayer');
 const overlayLayer = () => document.getElementById('overlayLayer');
 const queueLayer = () => document.getElementById('queueLayer');
 
-const ROUTER = { x: 714, y: 280 };  // right edge of router box, vertical center
-const BOX = { x: 960, w: 220, h: 70 };
+// Layout-aware stage geometry.
+//   Desktop (h): horizontal fan — router center-left, tiers fan out right.
+//   Mobile  (v): vertical reflow — router top-center, tiers stacked below,
+//                queries flow down a spine and branch into each tier box.
+// The ball animation is path-driven (each ball follows pathT{level}), so
+// rebuilding the paths for a layout is all that's needed to reflow it.
+const stageMq = window.matchMedia('(max-width: 760px)');
+const STAGE = {
+  h: {
+    viewBox: '0 0 1200 560', vbW: 1200, vbH: 560,
+    routerTx: 454, routerTy: 228, exitX: 714, exitY: 280,
+    boxX: 960, boxW: 220, boxH: 70,
+    queue: true, savedLeftPct: 820 / 1200 * 100,
+  },
+  v: {
+    viewBox: '0 0 600 980', vbW: 600, vbH: 980,
+    routerTx: 170, routerTy: 40, exitX: 300, exitY: 144, spineX: 150,
+    boxX: 188, boxW: 372, boxH: 60, tierFirst: 214, tierStep: 150,
+    queue: false, savedLeftPct: 64,
+  },
+};
+// Robust mobile check: prefer the media query, fall back to innerWidth
+// (some embedded/headless webviews don't update a cached MediaQueryList).
+function isMobileStage() {
+  return stageMq.matches || (window.innerWidth > 0 && window.innerWidth <= 760);
+}
+function stageCfg() { return isMobileStage() ? STAGE.v : STAGE.h; }
 
-function tierBoxY(level, n) {
-  const top = 60, bottom = 500;
-  const gap = (bottom - top - BOX.h) / Math.max(1, n - 1);
-  return top + (level - 1) * gap;
+// Rect for a tier box in the active layout: {x, y, w, h, cx, cy}.
+function tierRect(level, n) {
+  const cfg = stageCfg();
+  if (cfg === STAGE.h) {
+    const top = 60, bottom = 500;
+    const gap = (bottom - top - cfg.boxH) / Math.max(1, n - 1);
+    const y = top + (level - 1) * gap;
+    return { x: cfg.boxX, y, w: cfg.boxW, h: cfg.boxH, cx: cfg.boxX + cfg.boxW / 2, cy: y + cfg.boxH / 2 };
+  }
+  const y = cfg.tierFirst + (level - 1) * cfg.tierStep;
+  return { x: cfg.boxX, y, w: cfg.boxW, h: cfg.boxH, cx: cfg.boxX + cfg.boxW / 2, cy: y + cfg.boxH / 2 };
+}
+
+// Connector path string from the router to a tier box, per layout.
+function tierPathD(level, n) {
+  const cfg = stageCfg();
+  const r = tierRect(level, n);
+  if (cfg === STAGE.h) {
+    const midX = (cfg.exitX + r.x) / 2;
+    return `M ${cfg.exitX} ${cfg.exitY} C ${midX} ${cfg.exitY}, ${midX} ${r.cy}, ${r.x} ${r.cy}`;
+  }
+  // vertical: router bottom -> spine -> straight down -> branch into box
+  const sx = cfg.spineX;
+  return `M ${cfg.exitX} ${cfg.exitY} C ${cfg.exitX} ${cfg.exitY + 26}, ${sx} ${cfg.exitY + 4}, ${sx} ${cfg.exitY + 44} L ${sx} ${r.cy} L ${r.x} ${r.cy}`;
+}
+
+// Reposition / show-hide the stage header labels + latency readout per layout.
+function applyStageChrome(cfg) {
+  const setXY = (el, x, y, anchor) => {
+    if (!el) return;
+    el.setAttribute('x', x); el.setAttribute('y', y);
+    if (anchor) el.setAttribute('text-anchor', anchor);
+    el.style.display = '';
+  };
+  const inc = document.getElementById('hdrIncoming');
+  const rtr = document.getElementById('hdrRouter');
+  const tiers = document.getElementById('hdrTiers');
+  const lat = document.getElementById('avgLatReadout');
+  if (cfg === STAGE.h) {
+    setXY(inc, 170, 30, 'start');
+    setXY(rtr, 600, 30, 'middle');
+    setXY(tiers, 1040, 30, 'middle');
+    setXY(lat, 600, 62, 'middle');
+  } else {
+    if (inc) inc.style.display = 'none';
+    if (rtr) rtr.style.display = 'none';
+    setXY(tiers, 300, 198, 'middle');
+    setXY(lat, 300, 174, 'middle');
+  }
 }
 
 function buildStage() {
   const n = TIERS.length;
+  const cfg = stageCfg();
+  const svg = document.getElementById('stageSvg');
+  if (svg) svg.setAttribute('viewBox', cfg.viewBox);
+  const sg = document.getElementById('serverGroup');
+  if (sg) sg.setAttribute('transform', `translate(${cfg.routerTx}, ${cfg.routerTy})`);
+  applyStageChrome(cfg);
+
   pathLayer().innerHTML = '';
   tierBoxLayer().innerHTML = '';
   TIERS.forEach(level => {
-    const y = tierBoxY(level, n);
-    const cy = y + BOX.h/2;
+    const r = tierRect(level, n);
     // path router -> box
     const path = document.createElementNS(svgNS, 'path');
     path.setAttribute('id', 'pathT' + level);
     path.setAttribute('class', 'path-tier');
     path.setAttribute('stroke', TIER_HEX[level]);
-    path.setAttribute('d', `M ${ROUTER.x} ${ROUTER.y} C ${(ROUTER.x+BOX.x)/2} ${ROUTER.y}, ${(ROUTER.x+BOX.x)/2} ${cy}, ${BOX.x} ${cy}`);
+    path.setAttribute('d', tierPathD(level, n));
     pathLayer().appendChild(path);
 
     // box
@@ -259,13 +335,35 @@ function buildStage() {
     const label = isFrontier ? 'FRONTIER' : 'TIER ' + level;
     const modelName = isFrontier ? pickedFrontier : pickedModel[level];
     g.innerHTML = `
-      <rect class="tier-bg" id="tierBoxT${level}" x="${BOX.x}" y="${y}" width="${BOX.w}" height="${BOX.h}" rx="10"/>
-      <circle cx="${BOX.x+26}" cy="${y+30}" r="7" fill="${TIER_HEX[level]}"/>
-      <text x="${BOX.x+44}" y="${y+26}" class="label-md">${label}</text>
-      <text x="${BOX.x+44}" y="${y+44}" class="small" id="boxModelT${level}">${esc(truncate(modelName||'',26))}</text>`;
+      <rect class="tier-bg" id="tierBoxT${level}" x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" rx="10"/>
+      <circle cx="${r.x+26}" cy="${r.y+30}" r="7" fill="${TIER_HEX[level]}"/>
+      <text x="${r.x+44}" y="${r.y+26}" class="label-md">${label}</text>
+      <text x="${r.x+44}" y="${r.y+44}" class="small" id="boxModelT${level}">${esc(truncate(modelName||'',26))}</text>`;
     tierBoxLayer().appendChild(g);
   });
 }
+
+// Rebuild the stage when crossing the mobile breakpoint (in-flight balls
+// reference the old path nodes, so clear them first). Driven by both the
+// media-query change event and a resize fallback, since some webviews
+// don't fire MQL change reliably.
+let _stageMobile = isMobileStage();
+function rebuildStageForLayout() {
+  inFlight.forEach(b => b.destroy()); inFlight = [];
+  ballLayer().innerHTML = ''; overlayLayer().innerHTML = ''; pulseLayer().innerHTML = '';
+  if (queueLayer()) queueLayer().innerHTML = '';
+  buildStage();
+}
+function onViewportChange() {
+  const now = isMobileStage();
+  if (now !== _stageMobile) { _stageMobile = now; rebuildStageForLayout(); }
+}
+stageMq.addEventListener('change', onViewportChange);
+let _rzTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(_rzTimer);
+  _rzTimer = setTimeout(onViewportChange, 150);
+});
 
 function refreshBoxLabels() {
   TIERS.forEach(level => {
@@ -336,12 +434,13 @@ let activeTags = 0;
 const MAX_TAGS = 4;
 function savedTag(level, savings) {
   if (savings <= 0 || REDUCED_MOTION || activeTags >= MAX_TAGS) return;
-  const cy = tierBoxY(level, TIERS.length) + BOX.h/2;
-  const jitter = (activeTags - (MAX_TAGS-1)/2) * 16;  // spread vertically
+  const cfg = stageCfg();
+  const r = tierRect(level, TIERS.length);
+  const jitter = (activeTags - (MAX_TAGS-1)/2) * 16;  // spread so labels don't stack
   const tag = document.createElement('div');
   tag.className = 'float-tag';
-  tag.style.left = (820/1200*100)+'%';
-  tag.style.top  = ((cy + jitter)/560*100)+'%';
+  tag.style.left = cfg.savedLeftPct + '%';
+  tag.style.top  = ((r.cy + jitter)/cfg.vbH*100)+'%';
   tag.textContent = '+' + fmtCost(savings) + ' saved';
   overlayLayer().appendChild(tag);
   activeTags++;
@@ -351,7 +450,7 @@ function savedTag(level, savings) {
 // Incoming-queries column: spawn a faint token on the left that drifts
 // toward the router, so the empty "INCOMING QUERIES" lane reads as live.
 function queueToken(q) {
-  if (REDUCED_MOTION) return;
+  if (REDUCED_MOTION || !stageCfg().queue) return;
   const layer = queueLayer();
   if (!layer || layer.childElementCount > 12) return;
   const t = document.createElementNS(svgNS, 'text');

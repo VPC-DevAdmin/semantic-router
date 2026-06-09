@@ -290,7 +290,8 @@ footer { padding:28px 0; color:var(--text-muted); font-size:13px; border-top:1px
   display:block; color:#fff; font-size:13.5px; font-weight:600;
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%;
 }
-.qpicker-field > :nth-child(1), .qpicker-field > :nth-child(2) { flex:1 1 auto; min-width:0; }
+.qpicker-eyebrow { flex:0 0 auto; }
+.qpicker-value { flex:1 1 auto; min-width:0; }
 .qpicker-caret {
   flex:0 0 auto; color:#8FBEDD; transition:transform 0.25s cubic-bezier(0.16,1,0.3,1);
 }
@@ -368,4 +369,48 @@ footer { padding:28px 0; color:var(--text-muted); font-size:13px; border-top:1px
 @media (prefers-reduced-motion: reduce) {
   .float-tag { animation:none !important; }
   .recent, .tier-card .tshare-bar span, .stat .value { transition:none !important; }
+}
+
+/* ===================== Mobile polish ===================== */
+@media (max-width:760px) {
+  .container { padding:0 16px; }
+  section.body-section { padding:44px 0; }
+  .hero { padding:40px 0 32px; }
+  .routing-section { padding:48px 0; }
+  .hero p.lede, .section-lede { font-size:15px; }
+
+  /* Header: keep the Dell mark + name, shrink the rest */
+  .header-inner { gap:10px; }
+  .brand { font-size:15px; gap:10px; }
+  .brand-logo-img { height:26px; }
+  .brand-name { padding-left:10px; }
+  .brand-sub { display:none; }
+  .by-vp { font-size:11px; }
+  .vp-logo { height:20px; }
+
+  /* Stage frame tighter; portrait reflow handled by the JS viewBox switch */
+  .stage-wrap { padding:10px; }
+
+  /* >=44px tap targets for touch */
+  .ctrl-btn { padding:12px 16px; }
+  .picker select { padding:12px 10px; }
+  .qpicker-field { padding:11px 12px; }
+  .qpicker-option { padding:12px; }
+  .qpicker-search { padding:11px 12px; }
+
+  /* 5 stats in 2 cols leaves an orphan — promote 'Saved' to a full row */
+  .stats-bar .stat.savings { grid-column:1 / -1; }
+
+  /* CTA: full-width stacked buttons for thumbs */
+  .cta-actions { flex-direction:column; align-items:stretch; }
+  .cta-btn { width:100%; text-align:center; padding:15px 20px; }
+
+  /* Chart header: stack title over legend, let the legend wrap */
+  .chart-header { flex-direction:column; gap:8px; }
+  .chart-legend { flex-wrap:wrap; gap:10px 14px; }
+}
+@media (max-width:420px) {
+  .by-vp { display:none; }            /* reclaim header space (VP still in footer) */
+  .stats-bar { grid-template-columns:1fr; }
+  .hero h1 { font-size:30px; }
 }
