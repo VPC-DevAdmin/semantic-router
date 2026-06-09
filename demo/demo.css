@@ -198,6 +198,45 @@ section.body-section { padding: 64px 0; }
 .tier-card .tshare-bar span { display:block; height:100%; border-radius:3px; transition:width 0.4s ease; }
 .tier-card .tshare { font-size:13px; color:var(--text-muted); margin-top:8px; }
 
+/* Hardware panel — Dell-blue card (contrasts the dark demo section) */
+.hw-panel {
+  display:grid; grid-template-columns:1.05fr 0.95fr; gap:36px; align-items:center;
+  background:
+    radial-gradient(circle at 80% 8%, rgba(0,155,215,0.35), transparent 55%),
+    linear-gradient(135deg, #013a68 0%, #0167a8 100%);
+  border:1px solid rgba(255,255,255,0.14); border-radius:var(--radius-lg);
+  padding:36px 40px; box-shadow:var(--shadow-lg); color:#fff; overflow:hidden;
+}
+@media (max-width:900px){ .hw-panel{ grid-template-columns:1fr; gap:24px; padding:28px 22px; } }
+.hw-figure { min-width:0; }
+.hw-figure svg { width:100%; height:auto; display:block; overflow:visible; }
+.hw-chassis { filter:drop-shadow(0 0 12px rgba(91,214,255,0.65)); animation:hwPulse 3.2s ease-in-out infinite; }
+.hw-sunburst polygon { fill:rgba(127,224,255,0.22); }
+.hw-sunburst { animation:hwSpin 26s linear infinite; transform-origin:0 0; }
+.hw-halo { animation:hwHaloPulse 3.2s ease-in-out infinite; transform-box:fill-box; transform-origin:center; }
+.hw-flow { stroke-dasharray:7 7; animation:hwFlow 1.1s linear infinite; }
+@keyframes hwSpin { to { transform:rotate(360deg); } }
+@keyframes hwPulse { 0%,100%{ filter:drop-shadow(0 0 9px rgba(91,214,255,0.45)); } 50%{ filter:drop-shadow(0 0 18px rgba(91,214,255,0.85)); } }
+@keyframes hwHaloPulse { 0%,100%{ opacity:0.75; transform:scale(0.96); } 50%{ opacity:1; transform:scale(1.04); } }
+@keyframes hwFlow { to { stroke-dashoffset:-14; } }
+
+.hw-details h3 { font-size:clamp(20px,2.2vw,26px); font-weight:800; line-height:1.2; letter-spacing:-0.02em; margin-bottom:12px; }
+.hw-details > p { font-size:15px; line-height:1.6; color:#DCEBF8; margin-bottom:22px; }
+.hw-benefits { display:grid; gap:12px; }
+.hw-benefit { display:grid; grid-template-columns:auto 1fr; gap:14px; align-items:start;
+  background:rgba(255,255,255,0.09); border:1px solid rgba(255,255,255,0.16);
+  border-radius:12px; padding:14px 16px; }
+.hw-benefit .hw-ico { width:38px; height:38px; border-radius:9px; display:grid; place-items:center;
+  background:rgba(255,255,255,0.12); color:#9DEBFF; flex:0 0 auto; }
+.hw-benefit .hw-ico-xeon { background:transparent; padding:0; }
+.hw-benefit .hw-ico-xeon img { width:38px; height:38px; border-radius:8px; display:block; }
+.hw-benefit h4 { font-size:14.5px; font-weight:800; color:#fff; margin-bottom:3px; }
+.hw-benefit p { font-size:13px; line-height:1.5; color:#CFE3F5; }
+.hw-benefit-xeon { border-color:rgba(127,224,255,0.45); background:rgba(0,155,215,0.16); }
+@media (prefers-reduced-motion: reduce) {
+  .hw-chassis, .hw-sunburst, .hw-halo, .hw-flow { animation:none !important; }
+}
+
 /* CTA + footer */
 .cta { background:linear-gradient(135deg,var(--dell-blue-dark),var(--dell-blue)); color:white; padding:64px 0; text-align:center; }
 .cta h2 { font-size:clamp(26px,3.8vw,40px); letter-spacing:-0.025em; margin-bottom:14px; font-weight:800; }

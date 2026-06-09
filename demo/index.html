@@ -206,6 +206,165 @@
   </div>
 </section>
 
+<!-- HARDWARE -->
+<section class="body-section hw-section" aria-label="The hardware">
+  <div class="container">
+    <div class="section-eyebrow">The hardware</div>
+    <h2 class="section-title">One server orchestrates the whole stack.</h2>
+    <p class="section-lede">The router runs on a Dell PowerEdge R770 that sits between your users and every inference backend — classifying each prompt and dispatching it to the right place: on-prem CPU, on-prem GPU, or the cloud.</p>
+
+    <div class="hw-panel">
+      <!-- LEFT: topology diagram -->
+      <div class="hw-figure">
+        <svg viewBox="0 0 560 440" role="img" aria-labelledby="hwTitle hwDesc" preserveAspectRatio="xMidYMid meet">
+          <title id="hwTitle">Routing topology</title>
+          <desc id="hwDesc">Users and applications send prompts to a Dell PowerEdge R770 router, which dispatches each query to one of three backends: an on-prem CPU server, an on-prem GPU server, or a cloud inference service.</desc>
+          <defs>
+            <radialGradient id="hwHalo" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#7FE0FF" stop-opacity="0.55"/>
+              <stop offset="55%" stop-color="#3AA6E8" stop-opacity="0.22"/>
+              <stop offset="100%" stop-color="#3AA6E8" stop-opacity="0"/>
+            </radialGradient>
+            <marker id="hwArrow" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto" markerUnits="userSpaceOnUse">
+              <path d="M0 0 L7 3 L0 6 Z" fill="#BFE6FA"/>
+            </marker>
+          </defs>
+
+          <!-- connectors (drawn under nodes) -->
+          <g class="hw-links" fill="none" stroke="#9FD6F2" stroke-width="2">
+            <path class="hw-flow" d="M104 220 L206 221" marker-end="url(#hwArrow)"/>
+            <path class="hw-flow" d="M366 221 C 410 221 404 110 448 110" marker-end="url(#hwArrow)"/>
+            <path class="hw-flow" d="M366 221 L448 221" marker-end="url(#hwArrow)"/>
+            <path class="hw-flow" d="M366 221 C 410 221 404 332 448 332" marker-end="url(#hwArrow)"/>
+          </g>
+
+          <!-- USER / PROMPTS node -->
+          <g transform="translate(10,176)">
+            <rect width="92" height="90" rx="12" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.28)"/>
+            <g transform="translate(46,34)" stroke="#BFE6FA" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="0" cy="-6" r="9"/>
+              <path d="M-15 20 C -15 6 15 6 15 20"/>
+            </g>
+            <text x="46" y="74" text-anchor="middle" fill="#EAF5FF" style="font-size:11px;font-weight:700;">Users &amp; apps</text>
+          </g>
+
+          <!-- ROUTER: glowing R770 -->
+          <g class="hw-burstwrap" transform="translate(287,221)">
+            <circle r="96" fill="url(#hwHalo)" class="hw-halo"/>
+            <g class="hw-sunburst">
+              <polygon points="-6,-60 6,-60 0,-120" transform="rotate(0)"/>
+              <polygon points="-6,-60 6,-60 0,-120" transform="rotate(30)"/>
+              <polygon points="-6,-60 6,-60 0,-120" transform="rotate(60)"/>
+              <polygon points="-6,-60 6,-60 0,-120" transform="rotate(90)"/>
+              <polygon points="-6,-60 6,-60 0,-120" transform="rotate(120)"/>
+              <polygon points="-6,-60 6,-60 0,-120" transform="rotate(150)"/>
+              <polygon points="-6,-60 6,-60 0,-120" transform="rotate(180)"/>
+              <polygon points="-6,-60 6,-60 0,-120" transform="rotate(210)"/>
+              <polygon points="-6,-60 6,-60 0,-120" transform="rotate(240)"/>
+              <polygon points="-6,-60 6,-60 0,-120" transform="rotate(270)"/>
+              <polygon points="-6,-60 6,-60 0,-120" transform="rotate(300)"/>
+              <polygon points="-6,-60 6,-60 0,-120" transform="rotate(330)"/>
+            </g>
+          </g>
+          <!-- chassis (separate group, no rotation) -->
+          <g transform="translate(212,175)">
+            <rect class="hw-chassis" x="0" y="0" width="150" height="92" rx="11" fill="#081826" stroke="#5BD6FF" stroke-width="1.6"/>
+            <path d="M0 14 Q0 1 11 1 H139 Q150 1 150 14 V26 H0 Z" fill="#0f2c42"/>
+            <line x1="0" y1="26" x2="150" y2="26" stroke="#26506e"/>
+            <rect x="9" y="6" width="14" height="14" rx="3" fill="#007DB8"/>
+            <text x="16" y="17" text-anchor="middle" fill="#fff" style="font-size:10px;font-weight:800;">D</text>
+            <text x="30" y="17" fill="#DDF1FF" style="font-size:10.5px;font-weight:800;letter-spacing:0.02em;">PowerEdge R770</text>
+            <circle cx="141" cy="13" r="3" fill="#1FB67A"/>
+            <g transform="translate(11,36)">
+              <rect x="0"  y="0" width="6" height="46" rx="1.5" fill="#06121e" stroke="#1c3a52"/>
+              <rect x="9"  y="0" width="6" height="46" rx="1.5" fill="#06121e" stroke="#1c3a52"/>
+              <rect x="18" y="0" width="6" height="46" rx="1.5" fill="#06121e" stroke="#1c3a52"/>
+              <rect x="27" y="0" width="6" height="46" rx="1.5" fill="#06121e" stroke="#1c3a52"/>
+              <rect x="36" y="0" width="6" height="46" rx="1.5" fill="#06121e" stroke="#1c3a52"/>
+            </g>
+            <text x="66" y="52" fill="#9DEBFF" style="font-size:9px;font-weight:800;letter-spacing:0.08em;">SEMANTIC</text>
+            <text x="66" y="65" fill="#9DEBFF" style="font-size:9px;font-weight:800;letter-spacing:0.08em;">ROUTER</text>
+          </g>
+          <text x="287" y="290" text-anchor="middle" fill="#CFE8F7" style="font-size:11px;font-weight:700;">Routing &amp; orchestration</text>
+
+          <!-- BACKEND targets -->
+          <!-- on-prem CPU -->
+          <g transform="translate(448,70)">
+            <rect width="102" height="80" rx="12" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.28)"/>
+            <g transform="translate(51,30)" stroke="#BFE6FA" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="-13" y="-13" width="26" height="26" rx="3"/>
+              <rect x="-6" y="-6" width="12" height="12" rx="1.5"/>
+              <path d="M-7 -13 v-5 M0 -13 v-5 M7 -13 v-5 M-7 13 v5 M0 13 v5 M7 13 v5 M-13 -7 h-5 M-13 0 h-5 M-13 7 h-5 M13 -7 h5 M13 0 h5 M13 7 h5"/>
+            </g>
+            <text x="51" y="66" text-anchor="middle" fill="#EAF5FF" style="font-size:11px;font-weight:700;">On-prem CPU</text>
+          </g>
+          <!-- on-prem GPU -->
+          <g transform="translate(448,181)">
+            <rect width="102" height="80" rx="12" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.28)"/>
+            <g transform="translate(51,30)" stroke="#BFE6FA" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="-17" y="-11" width="34" height="22" rx="3"/>
+              <circle cx="-6" cy="0" r="5"/>
+              <circle cx="9" cy="0" r="5"/>
+              <path d="M-17 13 v4 M-9 13 v4"/>
+            </g>
+            <text x="51" y="66" text-anchor="middle" fill="#EAF5FF" style="font-size:11px;font-weight:700;">On-prem GPU</text>
+          </g>
+          <!-- cloud -->
+          <g transform="translate(448,292)">
+            <rect width="102" height="80" rx="12" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.28)"/>
+            <g transform="translate(51,30)" stroke="#BFE6FA" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M-16 8 a9 9 0 0 1 1 -18 a12 12 0 0 1 22 4 a8 8 0 0 1 -1 14 Z"/>
+            </g>
+            <text x="51" y="66" text-anchor="middle" fill="#EAF5FF" style="font-size:11px;font-weight:700;">Cloud inference</text>
+          </g>
+        </svg>
+      </div>
+
+      <!-- RIGHT: hardware details -->
+      <div class="hw-details">
+        <h3>Add a Dell PowerEdge R770 as your routing layer.</h3>
+        <p>One R770 sits at the front of your AI stack as a dedicated orchestration and routing tier. It classifies every prompt in milliseconds and sends it to the cheapest backend that can answer it well — keeping GPUs and frontier APIs for only the queries that truly need them.</p>
+        <div class="hw-benefits">
+          <div class="hw-benefit hw-benefit-xeon">
+            <span class="hw-ico hw-ico-xeon"><img src="assets/intel-xeon.png" alt="Intel Xeon"></span>
+            <div>
+              <h4>Intel Xeon 6 with Intel® AMX</h4>
+              <p>Advanced Matrix Extensions run the routing classifier and small-model inference directly on the CPU — no GPU required for the routing layer itself.</p>
+            </div>
+          </div>
+          <div class="hw-benefit">
+            <span class="hw-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2.4"/><circle cx="19" cy="5" r="2.4"/><circle cx="19" cy="13" r="2.4"/><circle cx="19" cy="19" r="2.4"/><path d="M7.3 6.4 16.6 5.2 M7.2 6.8 16.7 12.6 M7 7.2 16.6 18.4"/></svg>
+            </span>
+            <div>
+              <h4>Orchestration &amp; routing</h4>
+              <p>One server classifies and dispatches every query across on-prem CPU, on-prem GPU, and cloud backends — the control plane for your whole model fleet.</p>
+            </div>
+          </div>
+          <div class="hw-benefit">
+            <span class="hw-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>
+            </span>
+            <div>
+              <h4>Built for concurrency</h4>
+              <p>High core counts and MRDIMM memory bandwidth keep classification fast at thousands of prompts per second, with PCIe Gen5 to feed local GPUs and NICs.</p>
+            </div>
+          </div>
+          <div class="hw-benefit">
+            <span class="hw-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.5 8.5 8 11 4.5-2.5 8-6 8-11V5l-8-3Z"/><path d="M9 12l2 2 4-4"/></svg>
+            </span>
+            <div>
+              <h4>Keep sensitive data on-prem</h4>
+              <p>Answer private prompts locally and escalate only the hard queries beyond your network — routing becomes a data-governance boundary, not just a cost lever.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- TIER DIAGRAM -->
 <section class="body-section">
   <div class="container">
