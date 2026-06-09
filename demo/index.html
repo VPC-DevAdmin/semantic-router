@@ -128,14 +128,11 @@
 
       <!-- Controls -->
       <div class="controls">
-        <div class="control-group">
+        <div class="control-group btn-group">
           <button class="ctrl-btn" id="playBtn">⏸ Pause</button>
           <button class="ctrl-btn" id="resetBtn">↻ Reset</button>
-        </div>
-        <div class="control-group">
           <button class="ctrl-btn" id="nextBtn" title="Show the next query now">⏵ Next</button>
           <button class="ctrl-btn" id="pinBtn" aria-pressed="false" title="Freeze the panel on the current query. Click again to unpin and resume the live stream.">📌 Pin</button>
-          <span class="next-countdown" id="nextIn"></span>
         </div>
         <div class="control-group qpicker-group">
           <div class="qpicker" data-picker="cat">
@@ -161,6 +158,7 @@
           </div>
         </div>
       </div>
+      <div class="next-countdown-row"><span class="next-countdown" id="nextIn"></span></div>
 
       <!-- Last routed query + verdicts -->
       <div class="recent" id="recentCard">

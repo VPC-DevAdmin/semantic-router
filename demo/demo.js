@@ -1011,7 +1011,7 @@ function buildTierDiagram() {
       <div class="tprov">${esc((price.provider)||'')}</div>
       <div class="tcost">${priceStr}</div>
       <div class="tshare-bar"><span style="width:${share}%;background:${TIER_HEX[t.level]}"></span></div>
-      <div class="tshare">${share}% of queries routed here</div>`;
+      <div class="tshare">${share}% of traffic</div>`;
     row.appendChild(card);
   });
 }
