@@ -85,28 +85,16 @@
           <text x="600" y="62" text-anchor="middle" class="mono lat-readout" id="avgLatReadout">awaiting queries…</text>
           <g id="pathLayer"></g>
           <g id="tierBoxLayer"></g>
-          <!-- router: stylized Dell PowerEdge R770 faceplate -->
+          <!-- router: Dell PowerEdge R770 product render + live status -->
           <g id="serverGroup" transform="translate(454, 228)">
-            <!-- chassis -->
             <rect id="routerChassis" x="0" y="0" width="260" height="104" rx="10" fill="#0e2233" stroke="#33506b" stroke-width="1.5"/>
-            <!-- header bar (rounded top only) -->
-            <path d="M0 14 Q0 0 10 0 H250 Q260 0 260 14 V27 H0 Z" fill="#13283c"/>
-            <line x1="0" y1="27" x2="260" y2="27" stroke="#33506b" stroke-width="1"/>
-            <!-- Dell logo tile + product name -->
-            <rect x="10" y="5" width="17" height="17" rx="3.5" fill="#007DB8"/>
-            <text x="18.5" y="17.5" text-anchor="middle" fill="#fff" style="font-size:11px;font-weight:800;">D</text>
-            <text x="34" y="17.5" style="font-size:12px;font-weight:800;letter-spacing:0.03em;fill:#DDF1FF;">PowerEdge R770</text>
-            <circle cx="250" cy="13" r="3.5" fill="#1FB67A" id="ledAct"/>
-
-            <!-- left: Intel Xeon chip badge (the compute inside) -->
-            <image href="assets/intel-xeon.png" x="12" y="34" width="58" height="58" preserveAspectRatio="xMidYMid meet"/>
-
-            <!-- right: role + what it's doing + live status -->
-            <text x="88" y="48" style="font-size:9.5px;font-weight:700;letter-spacing:0.03em;fill:#8FBEDD;">SEMANTIC ROUTER</text>
-            <text x="88" y="68" style="font-size:13px;font-weight:800;fill:#EAF5FF;">Right-sizing every query</text>
-            <circle cx="92" cy="86" r="4" fill="#009BD7"/>
-            <text x="102" y="89.5" id="serverStatus" class="mono" style="font-size:10px;letter-spacing:0.06em;fill:#9DEBFF;">CLASSIFYING</text>
-            <text x="250" y="89.5" text-anchor="end" class="mono" style="font-size:10px;fill:#7FA8C4;"><tspan id="qpsInSvg">0.0</tspan> q/s</text>
+            <!-- R770 product render on a light device card -->
+            <rect x="10" y="9" width="240" height="62" rx="7" fill="#eef3f7"/>
+            <image href="assets/dell-per770.jpg" x="15" y="12" width="230" height="56" preserveAspectRatio="xMidYMid meet"/>
+            <!-- live status -->
+            <circle cx="14" cy="88" r="4" fill="#009BD7" id="ledAct"/>
+            <text x="24" y="91.5" id="serverStatus" class="mono" style="font-size:10px;letter-spacing:0.06em;fill:#9DEBFF;">CLASSIFYING</text>
+            <text x="250" y="91.5" text-anchor="end" class="mono" style="font-size:10px;fill:#7FA8C4;">SEMANTIC ROUTER · <tspan id="qpsInSvg">0.0</tspan> q/s</text>
           </g>
           <g id="pulseLayer"></g>
           <g id="queueLayer"></g>
@@ -232,10 +220,10 @@
 
           <!-- connectors (drawn under nodes) -->
           <g class="hw-links" fill="none" stroke="#9FD6F2" stroke-width="2">
-            <path class="hw-flow" d="M104 220 L206 221" marker-end="url(#hwArrow)"/>
-            <path class="hw-flow" d="M366 221 C 410 221 404 110 448 110" marker-end="url(#hwArrow)"/>
-            <path class="hw-flow" d="M366 221 L448 221" marker-end="url(#hwArrow)"/>
-            <path class="hw-flow" d="M366 221 C 410 221 404 332 448 332" marker-end="url(#hwArrow)"/>
+            <path class="hw-flow" d="M104 219 L168 219" marker-end="url(#hwArrow)"/>
+            <path class="hw-flow" d="M406 219 C 430 219 424 110 448 110" marker-end="url(#hwArrow)"/>
+            <path class="hw-flow" d="M406 219 L448 219" marker-end="url(#hwArrow)"/>
+            <path class="hw-flow" d="M406 219 C 430 219 424 332 448 332" marker-end="url(#hwArrow)"/>
           </g>
 
           <!-- USER / PROMPTS node -->
@@ -266,26 +254,11 @@
               <polygon points="-6,-60 6,-60 0,-120" transform="rotate(330)"/>
             </g>
           </g>
-          <!-- chassis (separate group, no rotation) -->
-          <g transform="translate(212,175)">
-            <rect class="hw-chassis" x="0" y="0" width="150" height="92" rx="11" fill="#081826" stroke="#5BD6FF" stroke-width="1.6"/>
-            <path d="M0 14 Q0 1 11 1 H139 Q150 1 150 14 V26 H0 Z" fill="#0f2c42"/>
-            <line x1="0" y1="26" x2="150" y2="26" stroke="#26506e"/>
-            <rect x="9" y="6" width="14" height="14" rx="3" fill="#007DB8"/>
-            <text x="16" y="17" text-anchor="middle" fill="#fff" style="font-size:10px;font-weight:800;">D</text>
-            <text x="30" y="17" fill="#DDF1FF" style="font-size:10.5px;font-weight:800;letter-spacing:0.02em;">PowerEdge R770</text>
-            <circle cx="141" cy="13" r="3" fill="#1FB67A"/>
-            <g transform="translate(11,36)">
-              <rect x="0"  y="0" width="6" height="46" rx="1.5" fill="#06121e" stroke="#1c3a52"/>
-              <rect x="9"  y="0" width="6" height="46" rx="1.5" fill="#06121e" stroke="#1c3a52"/>
-              <rect x="18" y="0" width="6" height="46" rx="1.5" fill="#06121e" stroke="#1c3a52"/>
-              <rect x="27" y="0" width="6" height="46" rx="1.5" fill="#06121e" stroke="#1c3a52"/>
-              <rect x="36" y="0" width="6" height="46" rx="1.5" fill="#06121e" stroke="#1c3a52"/>
-            </g>
-            <text x="66" y="52" fill="#9DEBFF" style="font-size:9px;font-weight:800;letter-spacing:0.08em;">SEMANTIC</text>
-            <text x="66" y="65" fill="#9DEBFF" style="font-size:9px;font-weight:800;letter-spacing:0.08em;">ROUTER</text>
-          </g>
-          <text x="287" y="290" text-anchor="middle" fill="#CFE8F7" style="font-size:11px;font-weight:700;">Routing &amp; orchestration</text>
+          <!-- router: Dell PowerEdge R770 product render (glowing device card) -->
+          <text x="287" y="158" text-anchor="middle" fill="#9DEBFF" style="font-size:10px;font-weight:800;letter-spacing:0.1em;">DELL POWEREDGE R770</text>
+          <rect class="hw-chassis" x="170" y="170" width="234" height="98" rx="13" fill="#eef3f7"/>
+          <image href="assets/dell-per770.jpg" x="180" y="178" width="214" height="82" preserveAspectRatio="xMidYMid meet"/>
+          <text x="287" y="298" text-anchor="middle" fill="#CFE8F7" style="font-size:11px;font-weight:700;">Routing &amp; orchestration</text>
 
           <!-- BACKEND targets -->
           <!-- on-prem CPU -->
