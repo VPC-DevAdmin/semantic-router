@@ -245,9 +245,10 @@ const STAGE = {
   },
   v: {
     viewBox: '0 0 600 980', vbW: 600, vbH: 980,
-    routerTx: 170, routerTy: 40, exitX: 300, exitY: 144, spineX: 150,
-    boxX: 188, boxW: 372, boxH: 60, tierFirst: 214, tierStep: 150,
-    queue: false, savedLeftPct: 64,
+    routerTx: 170, routerTy: 40, exitX: 300, exitY: 144,
+    spineX: 300,                 // straight down from the router center
+    boxX: 336, boxW: 248, boxH: 60, tierFirst: 214, tierStep: 150,
+    queue: false, savedLeftPct: 32,
   },
 };
 // Robust mobile check: prefer the media query, fall back to innerWidth
@@ -278,9 +279,9 @@ function tierPathD(level, n) {
     const midX = (cfg.exitX + r.x) / 2;
     return `M ${cfg.exitX} ${cfg.exitY} C ${midX} ${cfg.exitY}, ${midX} ${r.cy}, ${r.x} ${r.cy}`;
   }
-  // vertical: router bottom -> spine -> straight down -> branch into box
-  const sx = cfg.spineX;
-  return `M ${cfg.exitX} ${cfg.exitY} C ${cfg.exitX} ${cfg.exitY + 26}, ${sx} ${cfg.exitY + 4}, ${sx} ${cfg.exitY + 44} L ${sx} ${r.cy} L ${r.x} ${r.cy}`;
+  // vertical: straight down the spine from the router, right-angle branch
+  // into each tier box (spine sits directly below the router center).
+  return `M ${cfg.exitX} ${cfg.exitY} L ${cfg.spineX} ${r.cy} L ${r.x} ${r.cy}`;
 }
 
 // Reposition / show-hide the stage header labels + latency readout per layout.
