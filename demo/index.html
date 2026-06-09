@@ -26,7 +26,7 @@
 <section class="hero" aria-label="Cost savings calculator">
   <div class="container">
     <h1>Most AI queries don't need a frontier model.<br><span class="accent">Stop paying as if they do.</span></h1>
-    <p class="lede">A Dell PowerEdge R770 sits in front of your AI stack and classifies every query in milliseconds, then forwards it to the cheapest tier that can answer it well. These numbers are computed from a real 797-query benchmark run: actual routing decisions, actual answers, actual judge verdicts.</p>
+    <p class="lede">A Dell PowerEdge R770 sits in front of your AI stack and classifies every query in milliseconds, then forwards it to the cheapest tier that can answer it well. These numbers are computed from a real 800-query benchmark run: actual routing decisions, actual answers, actual judge verdicts.</p>
 
     <div class="calc-card">
       <div class="calc-input">
@@ -46,7 +46,7 @@
     <details class="methodology">
       <summary>How these numbers are computed</summary>
       <div class="methodology-body">
-        <p>Routed cost uses the <strong>real measured token counts</strong> from each tier model's API response, priced at your supplier rates. The frontier baseline answers the same prompts, so its cost is <strong>rate-driven off a shared reference answer length</strong> (the most-measured frontier model's output for each query).</p>
+        <p>The cost savings are calculated by comparing the actual routing decisions made by the Dell PowerEdge R770 semantic router against a hypothetical scenario where all queries are sent to the frontier model, using current supplier pricing as of June 9, 2006.</p>
       </div>
     </details>
   </div>
@@ -198,14 +198,14 @@
   <div class="container">
     <div class="section-eyebrow">The hardware</div>
     <h2 class="section-title">One server orchestrates the whole stack.</h2>
-    <p class="section-lede">The router runs on a Dell PowerEdge R770 that sits between your users and every inference backend — classifying each prompt and dispatching it to the right place: on-prem CPU, on-prem GPU, or the cloud.</p>
+    <p class="section-lede">The router runs on a Dell PowerEdge R770 that sits between your users and every inference backend, classifying each prompt and dispatching it to the right place: on-prem CPU, on-prem GPU, or the cloud.</p>
 
     <div class="hw-panel">
       <!-- LEFT: topology diagram -->
       <div class="hw-figure">
         <svg viewBox="0 0 560 440" role="img" aria-labelledby="hwTitle hwDesc" preserveAspectRatio="xMidYMid meet">
           <title id="hwTitle">Routing topology</title>
-          <desc id="hwDesc">Users and applications send prompts to a Dell PowerEdge R770 router, which dispatches each query to one of three backends: an on-prem CPU server, an on-prem GPU server, or a cloud inference service.</desc>
+          <desc id="hwDesc">Users and applications send prompts to a Dell PowerEdge R770 router, which dispatches each query to one of five tiers and three backends: an on-prem CPU server, an on-prem GPU server, or a cloud inference service.</desc>
           <defs>
             <radialGradient id="hwHalo" cx="50%" cy="50%" r="50%">
               <stop offset="0%" stop-color="#7FE0FF" stop-opacity="0.55"/>
@@ -294,13 +294,13 @@
       <!-- RIGHT: hardware details -->
       <div class="hw-details">
         <h3>Add a Dell PowerEdge R770 as your routing layer.</h3>
-        <p>One R770 sits at the front of your AI stack as a dedicated orchestration and routing tier. It classifies every prompt in milliseconds and sends it to the cheapest backend that can answer it well — keeping GPUs and frontier APIs for only the queries that truly need them.</p>
+        <p>One R770 sits at the front of your AI stack as a dedicated orchestration and routing tier. It classifies every prompt in milliseconds and sends it to the cheapest backend that can answer it well, keeping GPUs and frontier APIs for only the queries that truly need them.</p>
         <div class="hw-benefits">
           <div class="hw-benefit hw-benefit-xeon">
             <span class="hw-ico hw-ico-xeon"><img src="assets/intel-xeon.png" alt="Intel Xeon"></span>
             <div>
               <h4>Intel Xeon 6 with Intel® AMX</h4>
-              <p>Advanced Matrix Extensions run the routing classifier and small-model inference directly on the CPU — no GPU required for the routing layer itself.</p>
+              <p>Advanced Matrix Extensions run the routing classifier and small-model inference directly on the CPU.  No GPU required for the routing layer itself or for quick answers needing a smaller model.</p>
             </div>
           </div>
           <div class="hw-benefit">
@@ -309,7 +309,7 @@
             </span>
             <div>
               <h4>Orchestration &amp; routing</h4>
-              <p>One server classifies and dispatches every query across on-prem CPU, on-prem GPU, and cloud backends — the control plane for your whole model fleet.</p>
+              <p>One server classifies and dispatches every query across on-prem CPU, on-prem GPU, and cloud backends becoming the control plane for your whole model fleet.</p>
             </div>
           </div>
           <div class="hw-benefit">
@@ -318,7 +318,7 @@
             </span>
             <div>
               <h4>Built for concurrency</h4>
-              <p>High core counts and MRDIMM memory bandwidth keep classification fast at thousands of prompts per second, with PCIe Gen5 to feed local GPUs and NICs.</p>
+              <p>High core counts, large memory capacity, and fast memory bandwidth keep classification quick at thousands of prompts per second, with PCIe Gen5 to feed local GPUs and NICs.</p>
             </div>
           </div>
           <div class="hw-benefit">
@@ -327,7 +327,7 @@
             </span>
             <div>
               <h4>Keep sensitive data on-prem</h4>
-              <p>Answer private prompts locally and escalate only the hard queries beyond your network — routing becomes a data-governance boundary, not just a cost lever.</p>
+              <p>Answer private prompts locally and escalate only the hard queries beyond your network. Routing becomes a data-governance boundary, not just a cost lever.</p>
             </div>
           </div>
         </div>
@@ -339,7 +339,7 @@
 <!-- TIER DIAGRAM -->
 <section class="body-section">
   <div class="container">
-    <div class="section-eyebrow">The lineup</div>
+    <div class="section-eyebrow">The model lineup</div>
     <h2 class="section-title">Five tiers. Each query goes to the cheapest one that fits.</h2>
     <p class="section-lede">Models and per-1M-token pricing below come straight from the dataset and your supplier rates. Tier share is the observed routing distribution across the benchmark.</p>
     <div class="diagram"><div class="tier-row" id="tierRow"></div></div>
