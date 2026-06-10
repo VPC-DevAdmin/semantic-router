@@ -8,7 +8,7 @@
 #   make export       # write data/routed_queries_with_answers.json
 
 .PHONY: help setup install-vllm-sr-pypi load route answers evaluate export resume misroutes scores \
-        import-answers update-gold demo-data demo \
+        import-answers update-gold demo-data demo gateway \
         clean-results router-smoke router-stop test fmt lint \
         mock-bg mock-stop start_LLM stop_LLM
 
@@ -36,6 +36,7 @@ help:
 	@echo "  export [RUN=<id>] [OUTPUT=<path>]  emit the routed-queries JSON (default: data/routed_queries_with_answers.json)"
 	@echo "  demo-data [CONC=<N>]           force-rebuild demo/data/demo_data.json from the exports + demo/pricing.json"
 	@echo "  demo [DEMO_PORT=<n>]           serve the cost-routing replay demo + open browser (single command, no setup needed)"
+	@echo "  gateway [GATEWAY_PORT=<n>] [ROUTER_URL=<url>]  OpenAI-compatible contract gateway for agent orchestrators"
 	@echo "  misroutes [RUN=<id>]           diagnostic: list queries routed BELOW their min tier"
 	@echo "  scores [RUN=<id>]              diagnostic: per-signal score + threshold gap for each misroute"
 	@echo "  resume [RUN=<id>]              re-run pending/error rows; mark done if clean"
@@ -370,6 +371,17 @@ demo:
 	@echo "Serving demo at http://localhost:$(DEMO_PORT)/  (Ctrl-C to stop)"
 	@( sleep 1 && $(OPEN_CMD) http://localhost:$(DEMO_PORT)/ >/dev/null 2>&1 & ) || true
 	@$(DEMO_PY) tools/demo_server.py $(DEMO_PORT) --directory demo
+
+# ---- contract gateway ----
+# An OpenAI-compatible front door that adapts this repo's semantic router to the
+# role-based contract an agent orchestrator expects (role names, x-llm-* headers,
+# metadata.min_tier floor, strict structured output). Additive — does NOT change
+# the router or the standalone demo. Standalone by default (zero real backends);
+# pass ROUTER_URL=http://localhost:8801 to classify the worker via real vllm-sr.
+GATEWAY_PORT ?= 8800
+gateway:
+	$(DEMO_PY) tools/router_gateway.py --port $(GATEWAY_PORT) \
+	    $(if $(ROUTER_URL),--router-url $(ROUTER_URL),)
 
 resume:
 	$(BENCHMARK) resume --db $(DB) $(if $(RUN),--run $(RUN),)

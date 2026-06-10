@@ -49,6 +49,28 @@ each **per-row resumable**: kill mid-run, re-run, and only `pending`
 or `error` rows are re-processed. Errors in `answers` don't fail the
 pass — they stay as `status='error'` and retry on the next invocation.
 
+## Contract gateway (use the router from an agent orchestrator)
+
+`make gateway` starts an **OpenAI-compatible front door** that adapts this
+router to the role-based contract an agent orchestrator expects, without
+specializing the router or touching the standalone demo:
+
+```sh
+make gateway                                  # standalone (zero real backends)
+make gateway ROUTER_URL=http://localhost:8801 # classify the worker via real vllm-sr
+```
+
+On top of plain `/v1/chat/completions` it adds: **role names** in the `model`
+field (pinned vs. semantically-routed, defined in `config/gateway_roles.yaml`),
+a **`metadata.min_tier`** floor honored as `served = max(classified, min)`, the
+**`x-llm-model-served` / `x-llm-route-decision` / `x-llm-cost-usd`** response
+headers (route-decision exposes `classified` vs `served` vs `min` so an
+escalation reads as "classifier said L2, floor forced L3"), and **strict
+structured output** for any schema. It's **additive** — `make demo`, `make
+route`, and the harness are unchanged, so the standalone router demo is intact.
+The gateway is role-agnostic: roles live in config, so any client defines its
+own. See [`tools/router_gateway.py`](tools/router_gateway.py).
+
 ## Other targets
 
 ```sh

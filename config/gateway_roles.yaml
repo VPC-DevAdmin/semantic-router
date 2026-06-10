@@ -1,0 +1,36 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Contract gateway — role + tier config  (tools/router_gateway.py)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# This is the ONLY place roles are named. The gateway itself is role-agnostic:
+# it reads "pinned" vs "route" from here and nothing else. A completely
+# different client can define its own roles (summarizer / translator / …)
+# against the same gateway without touching code — the router stays generic.
+#
+# The gateway adapts this repo's semantic router to the OpenAI-compatible
+# contract an agent orchestrator expects (role names in `model`, x-llm-*
+# telemetry headers, a `metadata.min_tier` floor, strict structured output).
+# It does NOT change the router or the standalone demo — it's an additive
+# front door. See README "Contract gateway".
+
+# role -> behavior.
+#   mode: route   -> the worker path; the gateway classifies difficulty and
+#                    picks a tier (honoring metadata.min_tier as a floor).
+#   mode: pinned  -> always the named tier; the router never classifies it.
+roles:
+  planner:   { mode: pinned, tier: L5 }
+  verifier:  { mode: pinned, tier: L4 }
+  evaluator: { mode: pinned, tier: L2 }
+  worker:    { mode: route }
+
+# Any model/role name not listed above falls back to this role's behavior.
+default_role: worker
+
+# Tier -> concrete model identity (echoed in x-llm-model-served / route-decision)
+# and the price key used to look it up in demo/pricing.json for x-llm-cost-usd.
+tiers:
+  L1: { model: "Qwen3-1.7B",             price: "Qwen3-1.7B" }
+  L2: { model: "gpt-5.4-nano",           price: "gpt-5.4-nano" }
+  L3: { model: "gpt-5.4-mini",           price: "gpt-5.4-mini" }
+  L4: { model: "gemini-3.1-pro-preview", price: "gemini-3.1-pro-preview" }
+  L5: { model: "Opus 4.7",               price: "Opus 4.7" }
