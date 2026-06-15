@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from collections import defaultdict
@@ -136,6 +137,20 @@ def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
 
 # ── Apply overlay → vllm-sr config + reload ───────────────────────────────────
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _clean_log(text: str) -> str:
+    """Make a subprocess log fit for the UI: strip ANSI color codes (vllm-sr
+    prints a colored banner) and surface the actionable error line if there is
+    one, else the tail."""
+    plain = _ANSI.sub("", text or "")
+    lines = [ln.strip() for ln in plain.splitlines() if ln.strip()]
+    flagged = [ln for ln in lines if "ERROR" in ln or "Failed" in ln or "error" in ln.lower()]
+    out = " · ".join(flagged) if flagged else " ".join(lines)
+    return out[-600:] if out else "(no output)"
+
+
 def build_live_exemplars(overlay: dict) -> None:
     """Write a live exemplars YAML = canonical + the overlay's edited cutoffs and
     per-signal banks (weight/threshold/candidates). Canonical file untouched."""
@@ -183,14 +198,15 @@ def apply_overlay(overlay: dict) -> dict:
         serve = subprocess.run(["vllm-sr", "serve", "--config", str(LIVE_ROUTER_CFG)],
                                cwd=str(ROOT), env=env, capture_output=True, text=True)
         if serve.returncode != 0:
-            return {"ok": False, "step": "serve", "detail": (serve.stderr or serve.stdout)[-800:]}
+            return {"ok": False, "step": "serve",
+                    "detail": _clean_log(serve.stderr or serve.stdout)}
         return {"ok": True, "detail": "Router config rebuilt and vllm-sr (re)launched."}
     except FileNotFoundError as exc:
         return {"ok": False, "step": "launch",
                 "detail": f"{exc}. Install vllm-sr (`make setup`) and run from the harness venv."}
     except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or exc.stdout or str(exc))[-800:]
-        return {"ok": False, "step": "build", "detail": detail}
+        return {"ok": False, "step": "build",
+                "detail": _clean_log(exc.stderr or exc.stdout or str(exc))}
 
 
 # ── HTTP server ──────────────────────────────────────────────────────────────
