@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Semantic Router · Interactive</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">◑</span>
+    <div>
+      <div class="brand-name">Semantic Router <span class="brand-sub">· Interactive</span></div>
+      <div class="brand-tag">type a query · watch it get routed</div>
+    </div>
+  </div>
+  <button class="btn" id="settingsBtn">⚙ Settings</button>
+</header>
+
+<!-- API-key banner (shown when the chosen/any tier has no key) -->
+<div class="keybanner" id="keyBanner" hidden></div>
+
+<main class="chat" id="chat">
+  <div class="empty" id="emptyState">
+    <h1>Ask anything.</h1>
+    <p>Your query is scored against each tier's exemplars and routed to the best match.
+       Routing works with no API keys — add keys in <strong>Settings</strong> to get answers.</p>
+  </div>
+</main>
+
+<!-- Composer -->
+<div class="composer">
+  <div class="route-pills" id="routePills">
+    <span class="route-label">Route via</span>
+    <button class="pill active" data-mode="auto">auto</button>
+    <!-- tier pills injected here -->
+  </div>
+  <div class="input-row">
+    <textarea id="input" rows="1" placeholder="Ask anything…"></textarea>
+    <button class="send" id="sendBtn" title="Send">→</button>
+  </div>
+</div>
+
+<!-- Settings modal -->
+<div class="modal-backdrop" id="settingsModal" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <h2>Settings · Tiers</h2>
+      <button class="icon-btn" id="closeSettings">✕</button>
+    </div>
+    <p class="modal-intro">Add or remove tiers, pick the model + provider, set the API key,
+       tune the score threshold, and edit the exemplars that define what each tier routes.
+       API keys are stored only in your browser.</p>
+    <div id="tierEditors"></div>
+    <div class="modal-actions">
+      <button class="btn ghost" id="addTier">+ Add tier</button>
+      <div class="spacer"></div>
+      <button class="btn ghost" id="resetCfg">Reset to defaults</button>
+      <button class="btn primary" id="saveCfg">Save changes</button>
+    </div>
+    <div class="save-status" id="saveStatus"></div>
+  </div>
+</div>
+
+<template id="tierEditorTpl">
+  <div class="tier-editor">
+    <div class="tier-editor-head">
+      <span class="tier-dot"></span>
+      <input class="te-name" placeholder="Tier name">
+      <span class="te-keystate"></span>
+      <button class="icon-btn te-del" title="Delete tier">🗑</button>
+    </div>
+    <div class="te-grid">
+      <label>Provider
+        <select class="te-provider">
+          <option>OpenAI</option><option>Anthropic</option><option>Google</option>
+          <option value="OpenAI-compatible">OpenAI-compatible (vLLM / local)</option>
+        </select>
+      </label>
+      <label>Model <input class="te-model" placeholder="model id"></label>
+      <label>Base URL <input class="te-base" placeholder="provider default"></label>
+      <label>API key <input class="te-key" type="password" placeholder="paste to set"></label>
+      <label>Score threshold <input class="te-threshold" type="number" step="0.05" min="0" max="1"></label>
+    </div>
+    <div class="te-exemplars">
+      <div class="te-exemplars-head">Exemplars <button class="mini-btn te-add-ex">+ add</button></div>
+      <div class="te-ex-list"></div>
+    </div>
+  </div>
+</template>
+
+<script src="app.js"></script>
+</body>
+</html>

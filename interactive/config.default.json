@@ -1,0 +1,91 @@
+{
+  "tiers": [
+    {
+      "id": "tier1",
+      "name": "Tier 1",
+      "provider": "Google",
+      "model": "gemini-3.1-flash-lite",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "api_key": "",
+      "threshold": 0.3,
+      "exemplars": [
+        "What is 17 + 26?",
+        "Translate 'good morning' into Spanish.",
+        "Name the largest planet in our solar system.",
+        "Rewrite this more politely: 'Send me the file today.'",
+        "What color do you get by mixing blue and yellow paint?",
+        "Convert 3 hours into minutes."
+      ]
+    },
+    {
+      "id": "tier2",
+      "name": "Tier 2",
+      "provider": "OpenAI",
+      "model": "gpt-5.4-nano",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "",
+      "threshold": 0.3,
+      "exemplars": [
+        "A train leaves at 2:15 p.m. and arrives 2 hours 40 minutes later. What time does it arrive?",
+        "Explain the difference between weather and climate in plain English.",
+        "Write a concise email telling a vendor their quote is over budget and asking for lower-cost alternatives.",
+        "A recipe serves 4 and uses 1.5 cups of rice. How much rice is needed for 10 servings?",
+        "Give three practical ways to reduce household electricity use without buying new appliances.",
+        "What is the main idea of this paragraph? 'Many cities are planting more trees because shaded streets are cooler, air quality can improve, and residents often prefer greener neighborhoods.'"
+      ]
+    },
+    {
+      "id": "tier3",
+      "name": "Tier 3",
+      "provider": "OpenAI",
+      "model": "gpt-5.4-mini",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "",
+      "threshold": 0.3,
+      "exemplars": [
+        "A small business has $120,000 in annual fixed costs, earns a 40% gross margin, and wants to break even. What annual revenue is required, and what assumption matters most?",
+        "Explain the difference between correlation and causation, then give one example where confusing them would produce a bad conclusion.",
+        "A manager says, 'We should cancel the product because sales fell 15% last quarter.' What additional information would you want before agreeing?",
+        "Rewrite this paragraph to be clearer and tighter without losing meaning: 'Due to the fact that there are a lot of people who have indicated that the onboarding process is not very intuitive, we are going to be looking into ways that we can potentially make it easier to understand.'",
+        "A city is considering converting one downtown traffic lane into a protected bike lane. Give the strongest argument for and against the change, then identify the data that would matter most.",
+        "Explain why a company might prefer recurring subscription revenue over one-time sales, and name one downside."
+      ]
+    },
+    {
+      "id": "tier4",
+      "name": "Tier 4",
+      "provider": "Google",
+      "model": "gemini-3.1-pro-preview",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "api_key": "",
+      "threshold": 0.3,
+      "exemplars": [
+        "A B2B software company has strong product usage among individual contributors but weak expansion into department-wide contracts. Diagnose three plausible causes and propose one experiment for each.",
+        "Explain the strongest case that a declining population can still produce a growing economy, and the strongest reason that this may not happen.",
+        "I have a dashboard showing revenue up 20%, active customers flat, and average contract value up 20%. What are the most likely interpretations, and what would you check next?",
+        "Compare three ways a company might reduce cloud inference cost for an LLM application: smaller routed models, prompt/context reduction, and batching. For each, state the main benefit and main failure mode.",
+        "A board member argues that because churn fell from 8% to 6%, customer satisfaction must have improved. Critique that conclusion and suggest a better interpretation.",
+        "Draft a concise internal memo recommending that an organization stop using page views as the primary success metric for its knowledge base and replace it with two better metrics."
+      ]
+    },
+    {
+      "id": "tier5",
+      "name": "Tier 5",
+      "provider": "Anthropic",
+      "model": "Opus 4.7",
+      "base_url": "https://api.anthropic.com/v1",
+      "api_key": "",
+      "threshold": 0.3,
+      "exemplars": [
+        "A company wants to deploy a semantic router that sends queries to 1B, 30B MoE, 70B, Sonnet-class, and Opus-class models. Design an evaluation approach that tells leadership whether the router is economically worthwhile without hiding user-quality regressions.",
+        "A CEO argues that replacing senior analysts with AI is justified because the model can answer most routine questions correctly. Diagnose the reasoning error and give a better operating model.",
+        "Suppose a retrieval system increases recall@10 from 62% to 79% by reranking 100 candidates, but median latency rises from 420 ms to 690 ms. Explain how to decide whether that tradeoff is good, without assuming higher recall automatically wins.",
+        "A policymaker claims that regulating frontier AI models is unnecessary because harmful outputs can be filtered after generation. Critique the claim on technical and governance grounds.",
+        "A company has two customer segments. Segment A has 90% retention and low expansion. Segment B has 70% retention and very high expansion among survivors. Explain how a blended net revenue retention number could mislead management, and what analysis should replace it.",
+        "Construct the strongest argument against using a single scalar 'AI readiness score' for enterprises, then propose a more defensible alternative."
+      ]
+    }
+  ],
+  "max_tier_id": "tier5",
+  "notes": "Pre-populated from the benchmark's per-tier queries. API keys are blank — add them in Settings to get answers. Routing scores work without keys."
+}

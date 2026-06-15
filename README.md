@@ -27,6 +27,25 @@ make demo        # builds nothing heavy — serves the committed dataset + opens
 already-judged benchmark dataset (real routing, real answers, real
 verdicts). Everything below is for *reproducing* that dataset yourself.
 
+## Or try it live
+
+```sh
+make interactive   # chat UI: type a query, watch it routed across tiers + get answers
+```
+
+An interactive chat demo: type any query and see it **scored against each
+tier's exemplars**, routed to the best match, with the per-tier scores, the
+reasoning, and the closest matching exemplar shown. A single **Settings** panel
+lets you add/remove tiers, pick each tier's provider + model, edit its
+exemplars, tune its score threshold, and paste API keys. It ships pre-populated
+with the benchmark's tiers and exemplars; **API keys are blank** — routing works
+without them (clearly flagged in the UI), and answers appear once you add a key.
+"Get a deeper answer" re-runs the query at the top tier, and you can force a
+specific tier or leave it on `auto`. Routing uses a zero-dep lexical scorer by
+default; `pip install fastembed` upgrades it to real embeddings, or point a
+client at the contract gateway / live `vllm-sr` for the production classifier.
+Separate from `make demo` (the cost replay) — both coexist.
+
 ## Quickstart (reproduce the dataset)
 
 ```sh

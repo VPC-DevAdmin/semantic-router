@@ -8,7 +8,7 @@
 #   make export       # write data/routed_queries_with_answers.json
 
 .PHONY: help setup install-vllm-sr-pypi load route answers evaluate export resume misroutes scores \
-        import-answers update-gold demo-data demo gateway \
+        import-answers update-gold demo-data demo gateway interactive \
         clean-results router-smoke router-stop test fmt lint \
         mock-bg mock-stop start_LLM stop_LLM
 
@@ -37,6 +37,7 @@ help:
 	@echo "  demo-data [CONC=<N>]           force-rebuild demo/data/demo_data.json from the exports + demo/pricing.json"
 	@echo "  demo [DEMO_PORT=<n>]           serve the cost-routing replay demo + open browser (single command, no setup needed)"
 	@echo "  gateway [GATEWAY_PORT=<n>] [ROUTER_URL=<url>]  OpenAI-compatible contract gateway for agent orchestrators"
+	@echo "  interactive [INTERACTIVE_PORT=<n>]  chat UI: type a query, watch it routed across tiers + get answers (keys in Settings)"
 	@echo "  misroutes [RUN=<id>]           diagnostic: list queries routed BELOW their min tier"
 	@echo "  scores [RUN=<id>]              diagnostic: per-signal score + threshold gap for each misroute"
 	@echo "  resume [RUN=<id>]              re-run pending/error rows; mark done if clean"
@@ -382,6 +383,17 @@ GATEWAY_PORT ?= 8800
 gateway:
 	$(DEMO_PY) tools/router_gateway.py --port $(GATEWAY_PORT) \
 	    $(if $(ROUTER_URL),--router-url $(ROUTER_URL),)
+
+# ---- interactive routing demo ----
+# A chat UI where you type a query, watch it scored + routed across tiers, and
+# (with API keys added in Settings) get an answer. Tiers/models/exemplars/keys
+# are all editable in one settings panel. Routing works with NO keys; answers
+# need them. Separate from `make demo` (the cost replay) — both coexist.
+INTERACTIVE_PORT ?= 8900
+interactive:
+	@echo "Interactive demo at http://localhost:$(INTERACTIVE_PORT)/  (Ctrl-C to stop)"
+	@( sleep 1 && $(OPEN_CMD) http://localhost:$(INTERACTIVE_PORT)/ >/dev/null 2>&1 & ) || true
+	@$(DEMO_PY) tools/interactive_server.py --port $(INTERACTIVE_PORT)
 
 resume:
 	$(BENCHMARK) resume --db $(DB) $(if $(RUN),--run $(RUN),)
