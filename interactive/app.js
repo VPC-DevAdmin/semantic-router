@@ -152,13 +152,6 @@ function send() {
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
-function exRow(text, cls) {
-  const row = document.createElement('div');
-  row.className = cls + '-row';
-  row.innerHTML = `<input class="${cls}" value="${esc(text)}"><button class="icon-btn ${cls}-del" title="remove">✕</button>`;
-  row.querySelector(`.${cls}-del`).onclick = () => row.remove();
-  return row;
-}
 
 function renderTierEditors() {
   const host = $('tierEditors'); host.innerHTML = '';
@@ -191,19 +184,45 @@ function renderCutoffs() {
   });
 }
 
+// Plain-language labels for the built-in signals (fall back to the id + the
+// signal's own description for any custom ones).
+const SIGNAL_INFO = {
+  trivial_lookup:             { label: 'Looks trivial',         hint: 'Short factual or lookup-style prompts.' },
+  moderate_complexity:        { label: 'Moderate reasoning',    hint: 'Single- or multi-step reasoning and summarization.' },
+  frontier_synthesis:         { label: 'Frontier synthesis',    hint: 'Hard, novel, cross-source synthesis.' },
+  argumentative_construction: { label: 'Argument construction', hint: 'Building structured arguments or proofs.' },
+};
+const sigInfo = s => SIGNAL_INFO[s.id] || { label: s.id, hint: s.description || '' };
+const sigDir = w => w < 0
+  ? { txt: '↓ toward cheaper tiers', cls: 'down' }
+  : { txt: '↑ toward stronger tiers', cls: 'up' };
+
 function renderSignals() {
   const host = $('signalEditors'); host.innerHTML = '';
   (CONFIG.signals || []).forEach(s => {
     const node = $('signalEditorTpl').content.cloneNode(true);
     const root = node.querySelector('.signal-editor');
     root.dataset.id = s.id;
-    node.querySelector('.sig-id').textContent = s.id;
+    const info = sigInfo(s), dir = sigDir(s.weight ?? 0);
+    const cands = s.candidates || [];
+    node.querySelector('.sig-label').textContent = info.label;
+    const d = node.querySelector('.sig-dir'); d.textContent = dir.txt; d.className = 'sig-dir ' + dir.cls;
+    node.querySelector('.sig-count').textContent = `${cands.length} examples`;
+    node.querySelector('.sig-blurb').textContent = info.hint;
+    node.querySelector('.sig-cands-ta').value = cands.join('\n');
     node.querySelector('.sig-weight').value = s.weight ?? 0;
     node.querySelector('.sig-threshold').value = s.threshold ?? 0.5;
-    node.querySelector('.sig-desc').textContent = s.description || '';
-    const cands = node.querySelector('.sig-cands');
-    (s.candidates || []).forEach(c => cands.appendChild(exRow(c, 'sig-cand')));
-    node.querySelector('.sig-add').onclick = () => cands.appendChild(exRow('', 'sig-cand'));
+    const toggle = node.querySelector('.sig-toggle'), body = node.querySelector('.sig-body');
+    const ta = node.querySelector('.sig-cands-ta');
+    const count = node.querySelector('.sig-count');
+    toggle.onclick = () => {
+      const opening = body.hidden;
+      body.hidden = !opening;
+      node.querySelector('.sig-chevron') && (toggle.querySelector('.sig-chevron').textContent = opening ? '▾' : '▸');
+    };
+    ta.addEventListener('input', () => {
+      count.textContent = `${ta.value.split('\n').filter(l => l.trim()).length} examples`;
+    });
     host.appendChild(node);
   });
 }
@@ -230,7 +249,7 @@ function collectConfig() {
     weight: parseFloat(root.querySelector('.sig-weight').value) || 0,
     threshold: parseFloat(root.querySelector('.sig-threshold').value) || 0,
     description: (CONFIG.signals.find(s => s.id === root.dataset.id) || {}).description || '',
-    candidates: [...root.querySelectorAll('.sig-cand')].map(i => i.value.trim()).filter(Boolean),
+    candidates: root.querySelector('.sig-cands-ta').value.split('\n').map(x => x.trim()).filter(Boolean),
   }));
 }
 
