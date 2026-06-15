@@ -30,21 +30,28 @@ verdicts). Everything below is for *reproducing* that dataset yourself.
 ## Or try it live
 
 ```sh
-make interactive   # chat UI: type a query, watch it routed across tiers + get answers
+make route         # bring up vllm-sr (configure your models in the UI → Apply)
+make interactive   # chat UI: type/pick a query, watch the live router route it + answer
 ```
 
-An interactive chat demo: type any query and see it **scored against each
-tier's exemplars**, routed to the best match, with the per-tier scores, the
-reasoning, and the closest matching exemplar shown. A single **Settings** panel
-lets you add/remove tiers, pick each tier's provider + model, edit its
-exemplars, tune its score threshold, and paste API keys. It ships pre-populated
-with the benchmark's tiers and exemplars; **API keys are blank** — routing works
-without them (clearly flagged in the UI), and answers appear once you add a key.
-"Get a deeper answer" re-runs the query at the top tier, and you can force a
-specific tier or leave it on `auto`. Routing uses a zero-dep lexical scorer by
-default; `pip install fastembed` upgrades it to real embeddings, or point a
-client at the contract gateway / live `vllm-sr` for the production classifier.
-Separate from `make demo` (the cost replay) — both coexist.
+A **live** chat demo backed by a running **vllm-sr** (no mock, no local scorer):
+type a query — or pick one from the **benchmark queries**, browsable by category —
+and the real router classifies it and forwards to the model configured for the
+chosen tier. Each answer shows the routing decision: the routed tier, the model
+it served, the category, and the reasoning, with the full tier ladder.
+"Get a deeper answer" re-runs at the top tier; you can force a tier or leave it
+on `auto`.
+
+A single **Settings** panel configures the router: add/remove tiers, set each
+tier's provider + model + base URL + API key, tune the **tier cutoffs**
+(scoring), and edit the **routing signals** — the contrastive exemplar banks
+that move vllm-sr's difficulty score. **Save & Apply** rebuilds the router config
+and reloads vllm-sr. All of it is written to a **separate overlay**
+(`config/live_demo.local.json`, gitignored — holds your keys); the committed
+default is `config/live_demo.json`, and the **canonical benchmark config is
+never touched**. Missing API keys are flagged in the UI (banner + per-tier
+badge + per-answer notice). Separate from `make demo` (the cost replay) — both
+coexist.
 
 ## Quickstart (reproduce the dataset)
 

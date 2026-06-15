@@ -87,3 +87,9 @@ data/Semantic_router.json
 
 # Claude Code local agent/preview state (launch.json, etc.)
 .claude/
+
+# Interactive live demo — user overlay (holds API keys) + its build artifacts.
+# The committed default is config/live_demo.json; the user's saved version and
+# the generated vllm-sr config from it are local-only.
+config/live_demo.local.json
+config/live_exemplars.local.yaml

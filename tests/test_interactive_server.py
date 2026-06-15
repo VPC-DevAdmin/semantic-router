@@ -1,7 +1,10 @@
-"""Interactive demo backend: tier scoring (closest exemplar + chosen tier +
-reasoning) and the no-API-key chat path."""
+"""Live interactive demo backend (routes via vllm-sr). Tests the verifiable
+logic: overlay key masking/preservation, query grouping, the vllm-sr response
+parsing, and the overlay→exemplars translation. The live vllm-sr proxy + reload
+require a running stack and are exercised on the box, not here."""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -10,53 +13,102 @@ sys.path.insert(0, str(ROOT / "tools"))
 import interactive_server as srv  # noqa: E402
 
 
-TIERS = [
-    {"id": "tier1", "name": "Tier 1", "threshold": 0.3,
-     "exemplars": ["What is 17 + 26?", "Capital of France?", "Define photosynthesis"]},
-    {"id": "tier2", "name": "Tier 2", "threshold": 0.3,
-     "exemplars": ["Summarize this paragraph in two sentences", "Convert 5km to miles"]},
-    {"id": "tier3", "name": "Tier 3", "threshold": 0.3,
-     "exemplars": ["Analyze the tradeoffs of a microservices migration strategy",
-                   "Design a caching layer for a high-traffic API"]},
-]
+OVERLAY = {
+    "vllm_sr_url": "http://localhost:8801",
+    "tiers": [
+        {"id": "tier1", "name": "Tier 1", "model": "m1", "provider": "Google",
+         "base_url": "b1", "api_key": "SECRET1"},
+        {"id": "tier2", "name": "Tier 2", "model": "m2", "provider": "OpenAI",
+         "base_url": "b2", "api_key": ""},
+    ],
+    "tier_cutoffs": [0.1, 0.2],
+    "signals": [{"id": "trivial_lookup", "weight": -0.2, "threshold": 0.65,
+                 "description": "d", "candidates": ["who painted X?", "capital of Y?"]}],
+}
 
 
-def test_cosine_basic():
-    a, b = srv._tokens("the quick brown fox"), srv._tokens("the quick brown fox")
-    assert srv._cosine(a, b) == 1.0
-    assert srv._cosine(srv._tokens("apple"), srv._tokens("orange")) == 0.0
+def test_masked_overlay_hides_keys_and_flags():
+    m = srv.masked_overlay(OVERLAY)
+    assert m["tiers"][0]["api_key"] == "" and m["tiers"][0]["key_set"] is True
+    assert m["tiers"][1]["api_key"] == "" and m["tiers"][1]["key_set"] is False
+    # original not mutated
+    assert OVERLAY["tiers"][0]["api_key"] == "SECRET1"
 
 
-def test_score_tiers_picks_closest_and_reports_exemplar():
-    out = srv.score_tiers("What is 42 + 58?", TIERS)
-    assert out["chosen_id"] == "tier1"                       # arithmetic → Tier 1
-    t1 = next(t for t in out["tiers"] if t["id"] == "tier1")
-    assert "+" in (t1["closest_exemplar"] or "")             # matched the math exemplar
-    assert out["tiers"] and "reasoning" in out and out["reasoning"]
-    assert out["ranked_ids"][0] == "tier1"
+def test_merge_overlay_preserves_blank_keys(tmp_path, monkeypatch):
+    user = tmp_path / "live_demo.local.json"
+    monkeypatch.setattr(srv, "USER_OVERLAY", user)
+    monkeypatch.setattr(srv, "DEFAULT_OVERLAY", ROOT / "config" / "live_demo.json")
+    # seed an existing saved overlay with a key
+    user.write_text(json.dumps({"tiers": [{"id": "tier1", "api_key": "KEEPME"}]}))
+    incoming = {"vllm_sr_url": "x", "tiers": [{"id": "tier1", "name": "T1", "api_key": "",
+                "key_set": True}]}
+    srv.merge_overlay(incoming)
+    saved = json.loads(user.read_text())
+    assert saved["tiers"][0]["api_key"] == "KEEPME"   # blank incoming preserved existing
+    assert "key_set" not in saved["tiers"][0]          # stripped before persist
 
 
-def test_score_tiers_routes_complex_to_higher_tier():
-    out = srv.score_tiers("Analyze the tradeoffs of a microservices migration", TIERS)
-    assert out["chosen_id"] == "tier3"
-    chosen = next(t for t in out["tiers"] if t["id"] == "tier3")
-    assert "microservices" in (chosen["closest_exemplar"] or "").lower()
+def test_grouped_queries_shape():
+    g = srv.grouped_queries()
+    assert "categories" in g and g["categories"]
+    # every category maps to a capped list of prompt strings
+    for cat, prompts in g["categories"].items():
+        assert isinstance(prompts, list) and len(prompts) <= 25
+        assert all(isinstance(p, str) for p in prompts)
 
 
-def test_chat_without_key_returns_no_api_key():
-    payload = {"query": "What is 2+2?", "mode": "auto",
-               "tiers": [{**t, "model": "m", "provider": "OpenAI", "api_key": ""} for t in TIERS]}
-    res = srv.handle_chat(payload)
-    assert res["no_api_key"] is True
-    assert res["routing"]["chosen_id"]            # routing still computed
-    assert res["tier"]["id"]                       # served tier reported
+def test_build_live_exemplars_applies_edits(tmp_path, monkeypatch):
+    out = tmp_path / "live_exemplars.local.yaml"
+    monkeypatch.setattr(srv, "LIVE_EXEMPLARS", out)
+    srv.build_live_exemplars(OVERLAY)
+    import yaml
+    ex = yaml.safe_load(out.read_text())
+    assert ex["tier_cutoffs"] == [0.1, 0.2]            # overlay cutoffs applied
+    sig = next(s for s in ex["embedding_signals"] if s["id"] == "trivial_lookup")
+    assert sig["weight"] == -0.2
+    assert sig["candidates"] == ["who painted X?", "capital of Y?"]   # bank replaced
 
 
-def test_chat_forced_mode_overrides_routing():
-    payload = {"query": "What is 2+2?", "mode": "tier3",   # force Tier 3
-               "tiers": [{**t, "model": "m", "provider": "OpenAI", "api_key": ""} for t in TIERS],
-               "max_tier_id": "tier3"}
-    res = srv.handle_chat(payload)
-    assert res["tier"]["id"] == "tier3"            # forced served tier
-    assert res["routing"]["chosen_id"] == "tier1"  # auto would have picked Tier 1
-    assert res["routing"]["forced"] is True
+class _Resp:
+    def __init__(self, headers, body):
+        self.headers = headers
+        self._body = body
+    def raise_for_status(self): pass
+    def json(self): return self._body
+
+
+def test_vllm_chat_parses_decision(monkeypatch):
+    body = {"model": "tier3", "choices": [{"message": {"content": "the answer"}}]}
+    headers = {"x-vsr-selected-model": "tier3", "x-vsr-selected-category": "math",
+               "x-vsr-selected-reasoning": "on"}
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, url, json): return _Resp(headers, body)
+
+    monkeypatch.setattr(srv.httpx, "Client", _Client)
+    ov = {"vllm_sr_url": "http://localhost:8801",
+          "tiers": [{"id": "tier3", "name": "Tier 3", "model": "gpt-5.4-mini"}]}
+    out = srv.vllm_chat(ov, "what is 2+2 with a twist", "auto")
+    assert out["answer"] == "the answer"
+    r = out["routing"]
+    assert r["selected_tier_id"] == "tier3"
+    assert r["selected_tier_name"] == "Tier 3"
+    assert r["served_model"] == "gpt-5.4-mini"
+    assert r["category"] == "math" and r["reasoning"] == "on"
+    assert r["forced"] is False
+
+
+def test_vllm_chat_unreachable_returns_error(monkeypatch):
+    class _Boom:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, *a, **k): raise srv.httpx.ConnectError("refused")
+
+    monkeypatch.setattr(srv.httpx, "Client", _Boom)
+    out = srv.vllm_chat({"vllm_sr_url": "http://localhost:8801", "tiers": []}, "q", "auto")
+    assert "not reachable" in out["error"]

@@ -1,118 +1,134 @@
 'use strict';
-// Interactive semantic-routing demo. Config (tiers/models/exemplars/keys) lives
-// in localStorage; defaults come from config.default.json. The server scores the
-// query against each tier's exemplars and (with a key) calls the chosen model.
+// Live interactive demo: every query is routed by a running vllm-sr. Config is a
+// separate overlay on the server (config/live_demo.local.json); the canonical
+// benchmark config is never touched. Settings → Apply rebuilds + reloads vllm-sr.
 
 const TIER_COLORS = ['#1FB67A', '#11A8C4', '#F2A93B', '#E8743B', '#E64B5C', '#8B5CF6', '#0EA5E9'];
 const tierColor = i => TIER_COLORS[i % TIER_COLORS.length];
-const LS_KEY = 'sr_interactive_cfg';
-
-let CONFIG = null;
-let routeMode = 'auto';
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-// ── Config ───────────────────────────────────────────────────────────────────
-async function loadConfig() {
-  const saved = localStorage.getItem(LS_KEY);
-  if (saved) { try { CONFIG = JSON.parse(saved); return; } catch (e) { /* fall through */ } }
-  CONFIG = await (await fetch('config.default.json')).json();
-}
-const saveConfig = () => localStorage.setItem(LS_KEY, JSON.stringify(CONFIG));
-const tierById = id => CONFIG.tiers.find(t => t.id === id);
-const tierIndex = id => CONFIG.tiers.findIndex(t => t.id === id);
+let CONFIG = null;       // overlay from the server (keys masked; key_set flags)
+let QUERIES = {};        // {category: [prompt,...]}
+let routeMode = 'auto';
 
-// ── Composer: route pills + key banner ─────────────────────────────────────────
+const tierIndex = id => CONFIG.tiers.findIndex(t => t.id === id);
+const maxTierId = () => CONFIG.tiers.length ? CONFIG.tiers[CONFIG.tiers.length - 1].id : null;
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+async function boot() {
+  CONFIG = await (await fetch('/api/config')).json();
+  QUERIES = (await (await fetch('/api/queries')).json()).categories || {};
+  $('routerTag').textContent = 'routes via vllm-sr at ' + (CONFIG.vllm_sr_url || '?');
+  renderPills(); renderKeyBanner(); renderExamples();
+}
+
+// ── Composer ────────────────────────────────────────────────────────────────
 function renderPills() {
   const wrap = $('routePills');
   wrap.querySelectorAll('.pill').forEach(p => p.remove());
-  const mk = (mode, label, missingKey) => {
+  const mk = (mode, label, noKey) => {
     const b = document.createElement('button');
     b.className = 'pill' + (routeMode === mode ? ' active' : '');
-    b.dataset.mode = mode;
-    b.innerHTML = esc(label) + (missingKey ? '<span class="nokey" title="no API key">●</span>' : '');
+    b.innerHTML = esc(label) + (noKey ? '<span class="nokey" title="no API key">●</span>' : '');
     b.onclick = () => { routeMode = mode; renderPills(); };
     wrap.appendChild(b);
   };
   mk('auto', 'auto', false);
-  CONFIG.tiers.forEach(t => mk(t.id, t.name, !(t.api_key || '').trim()));
+  CONFIG.tiers.forEach(t => mk(t.id, t.name, !t.key_set));
 }
 
 function renderKeyBanner() {
   const banner = $('keyBanner');
-  const withKey = CONFIG.tiers.filter(t => (t.api_key || '').trim()).length;
-  if (withKey === CONFIG.tiers.length && CONFIG.tiers.length) { banner.hidden = true; return; }
+  const withKey = CONFIG.tiers.filter(t => t.key_set).length;
+  if (CONFIG.tiers.length && withKey === CONFIG.tiers.length) { banner.hidden = true; return; }
   banner.hidden = false;
-  const missing = CONFIG.tiers.length - withKey;
-  banner.innerHTML = `⚠ ${withKey === 0 ? 'No API keys set' : missing + ' tier(s) have no API key'} — `
-    + `routing still works, but answers need a key. <a id="bannerSettings">Open Settings →</a>`;
+  banner.innerHTML = `⚠ ${withKey === 0 ? 'No API keys set' : (CONFIG.tiers.length - withKey) + ' tier(s) have no API key'} — `
+    + `routing runs, but a tier with no key can't answer. <a id="bannerSettings">Open Settings →</a>`;
   $('bannerSettings').onclick = openSettings;
+}
+
+function renderExamples() {
+  const sel = $('catSelect');
+  const cats = Object.keys(QUERIES);
+  sel.innerHTML = cats.map(c => `<option>${esc(c)}</option>`).join('');
+  sel.onchange = renderChips;
+  renderChips();
+}
+function renderChips() {
+  const cat = $('catSelect').value;
+  const chips = $('exChips');
+  chips.innerHTML = '';
+  (QUERIES[cat] || []).slice(0, 20).forEach(q => {
+    const b = document.createElement('button');
+    b.className = 'ex-chip'; b.title = q; b.textContent = q;
+    b.onclick = () => { $('input').value = q; autoGrow(); $('input').focus(); };
+    chips.appendChild(b);
+  });
 }
 
 // ── Chat ───────────────────────────────────────────────────────────────────────
 function appendUser(text) {
   $('emptyState')?.remove();
   const el = document.createElement('div');
-  el.className = 'msg-user';
-  el.textContent = text;
-  $('chat').appendChild(el);
-  el.scrollIntoView({ block: 'end' });
+  el.className = 'msg-user'; el.textContent = text;
+  $('chat').appendChild(el); el.scrollIntoView({ block: 'end' });
 }
-
 function appendAssistant() {
   const el = document.createElement('div');
   el.className = 'msg-assistant';
-  el.innerHTML = `<div class="answer"><span class="model-line">routing…</span></div>`;
-  $('chat').appendChild(el);
-  el.scrollIntoView({ block: 'end' });
+  el.innerHTML = `<div class="answer"><span class="model-line">routing via vllm-sr…</span></div>`;
+  $('chat').appendChild(el); el.scrollIntoView({ block: 'end' });
   return el;
 }
 
-function routingHTML(routing, servedId, forced) {
-  const maxScore = Math.max(0.0001, ...routing.tiers.map(t => t.score));
-  const rows = routing.tiers.map(t => {
-    const i = tierIndex(t.id);
-    const w = Math.round(t.score / maxScore * 100);
-    const chosen = t.id === servedId;
-    return `<div class="tier-score${chosen ? ' chosen' : ''}">
-      <span class="tname"><span class="tdot" style="background:${tierColor(i)}"></span>${esc(t.name)}</span>
-      <span class="bar"><span style="width:${w}%;background:${tierColor(i)}"></span></span>
-      <span class="pct">${t.score.toFixed(2)}</span></div>`;
+function routingHTML(r) {
+  const i = tierIndex(r.selected_tier_id);
+  const color = i >= 0 ? tierColor(i) : 'var(--blue)';
+  const ladder = CONFIG.tiers.map((t, j) => {
+    const on = t.id === r.selected_tier_id;
+    return `<span class="tier-chip${on ? ' on' : ''}" ${on ? `style="background:${tierColor(j)};border-color:${tierColor(j)}"` : ''}>
+      <span class="tdot" style="background:${tierColor(j)}"></span>${esc(t.name)}</span>`;
   }).join('');
-  const forcedNote = forced && routing.chosen_id && routing.chosen_id !== servedId
-    ? `<div class="forced-note">You forced ${esc(tierById(servedId)?.name || servedId)}; auto would have routed to ${esc(tierById(routing.chosen_id)?.name || '')}.</div>`
-    : '';
+  const meta = [];
+  if (r.category) meta.push(`category <b>${esc(r.category)}</b>`);
+  if (r.reasoning) meta.push(`reasoning <b>${esc(r.reasoning)}</b>`);
+  if (r.cache_hit) meta.push('cache hit');
+  const forced = r.forced
+    ? `<div class="forced-note">You forced this tier; auto would let vllm-sr classify.</div>` : '';
   return `<div class="routing">
-    <div class="routing-head"><span>Routing decision</span><span class="scorer">${esc(routing.scorer)}</span></div>
-    ${rows}
-    <div class="reasoning">${esc(routing.reasoning)}</div>
-    ${forcedNote}
+    <div class="routed-banner">
+      <span class="routed-pill" style="background:${color}">routed → ${esc(r.selected_tier_name || r.selected_tier_id || '?')}</span>
+      <span class="routed-model">${esc(r.served_model || '')}</span>
+      <span class="routed-meta">${meta.join(' · ')}</span>
+    </div>
+    <div class="tier-ladder">${ladder}</div>${forced}
   </div>`;
 }
 
 function answerHTML(res) {
-  if (res.no_api_key) {
-    const t = res.tier || {};
-    return `<div class="answer notice">No API key set for <strong>${esc(t.name || 'this tier')}</strong>
-      (${esc(t.model || '')}). Add it in Settings to get an answer — the routing above ran without one.</div>`;
+  if (res.error) return `<div class="answer err">${esc(res.error)}</div>`;
+  const r = res.routing || {};
+  const tier = CONFIG.tiers.find(t => t.id === r.selected_tier_id);
+  if (tier && !tier.key_set) {
+    return `<div class="answer err">Routed to <strong>${esc(r.selected_tier_name)}</strong>
+      (${esc(r.served_model)}), but it has no API key — add one in Settings. The routing above is real.</div>`;
   }
-  if (res.error) return `<div class="answer err">Provider error: ${esc(res.error)}</div>`;
-  const model = res.tier ? `${esc(res.tier.name)} · ${esc(res.tier.model)}` : '';
-  return `<div class="answer"><span class="model-line">answered by ${model}</span>${esc(res.answer)}</div>`;
+  return `<div class="answer"><span class="model-line">answered by ${esc(r.selected_tier_name || '')} · ${esc(r.served_model || '')}</span>${esc(res.answer || '')}</div>`;
 }
 
 function deeperHTML(res) {
-  if (!CONFIG.max_tier_id || !res.tier || res.tier.id === CONFIG.max_tier_id) return '';
-  if (!(res.answer || res.no_api_key)) return '';
-  const maxName = tierById(CONFIG.max_tier_id)?.name || 'max tier';
-  return `<div class="deeper"><button class="deeper-btn">↑ Get a deeper answer (${esc(maxName)})</button></div>`;
+  const r = res.routing || {};
+  const mx = maxTierId();
+  if (res.error || !mx || r.selected_tier_id === mx) return '';
+  const name = CONFIG.tiers.find(t => t.id === mx)?.name || 'top tier';
+  return `<div class="deeper"><button class="deeper-btn">↑ Get a deeper answer (${esc(name)})</button></div>`;
 }
 
 function renderInto(card, query, res) {
-  const servedId = res.tier ? res.tier.id : res.routing.chosen_id;
-  card.innerHTML = routingHTML(res.routing, servedId, !!res.routing.forced) + answerHTML(res) + deeperHTML(res);
+  card.innerHTML = (res.routing ? routingHTML(res.routing) : '') + answerHTML(res) + deeperHTML(res);
   const btn = card.querySelector('.deeper-btn');
-  if (btn) btn.onclick = () => { btn.disabled = true; ask(query, CONFIG.max_tier_id); };
+  if (btn) btn.onclick = () => { btn.disabled = true; ask(query, maxTierId()); };
   card.scrollIntoView({ block: 'end' });
 }
 
@@ -121,64 +137,79 @@ async function ask(query, mode) {
   try {
     const res = await fetch('/api/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, mode, tiers: CONFIG.tiers, max_tier_id: CONFIG.max_tier_id }),
+      body: JSON.stringify({ query, mode }),
     }).then(r => r.json());
     renderInto(card, query, res);
   } catch (e) {
-    card.innerHTML = `<div class="answer err">Request failed: ${esc(e.message)}. Is the server running?</div>`;
+    card.innerHTML = `<div class="answer err">Request failed: ${esc(e.message)}.</div>`;
   }
 }
-
 function send() {
   const q = $('input').value.trim();
   if (!q) return;
   $('input').value = ''; autoGrow();
-  appendUser(q);
-  ask(q, routeMode);
+  appendUser(q); ask(q, routeMode);
 }
 
-// ── Settings panel ──────────────────────────────────────────────────────────────
-function makeExRow(text) {
+// ── Settings ──────────────────────────────────────────────────────────────────
+function exRow(text, cls) {
   const row = document.createElement('div');
-  row.className = 'te-ex-row';
-  row.innerHTML = `<input class="te-ex" value="${esc(text)}"><button class="icon-btn te-ex-del" title="remove">✕</button>`;
-  row.querySelector('.te-ex-del').onclick = () => row.remove();
+  row.className = cls + '-row';
+  row.innerHTML = `<input class="${cls}" value="${esc(text)}"><button class="icon-btn ${cls}-del" title="remove">✕</button>`;
+  row.querySelector(`.${cls}-del`).onclick = () => row.remove();
   return row;
 }
 
 function renderTierEditors() {
-  const host = $('tierEditors');
-  host.innerHTML = '';
+  const host = $('tierEditors'); host.innerHTML = '';
   CONFIG.tiers.forEach((t, i) => {
     const node = $('tierEditorTpl').content.cloneNode(true);
     const root = node.querySelector('.tier-editor');
-    root.dataset.id = t.id;
-    root.dataset.key = t.api_key || '';
+    root.dataset.id = t.id; root.dataset.keyset = t.key_set ? '1' : '';
     node.querySelector('.tier-dot').style.background = tierColor(i);
     node.querySelector('.te-name').value = t.name || '';
     node.querySelector('.te-provider').value =
       ['OpenAI', 'Anthropic', 'Google', 'OpenAI-compatible'].includes(t.provider) ? t.provider : 'OpenAI-compatible';
     node.querySelector('.te-model').value = t.model || '';
     node.querySelector('.te-base').value = t.base_url || '';
-    node.querySelector('.te-threshold').value = t.threshold ?? 0.3;
     const ks = node.querySelector('.te-keystate');
-    const hasKey = !!(t.api_key || '').trim();
-    ks.textContent = hasKey ? 'key set' : 'no key';
-    ks.className = 'te-keystate ' + (hasKey ? 'has' : 'no');
-    node.querySelector('.te-key').oninput = e => {
-      const has = !!e.target.value.trim() || hasKey;
-      ks.textContent = has ? 'key set' : 'no key';
-      ks.className = 'te-keystate ' + (has ? 'has' : 'no');
-    };
-    const exList = node.querySelector('.te-ex-list');
-    (t.exemplars || []).forEach(ex => exList.appendChild(makeExRow(ex)));
-    node.querySelector('.te-add-ex').onclick = () => exList.appendChild(makeExRow(''));
+    const setKs = has => { ks.textContent = has ? 'key set' : 'no key'; ks.className = 'te-keystate ' + (has ? 'has' : 'no'); };
+    setKs(t.key_set);
+    node.querySelector('.te-key').oninput = e => setKs(!!e.target.value.trim() || t.key_set);
     node.querySelector('.te-del').onclick = () => root.remove();
     host.appendChild(node);
   });
 }
 
+function renderCutoffs() {
+  const host = $('cutoffEditors'); host.innerHTML = '';
+  (CONFIG.tier_cutoffs || []).forEach((c, i) => {
+    const l = document.createElement('label');
+    l.innerHTML = `${esc(CONFIG.tiers[i]?.name || 'T' + (i + 1))} → ${esc(CONFIG.tiers[i + 1]?.name || 'T' + (i + 2))}
+      <input class="cutoff" type="number" step="0.01" value="${c}">`;
+    host.appendChild(l);
+  });
+}
+
+function renderSignals() {
+  const host = $('signalEditors'); host.innerHTML = '';
+  (CONFIG.signals || []).forEach(s => {
+    const node = $('signalEditorTpl').content.cloneNode(true);
+    const root = node.querySelector('.signal-editor');
+    root.dataset.id = s.id;
+    node.querySelector('.sig-id').textContent = s.id;
+    node.querySelector('.sig-weight').value = s.weight ?? 0;
+    node.querySelector('.sig-threshold').value = s.threshold ?? 0.5;
+    node.querySelector('.sig-desc').textContent = s.description || '';
+    const cands = node.querySelector('.sig-cands');
+    (s.candidates || []).forEach(c => cands.appendChild(exRow(c, 'sig-cand')));
+    node.querySelector('.sig-add').onclick = () => cands.appendChild(exRow('', 'sig-cand'));
+    host.appendChild(node);
+  });
+}
+
 function collectConfig() {
+  CONFIG.vllm_sr_url = $('vllmUrl').value.trim() || CONFIG.vllm_sr_url;
   const tiers = [];
   $('tierEditors').querySelectorAll('.tier-editor').forEach((root, i) => {
     const keyInput = root.querySelector('.te-key').value.trim();
@@ -188,63 +219,84 @@ function collectConfig() {
       provider: root.querySelector('.te-provider').value,
       model: root.querySelector('.te-model').value.trim(),
       base_url: root.querySelector('.te-base').value.trim(),
-      api_key: keyInput || root.dataset.key || '',   // preserve unless overwritten
-      threshold: parseFloat(root.querySelector('.te-threshold').value) || 0,
-      exemplars: [...root.querySelectorAll('.te-ex')].map(i => i.value.trim()).filter(Boolean),
+      api_key: keyInput,                       // blank = unchanged (server preserves)
+      key_set: !!keyInput || root.dataset.keyset === '1',
     });
   });
   CONFIG.tiers = tiers;
-  if (!tierById(CONFIG.max_tier_id)) CONFIG.max_tier_id = tiers.length ? tiers[tiers.length - 1].id : null;
+  CONFIG.tier_cutoffs = [...$('cutoffEditors').querySelectorAll('.cutoff')].map(i => parseFloat(i.value) || 0);
+  CONFIG.signals = [...$('signalEditors').querySelectorAll('.signal-editor')].map(root => ({
+    id: root.dataset.id,
+    weight: parseFloat(root.querySelector('.sig-weight').value) || 0,
+    threshold: parseFloat(root.querySelector('.sig-threshold').value) || 0,
+    description: (CONFIG.signals.find(s => s.id === root.dataset.id) || {}).description || '',
+    candidates: [...root.querySelectorAll('.sig-cand')].map(i => i.value.trim()).filter(Boolean),
+  }));
 }
 
 function addTier() {
   collectConfig();
-  const n = CONFIG.tiers.length + 1;
-  CONFIG.tiers.push({ id: `tier${Date.now().toString(36)}`, name: `Tier ${n}`,
-    provider: 'OpenAI-compatible', model: '', base_url: '', api_key: '',
-    threshold: 0.3, exemplars: [] });
+  CONFIG.tiers.push({ id: `tier${Date.now().toString(36)}`, name: `Tier ${CONFIG.tiers.length + 1}`,
+    provider: 'OpenAI-compatible', model: '', base_url: '', api_key: '', key_set: false });
   renderTierEditors();
 }
 
-const openSettings = () => { renderTierEditors(); $('settingsModal').hidden = false; $('saveStatus').textContent = ''; };
+function openSettings() {
+  $('vllmUrl').value = CONFIG.vllm_sr_url || '';
+  renderTierEditors(); renderCutoffs(); renderSignals();
+  $('saveStatus').textContent = ''; $('settingsModal').hidden = false;
+}
 const closeSettings = () => { $('settingsModal').hidden = true; };
 
-function saveCfg() {
+async function persist() {
   collectConfig();
-  saveConfig();
+  await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(CONFIG) });
+  // reload masked view (keys never round-trip through the browser)
+  CONFIG = await (await fetch('/api/config')).json();
   renderPills(); renderKeyBanner();
-  $('saveStatus').textContent = '✓ Saved';
+}
+
+async function saveCfg() {
+  const st = $('saveStatus'); st.className = 'save-status busy'; st.textContent = 'Saving…';
+  await persist();
+  st.className = 'save-status ok'; st.textContent = '✓ Saved (config/live_demo.local.json)';
+}
+
+async function applyCfg() {
+  const st = $('saveStatus'); st.className = 'save-status busy';
+  st.textContent = 'Saving + rebuilding router config + reloading vllm-sr…';
+  await persist();
+  const res = await fetch('/api/apply', { method: 'POST' }).then(r => r.json());
+  if (res.ok) { st.className = 'save-status ok'; st.textContent = '✓ ' + res.detail; }
+  else { st.className = 'save-status err'; st.textContent = `✕ apply failed (${res.step}): ${res.detail}`; }
 }
 
 async function resetCfg() {
-  CONFIG = await (await fetch('config.default.json?v=' + Date.now())).json();
-  saveConfig();
-  renderTierEditors(); renderPills(); renderKeyBanner();
-  $('saveStatus').textContent = '✓ Reset to defaults';
+  // discard the local overlay by re-fetching the committed default isn't exposed;
+  // simplest: clear keys client-side and reload from server default by deleting local.
+  const st = $('saveStatus'); st.className = 'save-status busy'; st.textContent = 'Resetting…';
+  await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...CONFIG, _reset: true }) });
+  CONFIG = await (await fetch('/api/config')).json();
+  openSettings(); renderPills(); renderKeyBanner();
+  st.className = 'save-status ok'; st.textContent = '✓ Reset';
 }
 
-// ── Wire up ───────────────────────────────────────────────────────────────────
 function autoGrow() {
-  const el = $('input');
-  el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+  const el = $('input'); el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 160) + 'px';
 }
 
-async function init() {
-  await loadConfig();
-  renderPills();
-  renderKeyBanner();
+(async function init() {
+  await boot();
   $('sendBtn').onclick = send;
   $('input').addEventListener('input', autoGrow);
-  $('input').addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-  });
+  $('input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
   $('settingsBtn').onclick = openSettings;
   $('closeSettings').onclick = closeSettings;
   $('addTier').onclick = addTier;
   $('saveCfg').onclick = saveCfg;
+  $('applyCfg').onclick = applyCfg;
   $('resetCfg').onclick = resetCfg;
   $('settingsModal').addEventListener('click', e => { if (e.target.id === 'settingsModal') closeSettings(); });
-}
-
-init();
+})();

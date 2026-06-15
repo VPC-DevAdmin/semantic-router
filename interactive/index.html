@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Semantic Router · Interactive</title>
+<title>Semantic Router · Live</title>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -12,30 +12,34 @@
   <div class="brand">
     <span class="brand-mark">◑</span>
     <div>
-      <div class="brand-name">Semantic Router <span class="brand-sub">· Interactive</span></div>
-      <div class="brand-tag">type a query · watch it get routed</div>
+      <div class="brand-name">Semantic Router <span class="brand-sub">· Live</span></div>
+      <div class="brand-tag" id="routerTag">routes via vllm-sr</div>
     </div>
   </div>
   <button class="btn" id="settingsBtn">⚙ Settings</button>
 </header>
 
-<!-- API-key banner (shown when the chosen/any tier has no key) -->
 <div class="keybanner" id="keyBanner" hidden></div>
 
 <main class="chat" id="chat">
   <div class="empty" id="emptyState">
     <h1>Ask anything.</h1>
-    <p>Your query is scored against each tier's exemplars and routed to the best match.
-       Routing works with no API keys — add keys in <strong>Settings</strong> to get answers.</p>
+    <p>Every query is classified by a live vLLM Semantic Router and sent to the
+       model configured for the chosen tier. Pick an example below or type your own.
+       Models &amp; keys live in <strong>Settings</strong>.</p>
   </div>
 </main>
 
-<!-- Composer -->
+<!-- Examples + composer -->
 <div class="composer">
+  <div class="examples" id="examples">
+    <span class="route-label">Examples</span>
+    <select id="catSelect" class="cat-select"></select>
+    <div class="ex-chips" id="exChips"></div>
+  </div>
   <div class="route-pills" id="routePills">
     <span class="route-label">Route via</span>
     <button class="pill active" data-mode="auto">auto</button>
-    <!-- tier pills injected here -->
   </div>
   <div class="input-row">
     <textarea id="input" rows="1" placeholder="Ask anything…"></textarea>
@@ -47,18 +51,32 @@
 <div class="modal-backdrop" id="settingsModal" hidden>
   <div class="modal">
     <div class="modal-head">
-      <h2>Settings · Tiers</h2>
+      <h2>Settings</h2>
       <button class="icon-btn" id="closeSettings">✕</button>
     </div>
-    <p class="modal-intro">Add or remove tiers, pick the model + provider, set the API key,
-       tune the score threshold, and edit the exemplars that define what each tier routes.
-       API keys are stored only in your browser.</p>
+    <p class="modal-intro">Configure the live router. Saved to a separate overlay
+       (<code>config/live_demo.local.json</code>) — the benchmark config is never
+       touched. <strong>Apply</strong> rebuilds the router config and reloads vllm-sr.</p>
+
+    <label class="field">vLLM Semantic Router URL
+      <input id="vllmUrl" placeholder="http://localhost:8801">
+    </label>
+
+    <h3 class="sec">Tiers <button class="mini-btn" id="addTier">+ add tier</button></h3>
     <div id="tierEditors"></div>
+
+    <h3 class="sec">Scoring · tier cutoffs</h3>
+    <p class="sec-note">Difficulty-score boundaries between the tiers (ascending). N tiers → N−1 cutoffs.</p>
+    <div id="cutoffEditors" class="cutoff-row"></div>
+
+    <h3 class="sec">Routing signals <span class="sec-note-inline">— the contrastive exemplar banks that move the difficulty score</span></h3>
+    <div id="signalEditors"></div>
+
     <div class="modal-actions">
-      <button class="btn ghost" id="addTier">+ Add tier</button>
       <div class="spacer"></div>
-      <button class="btn ghost" id="resetCfg">Reset to defaults</button>
-      <button class="btn primary" id="saveCfg">Save changes</button>
+      <button class="btn ghost" id="resetCfg">Reset to demo</button>
+      <button class="btn" id="saveCfg">Save</button>
+      <button class="btn primary" id="applyCfg">Save &amp; Apply (reload vllm-sr)</button>
     </div>
     <div class="save-status" id="saveStatus"></div>
   </div>
@@ -82,12 +100,20 @@
       <label>Model <input class="te-model" placeholder="model id"></label>
       <label>Base URL <input class="te-base" placeholder="provider default"></label>
       <label>API key <input class="te-key" type="password" placeholder="paste to set"></label>
-      <label>Score threshold <input class="te-threshold" type="number" step="0.05" min="0" max="1"></label>
     </div>
-    <div class="te-exemplars">
-      <div class="te-exemplars-head">Exemplars <button class="mini-btn te-add-ex">+ add</button></div>
-      <div class="te-ex-list"></div>
+  </div>
+</template>
+
+<template id="signalEditorTpl">
+  <div class="signal-editor">
+    <div class="signal-head">
+      <span class="sig-id"></span>
+      <label class="sig-w">weight <input class="sig-weight" type="number" step="0.01"></label>
+      <label class="sig-w">threshold <input class="sig-threshold" type="number" step="0.05" min="0" max="1"></label>
     </div>
+    <div class="sig-desc"></div>
+    <div class="sig-cands-head">Exemplars <button class="mini-btn sig-add">+ add</button></div>
+    <div class="sig-cands"></div>
   </div>
 </template>
 

@@ -1,0 +1,141 @@
+{
+  "vllm_sr_url": "http://localhost:8801",
+  "tiers": [
+    {
+      "id": "tier1",
+      "name": "Tier 1",
+      "model": "gemini-3.1-flash-lite",
+      "provider": "Google",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "api_key": ""
+    },
+    {
+      "id": "tier2",
+      "name": "Tier 2",
+      "model": "gpt-5.4-nano",
+      "provider": "OpenAI",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": ""
+    },
+    {
+      "id": "tier3",
+      "name": "Tier 3",
+      "model": "gpt-5.4-mini",
+      "provider": "OpenAI",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": ""
+    },
+    {
+      "id": "tier4",
+      "name": "Tier 4",
+      "model": "gemini-3.1-pro-preview",
+      "provider": "Google",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "api_key": ""
+    },
+    {
+      "id": "tier5",
+      "name": "Tier 5",
+      "model": "Opus 4.7",
+      "provider": "Anthropic",
+      "base_url": "https://api.anthropic.com/v1",
+      "api_key": ""
+    }
+  ],
+  "tier_cutoffs": [
+    0.03,
+    0.1,
+    0.18,
+    0.4
+  ],
+  "signals": [
+    {
+      "id": "trivial_lookup",
+      "description": "Continuous similarity to short factual / lookup-shaped prompts. Math-flavored exemplars deliberately omitted — they directly hit proof prompts (q00666 had this detractor fire on a Lagrange-multipliers prompt), which is the opposite of intent.",
+      "weight": -0.2,
+      "threshold": 0.65,
+      "candidates": [
+        "Which artist sculpted David?",
+        "What is the largest country by area?",
+        "What does the acronym CPU stand for?",
+        "Define osmosis.",
+        "What is the chemical formula for water?",
+        "Who invented the telephone?",
+        "In what year did the Berlin Wall fall?",
+        "Translate 'hello' to Spanish.",
+        "Who is the current monarch of the United Kingdom?",
+        "What is the official language of Brazil?",
+        "Name the deepest ocean on Earth.",
+        "What does the acronym DNA stand for?",
+        "What is 7 plus 4?",
+        "What is 12 divided by 3?",
+        "What is half of 20?",
+        "What is 6 times 5?"
+      ]
+    },
+    {
+      "id": "moderate_complexity",
+      "description": "Continuous similarity to T2/T3-grade explanation, comparison, and basic-implementation prompts.",
+      "weight": 0.22,
+      "threshold": 0.6,
+      "candidates": [
+        "Explain how a database B-tree index handles range queries with a worked example.",
+        "Walk me through how a TLS handshake establishes a shared key — the cryptographic flow at a protocol level.",
+        "Explain Bayes' theorem using a concrete worked example like spam classification or medical screening.",
+        "Compare TCP, UDP, and SCTP — when to use each, and what trade-offs you're picking up.",
+        "What are the operational differences between microservices and modular monoliths for a mid-sized engineering team?",
+        "Compare reference counting and tracing garbage collectors — what each gets right and where they typically fail.",
+        "Implement a thread-safe LRU cache in Go with O(1) get and put operations.",
+        "Write a Python decorator that retries a function with exponential backoff on configured exception types.",
+        "Implement a Bloom filter in Python with configurable false-positive rate.",
+        "Walk me through how to diagnose an event-driven Node.js backend with a slow memory leak under steady-state load.",
+        "Explain what 'eventual consistency' actually means at the application level, with the operational implications that matter to developers.",
+        "Walk through how a confusion matrix is computed for a multi-class classifier, including precision, recall, and F1 per class.",
+        "Solve a probability problem involving combinatorics and conditional events over a finite sample space.",
+        "Run a hypothesis test on whether a sample proportion differs significantly from a stated baseline.",
+        "Compute a business break-even point given fixed costs, variable costs, and gross margin.",
+        "Analyze how a stated percentage shift in inputs propagates through a multi-component budget or scoring formula."
+      ]
+    },
+    {
+      "id": "frontier_synthesis",
+      "description": "Continuous similarity to T5-grade frontier prompts.",
+      "weight": 0.15,
+      "threshold": 0.7,
+      "candidates": [
+        "Take a contested position on a long-standing debate within a field, anticipate the strongest counter-argument, and refute it without retreating to consensus or hedging.",
+        "Construct an original evaluative framework for a domain where consensus methodologies are widely criticized. Take the strongest critique seriously and produce actionable recommendations.",
+        "Construct a defensible position that contemporary management consulting as an industry is net-negative for the organizations it serves. Anticipate and respond to the strongest objection without retreat.",
+        "Argue rigorously for the position that the term 'mental health' as used in workplace HR has become incoherent. Discriminate this claim from anti-therapy and anti-mental-health-awareness positions. Propose a constructive replacement framework.",
+        "Walk this person through whether to remain in academia or leave for industry: 38-year-old researcher with two children, ten years from tenure, meaningful but underfunded research agenda. Refuse the considerations-list response. Commit to a recommendation.",
+        "Review this Raft-adjacent leader-election implementation. Reconstruct the author's mental model, identify where it diverges from canonical Raft, walk through the worst-case operational scenario, and propose minimum fixes.",
+        "Read this exponential-backoff retry decorator. The author was clearly attempting a named algorithm from a well-known blog post. Identify what they intended, where the implementation diverges, and what operational symptom would distinguish this from a correct one.",
+        "Propose specific regulatory mechanisms for how a US federal agency should govern healthcare AI deployment over the next three years, with rule-text-level specificity. Identify the weakest part of your own proposal and explain why.",
+        "Critique this paper's claim that scaling laws hold across modality boundaries. Identify three structurally distinct methodological problems. For each, propose a modification AND identify the new problem the modification introduces.",
+        "Translate this Mandarin poem into idiomatic English while preserving the original's cadence and tonal patterns. Write a half-page paratext explaining your three hardest translation decisions and why.",
+        "Diagnose what's actually happening at a 400-person scaleup that has just lost three senior engineers in two months. Leadership disagrees on cause. Engage with this as organizational analysis with specific signals to trust, not as a strategy framework.",
+        "Construct an original ethical framework that takes seriously both the effective-altruist and the communitarian critiques rather than synthesizing them. Test your frame against the canonical thought experiments each tradition has used."
+      ]
+    },
+    {
+      "id": "argumentative_construction",
+      "description": "Continuous similarity to judgment/commitment-shape T4 prompts (decide, recommend, diagnose, take-a-position). Threshold lowered to 0.58 so discursive 'discuss the considerations'-shape prompts also match (e.g., ethical/philosophical considerations queries) — they're argumentative-adjacent even when not commit-shaped.",
+      "weight": 0.18,
+      "threshold": 0.58,
+      "candidates": [
+        "Make the case for a specific architectural pattern over its alternatives. Don't survey — commit to one.",
+        "Help me think through whether to fire an underperforming team member. Engage with this specific situation.",
+        "Pick one of these design options and tell me why. No surveys, no hedging.",
+        "Should we adopt this framework across the org? Take a position and defend it.",
+        "Recommend a specific book that would help someone in this situation. Just one.",
+        "Make a call: yes or no, and explain your reasoning. No 'it depends'.",
+        "Diagnose what's wrong with this team dynamic. Be specific, not abstract.",
+        "What's the single most important risk in this plan? Pick one.",
+        "Take a position on whether this technology will succeed. Defend it with specifics.",
+        "Engage with the strongest objection to this argument and rebut it.",
+        "Decide between two competing strategies and commit to one with a one-line justification.",
+        "Make a deployment call: ship now or wait two weeks. Pick one and defend it."
+      ]
+    }
+  ]
+}

@@ -1,195 +1,196 @@
 #!/usr/bin/env python3
-"""Backend for the interactive routing demo (interactive/).
+"""Backend for the LIVE interactive routing demo (interactive/).
 
-Serves the static UI and two JSON endpoints:
+This is a thin client of a running **vllm-sr** — there is no local scorer and no
+mock backend. The user types (or picks) a query; the server forwards it to
+vllm-sr, which classifies it and forwards to the real model configured for the
+chosen tier, and the UI shows the routing decision + the real answer.
 
-  POST /api/route  {query, tiers:[{id,name,exemplars,threshold}]}
-       -> per-tier similarity scores, the closest matching exemplar per tier,
-          the chosen tier, and a one-line reasoning. Works with NO API keys —
-          this is the routing decision, the part worth showing for free.
+Config lives in a SEPARATE overlay file so the canonical benchmark config is
+never touched:
+    config/live_demo.json         committed default (demo tiers, blank keys)
+    config/live_demo.local.json   the user's saved version (gitignored; keys)
 
-  POST /api/chat   {query, mode:"auto"|<tier_id>, tiers:[... incl model/
-                    provider/base_url/api_key ...], max_tier_id}
-       -> routes (or honors a forced tier), calls that tier's model, and returns
-          {routing, answer | no_api_key, tier}. "Get a deeper answer" re-calls
-          with mode=max_tier_id.
+Endpoints:
+  GET  /api/config            -> overlay (API keys masked; key_set flags)
+  POST /api/config            -> persist overlay to live_demo.local.json
+  POST /api/apply             -> build a router-config from the overlay (tier
+                                 models/keys via TIER{N}_1_* env, edited cutoffs
+                                 + signal banks) and (re)launch vllm-sr
+  GET  /api/queries           -> the benchmark queries grouped by category
+  POST /api/chat              -> proxy {query, mode} to vllm-sr; return
+                                 {routing, answer | error}
+  GET  /                      -> the static UI
 
-Scoring is pluggable: real embeddings via `fastembed` if installed, else a
-zero-dep lexical token-cosine fallback (clearly labeled in the response). Either
-way you get per-tier scores + the closest exemplar so the routing UX is real.
-
-Stdlib + httpx (already a dep). Run:  python tools/interactive_server.py --port 8900
+Stdlib + httpx + pyyaml (deps). Run:  python tools/interactive_server.py --port 8900
 """
 from __future__ import annotations
 
 import argparse
 import json
-import math
-import re
-from collections import Counter
+import os
+import subprocess
+import sys
+from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
+import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = ROOT / "interactive"
+DEFAULT_OVERLAY = ROOT / "config" / "live_demo.json"
+USER_OVERLAY = ROOT / "config" / "live_demo.local.json"
+CANON_EXEMPLARS = ROOT / "config" / "router-exemplars.yaml"
+CANON_BACKENDS = ROOT / "config" / "router-backends.yaml"
+LIVE_EXEMPLARS = ROOT / "config" / "live_exemplars.local.yaml"
+LIVE_ROUTER_CFG = ROOT / "config" / "router-config.yaml"
 
 
-# ── Scoring ──────────────────────────────────────────────────────────────────
+# ── Overlay config ───────────────────────────────────────────────────────────
 
-_WORD = re.compile(r"[a-z0-9]+")
-
-
-def _tokens(s: str) -> Counter:
-    return Counter(_WORD.findall((s or "").lower()))
+def load_overlay() -> dict:
+    path = USER_OVERLAY if USER_OVERLAY.exists() else DEFAULT_OVERLAY
+    return json.loads(path.read_text())
 
 
-def _cosine(a: Counter, b: Counter) -> float:
-    if not a or not b:
-        return 0.0
-    dot = sum(v * b[t] for t, v in a.items() if t in b)
-    na = math.sqrt(sum(v * v for v in a.values()))
-    nb = math.sqrt(sum(v * v for v in b.values()))
-    return dot / (na * nb) if na and nb else 0.0
-
-
-# Optional real-embedding backend. Loaded lazily; falls back to lexical cosine.
-_EMBED = {"model": None, "tried": False}
-
-
-def _embedder():
-    if _EMBED["tried"]:
-        return _EMBED["model"]
-    _EMBED["tried"] = True
-    try:
-        from fastembed import TextEmbedding  # type: ignore
-        _EMBED["model"] = TextEmbedding()
-    except Exception:
-        _EMBED["model"] = None
-    return _EMBED["model"]
-
-
-def _embed_cosine(query: str, exemplars: list[str]) -> list[float] | None:
-    model = _embedder()
-    if model is None:
-        return None
-    import numpy as np  # fastembed pulls numpy
-    vecs = list(model.embed([query] + list(exemplars)))
-    q = vecs[0]
-    out = []
-    for e in vecs[1:]:
-        denom = (float(np.linalg.norm(q)) * float(np.linalg.norm(e))) or 1.0
-        out.append(float(np.dot(q, e)) / denom)
+def masked_overlay(ov: dict) -> dict:
+    """Overlay for the browser: never send raw keys back; flag which tiers have one."""
+    out = json.loads(json.dumps(ov))
+    for t in out.get("tiers", []):
+        t["key_set"] = bool((t.get("api_key") or "").strip())
+        t["api_key"] = ""
     return out
 
 
-def score_tiers(query: str, tiers: list[dict]) -> dict:
-    """Score the query against every tier's exemplars. Returns ranked tier scores
-    (each with its closest exemplar), the chosen tier id, and a reasoning string."""
-    use_embed = _embedder() is not None
-    qtok = _tokens(query)
-    results = []
-    for t in tiers:
-        exemplars = t.get("exemplars") or []
-        sims: list[float]
-        if use_embed and exemplars:
-            sims = _embed_cosine(query, exemplars) or []
-        else:
-            sims = [_cosine(qtok, _tokens(e)) for e in exemplars]
-        if sims:
-            best_i = max(range(len(sims)), key=lambda i: sims[i])
-            score, closest = sims[best_i], exemplars[best_i]
-        else:
-            score, closest = 0.0, None
-        results.append({
-            "id": t["id"], "name": t.get("name", t["id"]),
-            "score": round(score, 4), "closest_exemplar": closest,
-            "threshold": t.get("threshold", 0.0),
-        })
+def merge_overlay(incoming: dict) -> dict:
+    """Persist the incoming overlay, preserving any existing key the UI left blank
+    (the browser never receives raw keys, so blank means 'unchanged')."""
+    prev = load_overlay()
+    prev_keys = {t["id"]: t.get("api_key", "") for t in prev.get("tiers", [])}
+    for t in incoming.get("tiers", []):
+        if not (t.get("api_key") or "").strip():
+            t["api_key"] = prev_keys.get(t["id"], "")
+        t.pop("key_set", None)
+    USER_OVERLAY.write_text(json.dumps(incoming, indent=2, ensure_ascii=False))
+    return incoming
 
-    ranked = sorted(results, key=lambda r: r["score"], reverse=True)
-    chosen = ranked[0] if ranked else None
-    # Reasoning: the winner, its margin over the runner-up, and the matched exemplar.
-    reasoning = ""
-    if chosen and chosen["score"] > 0:
-        margin = chosen["score"] - (ranked[1]["score"] if len(ranked) > 1 else 0.0)
-        reasoning = (f"Routed to {chosen['name']} — highest similarity "
-                     f"({chosen['score']:.2f}), {margin:.2f} above the next tier. "
-                     f"Closest exemplar: \"{(chosen['closest_exemplar'] or '')[:90]}\".")
-    elif chosen:
-        reasoning = (f"No exemplar matched strongly; defaulting to {chosen['name']}. "
-                     f"Add exemplars to sharpen routing.")
+
+# ── Benchmark queries (the example picker) ────────────────────────────────────
+
+def grouped_queries() -> dict:
+    """Benchmark queries grouped by specialization/category for the picker."""
+    qfile = ROOT / "data" / "queries.json"
+    if not qfile.exists():
+        return {"categories": {}}
+    items = json.loads(qfile.read_text()).get("queries", [])
+    by_cat: dict[str, list[str]] = defaultdict(list)
+    for it in items:
+        prompt = it.get("prompt") or it.get("query")
+        if not prompt:
+            continue
+        cats = it.get("specializations") or ["general"]
+        for c in cats:
+            if len(by_cat[c]) < 25:        # cap per category for a tidy picker
+                by_cat[c].append(prompt)
+    return {"categories": dict(sorted(by_cat.items()))}
+
+
+# ── vllm-sr proxy ──────────────────────────────────────────────────────────────
+
+def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
+    """Forward one query to the live vllm-sr. mode='auto' routes; otherwise mode
+    is a tier id to pin. Returns {routing, answer} or {routing?, error}."""
+    base = (overlay.get("vllm_sr_url") or "http://localhost:8801").rstrip("/")
+    model = "auto" if mode == "auto" else mode    # tier id pins a tier
+    body = {"model": model, "messages": [{"role": "user", "content": query}],
+            "temperature": 0.0, "max_completion_tokens": 800}
+    try:
+        with httpx.Client(timeout=180.0) as c:
+            r = c.post(f"{base}/v1/chat/completions", json=body)
+        r.raise_for_status()
+    except httpx.HTTPError as exc:
+        return {"error": f"vllm-sr not reachable at {base} ({exc}). Start it with "
+                         f"`make route` (and configure your models in Settings → Apply)."}
+    data = r.json()
+    h = {k.lower(): v for k, v in r.headers.items()}
+    selected = h.get("x-vsr-selected-model") or data.get("model")
+    tier = next((t for t in overlay["tiers"] if t["id"] == selected), None)
+    content = data["choices"][0]["message"]["content"]
+    if isinstance(content, list):
+        content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
     return {
-        "scorer": "embeddings (fastembed)" if use_embed else "lexical token-cosine",
-        "tiers": results,
-        "ranked_ids": [r["id"] for r in ranked],
-        "chosen_id": chosen["id"] if chosen else None,
-        "reasoning": reasoning,
+        "routing": {
+            "selected_tier_id": selected,
+            "selected_tier_name": tier["name"] if tier else selected,
+            "served_model": tier["model"] if tier else selected,
+            "category": h.get("x-vsr-selected-category"),
+            "reasoning": h.get("x-vsr-selected-reasoning"),
+            "forced": mode != "auto",
+            "cache_hit": "x-vsr-selected-model" not in h,
+        },
+        "answer": content,
     }
 
 
-# ── Model call ───────────────────────────────────────────────────────────────
+# ── Apply overlay → vllm-sr config + reload ───────────────────────────────────
 
-def call_model(tier: dict, query: str, max_tokens: int = 700) -> dict:
-    """Call one tier's model. Returns {answer} or {no_api_key|error}."""
-    key = (tier.get("api_key") or "").strip()
-    if not key:
-        return {"no_api_key": True}
-    provider = (tier.get("provider") or "").lower()
-    base = (tier.get("base_url") or "").rstrip("/")
-    model = tier.get("model") or ""
+def build_live_exemplars(overlay: dict) -> None:
+    """Write a live exemplars YAML = canonical + the overlay's edited cutoffs and
+    per-signal banks (weight/threshold/candidates). Canonical file untouched."""
+    ex = yaml.safe_load(CANON_EXEMPLARS.read_text())
+    if overlay.get("tier_cutoffs"):
+        ex["tier_cutoffs"] = overlay["tier_cutoffs"]
+    edits = {s["id"]: s for s in overlay.get("signals", [])}
+    for sig in ex.get("embedding_signals", []):
+        e = edits.get(sig["id"])
+        if not e:
+            continue
+        if "weight" in e:
+            sig["weight"] = e["weight"]
+        if "threshold" in e:
+            sig["threshold"] = e["threshold"]
+        if e.get("candidates"):
+            sig["candidates"] = e["candidates"]
+    LIVE_EXEMPLARS.write_text(yaml.safe_dump(ex, sort_keys=False, allow_unicode=True))
+
+
+def apply_overlay(overlay: dict) -> dict:
+    """Build a router-config from the overlay and (re)launch vllm-sr.
+
+    Tier model/base_url/key go in via TIER{N}_1_* env overrides (the same path
+    `make route` uses); edited cutoffs + signal banks go via a live exemplars
+    file. Requires vllm-sr installed + the harness venv.
+    """
+    env = dict(os.environ)
+    for i, t in enumerate(overlay.get("tiers", []), start=1):
+        if t.get("model"):
+            env[f"TIER{i}_1_MODEL"] = t["model"]
+        if t.get("base_url"):
+            env[f"TIER{i}_1_URL"] = t["base_url"]
+        if (t.get("api_key") or "").strip():
+            env[f"TIER{i}_1_API_KEY"] = t["api_key"]
+        if t.get("provider"):
+            env[f"TIER{i}_1_PROVIDER"] = t["provider"]
+    build_live_exemplars(overlay)
     try:
-        if provider == "anthropic":
-            url = (base or "https://api.anthropic.com/v1") + "/messages"
-            headers = {"x-api-key": key, "anthropic-version": "2023-06-01",
-                       "content-type": "application/json"}
-            body = {"model": model, "max_tokens": max_tokens,
-                    "messages": [{"role": "user", "content": query}]}
-            with httpx.Client(timeout=120.0) as c:
-                r = c.post(url, headers=headers, json=body)
-            r.raise_for_status()
-            data = r.json()
-            text = "".join(p.get("text", "") for p in data.get("content", []))
-            return {"answer": text, "model": model}
-        # OpenAI-compatible (OpenAI, Google OpenAI-compat, vLLM, …)
-        url = (base or "https://api.openai.com/v1") + "/chat/completions"
-        headers = {"Authorization": f"Bearer {key}", "content-type": "application/json"}
-        body = {"model": model, "max_tokens": max_tokens,
-                "messages": [{"role": "user", "content": query}]}
-        with httpx.Client(timeout=120.0) as c:
-            r = c.post(url, headers=headers, json=body)
-        r.raise_for_status()
-        return {"answer": r.json()["choices"][0]["message"]["content"], "model": model}
-    except httpx.HTTPStatusError as exc:
-        return {"error": f"{exc.response.status_code} from {provider or 'provider'}: "
-                         f"{exc.response.text[:200]}"}
-    except Exception as exc:
-        return {"error": str(exc)}
-
-
-def _tier_by_id(tiers: list[dict], tid: str | None) -> dict | None:
-    return next((t for t in tiers if t.get("id") == tid), None)
-
-
-def handle_chat(payload: dict) -> dict:
-    query = payload.get("query", "")
-    tiers = payload.get("tiers", [])
-    mode = payload.get("mode", "auto")
-    routing = score_tiers(query, tiers)
-
-    if mode == "auto":
-        chosen_id = routing["chosen_id"]
-    else:
-        chosen_id = mode   # forced tier id (incl. max_tier_id for "deeper answer")
-        routing["forced"] = True
-    tier = _tier_by_id(tiers, chosen_id) or (tiers[0] if tiers else None)
-    if tier is None:
-        return {"routing": routing, "error": "no tiers configured"}
-
-    result = call_model(tier, query)
-    return {"routing": routing, "tier": {"id": tier["id"], "name": tier.get("name"),
-            "model": tier.get("model")}, **result}
+        subprocess.run(
+            [sys.executable, "-m", "benchmark.build_router_config",
+             "--exemplars", str(LIVE_EXEMPLARS), "--backends", str(CANON_BACKENDS),
+             "--out", str(LIVE_ROUTER_CFG)],
+            cwd=str(ROOT), env=env, check=True, capture_output=True, text=True)
+        serve = subprocess.run(["vllm-sr", "serve", "--config", str(LIVE_ROUTER_CFG)],
+                               cwd=str(ROOT), env=env, capture_output=True, text=True)
+        if serve.returncode != 0:
+            return {"ok": False, "step": "serve", "detail": (serve.stderr or serve.stdout)[-800:]}
+        return {"ok": True, "detail": "Router config rebuilt and vllm-sr (re)launched."}
+    except FileNotFoundError as exc:
+        return {"ok": False, "step": "launch",
+                "detail": f"{exc}. Install vllm-sr (`make setup`) and run from the harness venv."}
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or str(exc))[-800:]
+        return {"ok": False, "step": "build", "detail": detail}
 
 
 # ── HTTP server ──────────────────────────────────────────────────────────────
@@ -210,39 +211,51 @@ def _make_handler():
             self.end_headers()
             self.wfile.write(data)
 
-        def _read_json(self) -> dict:
+        def _body(self) -> dict:
             n = int(self.headers.get("Content-Length", 0))
             return json.loads(self.rfile.read(n) or b"{}")
 
         def do_GET(self):
             path = self.path.split("?", 1)[0]
+            if path == "/api/config":
+                self._json(200, masked_overlay(load_overlay()))
+                return
+            if path == "/api/queries":
+                self._json(200, grouped_queries())
+                return
             rel = "index.html" if path in ("/", "") else path.lstrip("/")
             f = (STATIC_DIR / rel).resolve()
             if not str(f).startswith(str(STATIC_DIR.resolve())) or not f.is_file():
                 self._json(404, {"error": "not found"})
                 return
-            ctype = {"html": "text/html", "css": "text/css", "js": "text/javascript",
-                     "json": "application/json"}.get(f.suffix.lstrip("."), "text/plain")
-            body = f.read_bytes()
+            ctype = {"html": "text/html", "css": "text/css", "js": "text/javascript"}.get(
+                f.suffix.lstrip("."), "text/plain")
+            data = f.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", ctype)
             self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(body)
+            self.wfile.write(data)
 
         def do_POST(self):
             path = self.path.split("?", 1)[0]
             try:
-                payload = self._read_json()
+                payload = self._body()
             except json.JSONDecodeError:
                 self._json(400, {"error": "invalid JSON"})
                 return
-            if path == "/api/route":
-                self._json(200, score_tiers(payload.get("query", ""),
-                                            payload.get("tiers", [])))
+            if path == "/api/config":
+                if payload.get("_reset"):
+                    USER_OVERLAY.unlink(missing_ok=True)   # revert to committed default
+                else:
+                    merge_overlay(payload)
+                self._json(200, {"ok": True})
+            elif path == "/api/apply":
+                self._json(200, apply_overlay(load_overlay()))
             elif path == "/api/chat":
-                self._json(200, handle_chat(payload))
+                self._json(200, vllm_chat(load_overlay(), payload.get("query", ""),
+                                          payload.get("mode", "auto")))
             else:
                 self._json(404, {"error": "not found"})
 
@@ -253,9 +266,10 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--port", type=int, default=8900)
     args = p.parse_args()
+    ov = load_overlay()
     httpd = ThreadingHTTPServer(("", args.port), _make_handler())
-    scorer = "embeddings (fastembed)" if _embedder() else "lexical token-cosine"
-    print(f"interactive routing demo on http://localhost:{args.port}/  [scorer: {scorer}]")
+    print(f"live interactive demo on http://localhost:{args.port}/  "
+          f"[routes via vllm-sr at {ov.get('vllm_sr_url')}]")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
