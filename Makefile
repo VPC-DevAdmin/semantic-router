@@ -10,7 +10,7 @@
 .PHONY: help setup install-vllm-sr-pypi load route answers evaluate export resume misroutes scores \
         import-answers update-gold demo-data demo gateway interactive \
         clean-results router-smoke router-stop test fmt lint \
-        mock-bg mock-stop start_LLM stop_LLM
+        mock-bg mock-stop start_LLM stop_LLM fetch-router-model
 
 VENV := .venv
 PYTHON := $(VENV)/bin/python
@@ -28,6 +28,7 @@ help:
 	@echo "Production pass:"
 	@echo "  setup                          venv + deps + init DB + install vllm-sr (if missing)"
 	@echo "  load [MOCK=true]               validate exemplars; build router-config; load queries.json into DB"
+	@echo "  fetch-router-model             pre-seed the router's embedding model into config/models (run by route)"
 	@echo "  route [RUN_NEW=true]           rebuild router-config; routing pass via local OAI mock"
 	@echo "  answers [MOCK=true] [RUN=<id>] [RUN_NEW=true] [TIER=<1-5>] [CONC=<N>] [MAXTOK=<N>] [SMOKE=true]  routed-tier answers (SMOKE: connectivity probe only)"
 	@echo "  evaluate [RUN=<id>] [BATCH=<N>] [RUN_NEW=true]   LLM-judge routed vs gold, batched (default 50 queries/call)"
@@ -189,6 +190,19 @@ EXEMPLARS := config/router-exemplars.yaml
 BACKENDS := config/router-backends.yaml
 ROUTER_CONFIG := config/router-config.yaml
 
+# The router downloads this embedding model from HuggingFace on first launch
+# to compute its routing signals. HF's newer "Xet" file backend
+# (cas-bridge.xethub.hf.co) is 403-blocked on many networks, which makes that
+# in-container download fail with a misleading "does not seem to be on
+# huggingface.co" error — and vllm-sr does NOT forward HF_HUB_DISABLE_XET into
+# the container, so the env can't be fixed from outside. Instead we pre-seed
+# the model into the bind-mounted config/models (Xet disabled) so the router
+# finds it already present and skips the download entirely. See fetch-router-model.
+ROUTER_EMBED_REPO ?= llm-semantic-router/mmbert-embed-32k-2d-matryoshka
+ROUTER_EMBED_NAME := $(notdir $(ROUTER_EMBED_REPO))
+ROUTER_EMBED_DIR  := config/models/$(ROUTER_EMBED_NAME)
+VLLM_SR_IMAGE     ?= ghcr.io/vllm-project/semantic-router/vllm-sr:latest
+
 # Mock URLs are derived from MOCK_PORT (defined in the mock section below).
 # Two forms because the router (inside Docker) and the harness (on the host)
 # reach the same mock at different addresses.
@@ -238,7 +252,29 @@ load:
 #
 # Depends on mock-bg so the mock is guaranteed running before the build
 # emits a router-config that points at it. mock-bg is idempotent.
-route: mock-bg
+# Pre-seed the router's embedding model into the bind-mounted config/models so
+# `vllm-sr serve` doesn't try (and fail, behind a firewalled HF Xet CDN) to
+# download it on first launch. Idempotent: a no-op once the weights are present.
+# Needs Docker + the vllm-sr image (which the router uses anyway). Override the
+# repo/image with ROUTER_EMBED_REPO=… / VLLM_SR_IMAGE=… if upstream changes them.
+fetch-router-model:
+	@if [ -f "$(ROUTER_EMBED_DIR)/model.safetensors" ]; then \
+	    echo "[fetch-router-model] already present: $(ROUTER_EMBED_DIR)"; \
+	elif ! docker info >/dev/null 2>&1; then \
+	    echo "[fetch-router-model] SKIP: Docker not reachable. The router will try to"; \
+	    echo "        download the model itself on launch (may fail if HF Xet is blocked)."; \
+	else \
+	    echo "[fetch-router-model] downloading $(ROUTER_EMBED_REPO) (~600MB, first time only)..."; \
+	    mkdir -p config/models; \
+	    docker run --rm \
+	        -e HF_HUB_DISABLE_XET=1 -e HF_HUB_ENABLE_HF_TRANSFER=0 \
+	        -v "$(CURDIR)/config/models:/app/models" \
+	        --entrypoint python3 $(VLLM_SR_IMAGE) \
+	        -c "from huggingface_hub import snapshot_download; snapshot_download('$(ROUTER_EMBED_REPO)', local_dir='/app/models/$(ROUTER_EMBED_NAME)')" \
+	        && echo "[fetch-router-model] done -> $(ROUTER_EMBED_DIR)"; \
+	fi
+
+route: mock-bg fetch-router-model
 	@if ! command -v vllm-sr >/dev/null 2>&1; then \
 	    echo "[route] ERROR: vllm-sr is not on PATH."; \
 	    echo "        This target runs the routing pass through vllm-sr,"; \

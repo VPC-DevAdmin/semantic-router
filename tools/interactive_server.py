@@ -174,6 +174,35 @@ def _wait_router_ready(deadline_s: float) -> bool:
     return False
 
 
+# The router downloads this embedding model on first launch; HF's Xet CDN is
+# 403-blocked on many networks and vllm-sr won't forward HF_HUB_DISABLE_XET into
+# its container, so we pre-seed the model into the bind-mounted config/models
+# (Xet off) and the router skips the download. Mirrors `make fetch-router-model`.
+ROUTER_EMBED_REPO = "llm-semantic-router/mmbert-embed-32k-2d-matryoshka"
+VLLM_SR_IMAGE = "ghcr.io/vllm-project/semantic-router/vllm-sr:latest"
+MODELS_DIR = ROOT / "config" / "models"
+
+
+def _ensure_router_model() -> None:
+    """Pre-seed the router's embedding model into config/models if absent, so
+    `vllm-sr serve` doesn't fail downloading it behind a firewalled Xet CDN.
+    Idempotent and best-effort: on any failure the router still tries its own
+    download at launch."""
+    name = ROUTER_EMBED_REPO.split("/")[-1]
+    if (MODELS_DIR / name / "model.safetensors").exists():
+        return
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["docker", "run", "--rm",
+         "-e", "HF_HUB_DISABLE_XET=1", "-e", "HF_HUB_ENABLE_HF_TRANSFER=0",
+         "-v", f"{MODELS_DIR}:/app/models",
+         "--entrypoint", "python3", VLLM_SR_IMAGE,
+         "-c", ("from huggingface_hub import snapshot_download; "
+                f"snapshot_download('{ROUTER_EMBED_REPO}', "
+                f"local_dir='/app/models/{name}')")],
+        cwd=str(ROOT), capture_output=True, text=True, timeout=900)
+
+
 def _clean_log(text: str) -> str:
     """Make a subprocess log fit for the UI: strip ANSI color codes (vllm-sr
     prints a colored banner) and surface the actionable error line if there is
@@ -241,6 +270,12 @@ def apply_overlay(overlay: dict) -> dict:
                               "stack — start Docker (sudo systemctl start docker) and "
                               "ensure your user can access /var/run/docker.sock "
                               "(sudo usermod -aG docker $USER, then re-login)."}
+        # Pre-seed the embedding model so the first launch doesn't fail trying to
+        # download it behind a firewalled HF Xet CDN. Best-effort.
+        try:
+            _ensure_router_model()
+        except (subprocess.SubprocessError, OSError):
+            pass
         serve = subprocess.run(["vllm-sr", "serve", "--config", str(LIVE_ROUTER_CFG)],
                                cwd=str(ROOT), env=env, capture_output=True, text=True)
         if serve.returncode != 0:

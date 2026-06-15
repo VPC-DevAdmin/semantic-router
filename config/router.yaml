@@ -30,8 +30,14 @@ serve_args:
 # HuggingFace. HF's newer "Xet" file backend (cas-bridge.xethub.hf.co) is
 # blocked on many networks (returns 403), which makes the download fail with a
 # misleading "does not seem to be on huggingface.co" error even though the
-# metadata API and the classic LFS CDN are reachable. Forcing the classic
-# download path sidesteps it; harmless to leave on everywhere.
+# metadata API and the classic LFS CDN are reachable.
+#   NOTE: vllm-sr forwards only a fixed HF allowlist (HF_TOKEN/HF_ENDPOINT/
+#   HF_HOME) into the router container — NOT HF_HUB_DISABLE_XET — so setting it
+#   here does not actually reach the downloader. The real fix is `make
+#   fetch-router-model`, which pre-seeds the model into the bind-mounted
+#   config/models so the router skips the download (`make route` runs it
+#   automatically). These vars are kept as harmless belt-and-suspenders in case
+#   a future vllm-sr forwards them.
 env:
   HF_HUB_DISABLE_XET: "1"
   HF_HUB_ENABLE_HF_TRANSFER: "0"

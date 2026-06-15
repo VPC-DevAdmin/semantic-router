@@ -211,6 +211,30 @@ the laptop).
   sentences. The other Claude will trust your reasoning and not
   re-derive it.
 
+## First-launch model download (operational gotcha)
+
+`vllm-sr serve` downloads its routing **embedding model**
+(`llm-semantic-router/mmbert-embed-32k-2d-matryoshka`, ~600MB) from
+HuggingFace on first launch, inside the router container, before the
+apiserver reports ready. Two traps we hit and fixed:
+
+- **HF Xet is firewalled on many networks.** The model is Xet-backed,
+  and the Xet CDN (`cas-bridge.xethub.hf.co`) 403s even when the HF
+  metadata API and classic LFS CDN are reachable — so the in-container
+  download dies with a misleading "does not seem to be on
+  huggingface.co". vllm-sr forwards only a fixed HF allowlist
+  (`HF_TOKEN`/`HF_ENDPOINT`/`HF_HOME`) into the container, **not**
+  `HF_HUB_DISABLE_XET`, so you can't fix it via env. The fix is
+  **`make fetch-router-model`** (a `make route` prereq; the UI's Apply
+  calls the same logic): it pre-seeds the model into the bind-mounted
+  `config/models` with Xet disabled, so the router finds it present and
+  skips the download. `config/models/` is gitignored.
+- **The download (~2.5 min) overran `ready_timeout_s`.** Bumped to 900s
+  in `config/router.yaml`. Once seeded, startup is fast.
+
+Also: the router's OpenAI frontend (Envoy ingress) is **:8899**, not
+8801 — that's the URL the live-demo overlay and `router_client` use.
+
 ## Current state (as of last commit)
 
 End-to-end mock pipeline works: `make setup` → `make load` →

@@ -31,6 +31,8 @@ verdicts). Everything below is for *reproducing* that dataset yourself.
 
 ```sh
 make route         # bring up vllm-sr (configure your models in the UI → Apply)
+                   #   first launch pre-seeds + downloads the router's embedding
+                   #   model (~600MB, a few min); later launches are instant
 make interactive   # chat UI: type/pick a query, watch the live router route it + answer
 ```
 
