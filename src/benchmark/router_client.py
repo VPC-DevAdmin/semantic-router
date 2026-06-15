@@ -1,6 +1,6 @@
 """Client for the router's OpenAI-compatible frontend.
 
-The router exposes `POST /v1/chat/completions` on its Envoy frontend (default :8801).
+The router exposes `POST /v1/chat/completions` on its Envoy frontend (default :8899).
 Sending `model: "auto"` invokes routing. The actual selected model is returned
 in the `x-vsr-selected-model` response header (also reflected in the response
 body's `model` field). Two other headers carry routing context:

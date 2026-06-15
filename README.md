@@ -87,7 +87,7 @@ specializing the router or touching the standalone demo:
 
 ```sh
 make gateway                                  # standalone (zero real backends)
-make gateway ROUTER_URL=http://localhost:8801 # classify the worker via real vllm-sr
+make gateway ROUTER_URL=http://localhost:8899 # classify the worker via real vllm-sr
 ```
 
 On top of plain `/v1/chat/completions` it adds: **role names** in the `model`

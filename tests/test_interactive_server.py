@@ -12,7 +12,6 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import interactive_server as srv  # noqa: E402
 
-
 OVERLAY = {
     "vllm_sr_url": "http://localhost:8801",
     "tiers": [
@@ -53,7 +52,7 @@ def test_grouped_queries_shape():
     g = srv.grouped_queries()
     assert "categories" in g and g["categories"]
     # every category maps to a capped list of prompt strings
-    for cat, prompts in g["categories"].items():
+    for _cat, prompts in g["categories"].items():
         assert isinstance(prompts, list) and len(prompts) <= 25
         assert all(isinstance(p, str) for p in prompts)
 

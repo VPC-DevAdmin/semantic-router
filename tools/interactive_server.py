@@ -103,7 +103,7 @@ def grouped_queries() -> dict:
 def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
     """Forward one query to the live vllm-sr. mode='auto' routes; otherwise mode
     is a tier id to pin. Returns {routing, answer} or {routing?, error}."""
-    base = (overlay.get("vllm_sr_url") or "http://localhost:8801").rstrip("/")
+    base = (overlay.get("vllm_sr_url") or "http://localhost:8899").rstrip("/")
     model = "auto" if mode == "auto" else mode    # tier id pins a tier
     body = {"model": model, "messages": [{"role": "user", "content": query}],
             "temperature": 0.0, "max_completion_tokens": 800}

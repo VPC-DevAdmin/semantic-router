@@ -309,7 +309,7 @@ class RouterProcessConfig(BaseModel):
     """How to launch and reach the vLLM Semantic Router.
 
     The router is a Go binary (`vllm-sr`) that exposes an apiserver (default 8080)
-    and an Envoy frontend (default 8801). We don't pass a config *into* the router
+    and an Envoy frontend (default 8899). We don't pass a config *into* the router
     here — the router manages its own config — but we do tell the harness how to
     invoke the binary and where to find its endpoints.
     """

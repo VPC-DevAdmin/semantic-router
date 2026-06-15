@@ -1,5 +1,5 @@
 {
-  "vllm_sr_url": "http://localhost:8801",
+  "vllm_sr_url": "http://localhost:8899",
   "tiers": [
     {
       "id": "tier1",

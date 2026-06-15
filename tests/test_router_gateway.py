@@ -11,7 +11,6 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import router_gateway as gw  # noqa: E402
 
-
 ROLES_CFG = {
     "roles": {
         "planner": {"mode": "pinned", "tier": "L5"},
