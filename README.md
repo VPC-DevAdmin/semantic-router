@@ -67,6 +67,8 @@ make route     # routing pass (via local OAI mock — no per-query token cost)
                #   live demo need a running Docker daemon. `make setup` checks for
                #   it and tells you; the cost replay / answers / evaluate / export
                #   do NOT need Docker.
+               #   FIRST LAUNCH downloads the router's embedding model (~2-3 min)
+               #   into config/models before it serves; later launches are fast.
 make answers   # for each routed query × each model in the picked tier, get a real answer
 make evaluate  # LLM-judge routed vs gold (batched, per-row resumable)
 make export    # write data/routed_queries_with_answers.json + data/evaluations.json (if judged)

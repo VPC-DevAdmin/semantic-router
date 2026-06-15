@@ -32,6 +32,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -148,6 +149,31 @@ def _docker_ready() -> bool:
         return False
 
 
+# The router's apiserver (separate from the Envoy frontend) answers /ready once
+# the stack is fully up — including the first-launch embedding-model download.
+ROUTER_READY_URL = "http://127.0.0.1:8080/ready"
+
+
+def _router_ready() -> bool:
+    """True if the router apiserver reports ready."""
+    try:
+        return httpx.get(ROUTER_READY_URL, timeout=2.0).status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+def _wait_router_ready(deadline_s: float) -> bool:
+    """Poll /ready up to deadline_s seconds. Bounded so the Apply request never
+    hangs on the multi-minute first-run model download — we report honestly
+    instead of blocking."""
+    end = time.monotonic() + deadline_s
+    while time.monotonic() < end:
+        if _router_ready():
+            return True
+        time.sleep(1.0)
+    return False
+
+
 def _clean_log(text: str) -> str:
     """Make a subprocess log fit for the UI: strip ANSI color codes (vllm-sr
     prints a colored banner) and surface the actionable error line if there is
@@ -187,6 +213,12 @@ def apply_overlay(overlay: dict) -> dict:
     file. Requires vllm-sr installed + the harness venv.
     """
     env = dict(os.environ)
+    # Force the classic HF download path: the embedding model the router pulls
+    # on first launch is Xet-backed, and the Xet CDN is 403-blocked on many
+    # networks. vllm-sr forwards HF_* into the router container. (See router.yaml
+    # for the same defaults on the `make route` path.)
+    env.setdefault("HF_HUB_DISABLE_XET", "1")
+    env.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
     for i, t in enumerate(overlay.get("tiers", []), start=1):
         if t.get("model"):
             env[f"TIER{i}_1_MODEL"] = t["model"]
@@ -214,7 +246,17 @@ def apply_overlay(overlay: dict) -> dict:
         if serve.returncode != 0:
             return {"ok": False, "step": "serve",
                     "detail": _clean_log(serve.stderr or serve.stdout)}
-        return {"ok": True, "detail": "Router config rebuilt and vllm-sr (re)launched."}
+        # `vllm-sr serve` exits 0 once the stack is *launched* — not once the
+        # router is *ready*. On first launch the router still has to download
+        # its embedding model (~2-3 min), and it can crash mid-startup. Poll
+        # /ready briefly so we report the truth instead of a premature "OK".
+        if _wait_router_ready(20.0):
+            return {"ok": True, "detail": "Router config rebuilt and vllm-sr is live."}
+        return {"ok": True, "warming": True,
+                "detail": "vllm-sr launched. On first launch it downloads its routing "
+                          "model (~2-3 min) before it can route — your first query may "
+                          "say 'not reachable' until that finishes. Retry shortly; watch "
+                          "progress with `vllm-sr logs router`."}
     except FileNotFoundError as exc:
         return {"ok": False, "step": "launch",
                 "detail": f"{exc}. Install vllm-sr (`make setup`) and run from the harness venv."}

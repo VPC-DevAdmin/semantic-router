@@ -22,8 +22,19 @@ serve_args:
   - --minimal
 
 # Environment variables merged into the subprocess env. Use these for HF_TOKEN
-# and any provider keys the router itself needs.
-env: {}
+# and any provider keys the router itself needs. `vllm-sr serve` forwards
+# HF_* through into the router container.
+#
+# HF_HUB_DISABLE_XET / HF_HUB_ENABLE_HF_TRANSFER: on first launch the router
+# downloads its embedding model (mmbert-embed-32k-2d-matryoshka) from
+# HuggingFace. HF's newer "Xet" file backend (cas-bridge.xethub.hf.co) is
+# blocked on many networks (returns 403), which makes the download fail with a
+# misleading "does not seem to be on huggingface.co" error even though the
+# metadata API and the classic LFS CDN are reachable. Forcing the classic
+# download path sidesteps it; harmless to leave on everywhere.
+env:
+  HF_HUB_DISABLE_XET: "1"
+  HF_HUB_ENABLE_HF_TRANSFER: "0"
 #  HF_TOKEN: hf_xxx
 
 apiserver_host: 127.0.0.1
@@ -34,7 +45,11 @@ frontend_host: 127.0.0.1
 # If your config.yaml uses a different port, set it here.
 frontend_port: 8899             # POST /v1/chat/completions (Envoy ingress)
 
-ready_timeout_s: 120
+# First launch downloads the embedding model (~150 MB, observed ~2.5 min on a
+# warm network) before the apiserver reports ready, so the cold-start window is
+# generous. The model persists in the bind-mounted config/models, so subsequent
+# launches are fast — a 120s timeout was too short and tripped on first run.
+ready_timeout_s: 900
 stop_timeout_s: 15
 
 # If set, capture launcher stdout+stderr to this path. Helpful for postmortems.
