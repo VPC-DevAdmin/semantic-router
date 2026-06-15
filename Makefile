@@ -131,11 +131,23 @@ endif
 	@echo ""
 	@echo "[setup] complete. DB initialized at $(DB)."
 	@if command -v vllm-sr >/dev/null 2>&1; then \
-	    echo "[setup] vllm-sr ready -- full pipeline available."; \
+	    echo "[setup] vllm-sr ready."; \
 	else \
 	    echo "[setup] vllm-sr NOT installed -- \`make route\` (the routing pass)"; \
 	    echo "        is blocked until you install it. Everything else works."; \
 	    echo "        Re-run \`make setup\` to retry, or install manually."; \
+	fi
+	@# vllm-sr brings up a Docker stack (router + envoy + datastores), so the
+	@# routing pass + the live interactive demo need a reachable Docker daemon.
+	@# The cost replay (`make demo`), answers/evaluate/export do NOT.
+	@if docker info >/dev/null 2>&1; then \
+	    echo "[setup] Docker ready -- \`make route\` and the live demo can launch vllm-sr."; \
+	else \
+	    echo "[setup] Docker NOT reachable -- REQUIRED for \`make route\` and the live"; \
+	    echo "        interactive demo (vllm-sr runs as a Docker stack). Not needed for"; \
+	    echo "        \`make demo\` (cost replay), answers, evaluate, or export."; \
+	    echo "        Start it:  sudo systemctl start docker   (then add your user to"; \
+	    echo "        the docker group, re-login, and verify with \`docker ps\`)."; \
 	fi
 
 # Direct-from-PyPI install of vllm-sr. Mirrors what upstream install.sh

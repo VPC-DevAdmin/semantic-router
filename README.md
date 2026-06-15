@@ -63,6 +63,10 @@ cp .env.example .env       # fill in API keys + per-tier model env
 make setup     # venv, Python deps, DB schema, installs vllm-sr if missing
 make load      # data/queries.json → data/router_benchmark.db
 make route     # routing pass (via local OAI mock — no per-query token cost)
+               #   NOTE: vllm-sr runs as a Docker stack, so `make route` and the
+               #   live demo need a running Docker daemon. `make setup` checks for
+               #   it and tells you; the cost replay / answers / evaluate / export
+               #   do NOT need Docker.
 make answers   # for each routed query × each model in the picked tier, get a real answer
 make evaluate  # LLM-judge routed vs gold (batched, per-row resumable)
 make export    # write data/routed_queries_with_answers.json + data/evaluations.json (if judged)

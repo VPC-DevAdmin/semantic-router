@@ -140,6 +140,14 @@ def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
+def _docker_ready() -> bool:
+    """True if the Docker daemon is reachable (vllm-sr serve needs it)."""
+    try:
+        return subprocess.run(["docker", "info"], capture_output=True).returncode == 0
+    except (FileNotFoundError, OSError):
+        return False
+
+
 def _clean_log(text: str) -> str:
     """Make a subprocess log fit for the UI: strip ANSI color codes (vllm-sr
     prints a colored banner) and surface the actionable error line if there is
@@ -195,6 +203,12 @@ def apply_overlay(overlay: dict) -> dict:
              "--exemplars", str(LIVE_EXEMPLARS), "--backends", str(CANON_BACKENDS),
              "--out", str(LIVE_ROUTER_CFG)],
             cwd=str(ROOT), env=env, check=True, capture_output=True, text=True)
+        if not _docker_ready():
+            return {"ok": False, "step": "docker",
+                    "detail": "Docker daemon not reachable. vllm-sr runs as a Docker "
+                              "stack — start Docker (sudo systemctl start docker) and "
+                              "ensure your user can access /var/run/docker.sock "
+                              "(sudo usermod -aG docker $USER, then re-login)."}
         serve = subprocess.run(["vllm-sr", "serve", "--config", str(LIVE_ROUTER_CFG)],
                                cwd=str(ROOT), env=env, capture_output=True, text=True)
         if serve.returncode != 0:
