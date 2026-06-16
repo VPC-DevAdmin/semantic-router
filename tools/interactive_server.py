@@ -219,13 +219,16 @@ def _routing_scores() -> dict:
             if '"router_replay_start"' not in line or "{" not in line:
                 continue
             j = json.loads(line[line.index("{"):])
+            # signal_values holds EVERY signal's raw score; signal_confidences
+            # only the winning ones. Merge (values as the base) so the UI can
+            # bar every signal, not just the matched ones.
+            merged = {**(j.get("signal_values") or {}), **(j.get("signal_confidences") or {})}
             return {
                 "request_difficulty": _to_float(
                     (j.get("projection_scores") or {}).get("request_difficulty")),
-                "signal_confidences": {
-                    k: _to_float(v)
-                    for k, v in (j.get("signal_confidences") or {}).items()
-                },
+                "signal_confidences": {k: _to_float(v) for k, v in merged.items()},
+                "log_selected_model": j.get("selected_model"),
+                "log_decision": j.get("decision"),
             }
     except (subprocess.SubprocessError, OSError, ValueError, KeyError):
         pass
@@ -246,20 +249,29 @@ def _routing_from_headers(h: dict, overlay: dict, mode: str) -> dict:
     """The routing decision the router published on the response headers. Present
     on BOTH success and error responses (the router decides before forwarding),
     so the UI can show the rationale even when the upstream rejects the call."""
-    selected = h.get("x-vsr-selected-model")
+    scores = _routing_scores()
+    # Resolve the tier from the header, falling back to the log's selected model
+    # and finally the decision name — some error responses omit the x-vsr headers.
+    selected = h.get("x-vsr-selected-model") or scores.get("log_selected_model")
     tier = _tier_for(overlay, selected)
+    if not tier:
+        dec = scores.get("log_decision") or ""
+        if dec.startswith("route_"):
+            tid = dec[len("route_"):]
+            tier = next((t for t in overlay.get("tiers", []) if t.get("id") == tid), None)
     return {
         "selected_tier_id": tier["id"] if tier else selected,
-        "selected_tier_name": tier["name"] if tier else selected,
-        "served_model": tier["model"] if tier else selected,
+        "selected_tier_name": tier["name"] if tier else (selected or "?"),
+        "served_model": (tier.get("model") if tier else None) or selected,
         "category": h.get("x-vsr-selected-category"),
         "reasoning": h.get("x-vsr-selected-reasoning"),
         "confidence": _to_float(h.get("x-vsr-selected-confidence")),
-        "decision": h.get("x-vsr-selected-decision"),
+        "decision": h.get("x-vsr-selected-decision") or scores.get("log_decision"),
         "matched": _matched_signals(h),
         "forced": mode != "auto",
         "cache_hit": "x-vsr-selected-model" not in h,
-        **_routing_scores(),
+        "request_difficulty": scores.get("request_difficulty"),
+        "signal_confidences": scores.get("signal_confidences"),
     }
 
 
