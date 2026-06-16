@@ -62,7 +62,9 @@ git clone git@github.com:VPC-DevAdmin/semantic-router.git
 cd semantic-router
 cp .env.example .env       # fill in API keys + per-tier model env
 
-make setup     # venv, Python deps, DB schema, installs vllm-sr if missing
+make setup     # venv, Python deps, DB schema, installs vllm-sr v0.3.0 if missing
+               #   (the routing config is the v0.3 schema; v0.2.0 silently resets
+               #   every routed request, so setup pins + checks the version)
 make load      # data/queries.json → data/router_benchmark.db
 make route     # routing pass (via local OAI mock — no per-query token cost)
                #   NOTE: vllm-sr runs as a Docker stack, so `make route` and the

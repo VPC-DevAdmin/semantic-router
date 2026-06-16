@@ -179,7 +179,10 @@ def _wait_router_ready(deadline_s: float) -> bool:
 # its container, so we pre-seed the model into the bind-mounted config/models
 # (Xet off) and the router skips the download. Mirrors `make fetch-router-model`.
 ROUTER_EMBED_REPO = "llm-semantic-router/mmbert-embed-32k-2d-matryoshka"
-VLLM_SR_IMAGE = "ghcr.io/vllm-project/semantic-router/vllm-sr:latest"
+# Pinned to the known-good release. v0.2.0 leaves the router's request path dead
+# (doesn't start the postgres/redis backends it needs). Keep in sync with
+# VLLM_SR_VERSION in the Makefile and the --image in config/router.yaml.
+VLLM_SR_IMAGE = "ghcr.io/vllm-project/semantic-router/vllm-sr:v0.3.0"
 MODELS_DIR = ROOT / "config" / "models"
 
 
@@ -276,7 +279,8 @@ def apply_overlay(overlay: dict) -> dict:
             _ensure_router_model()
         except (subprocess.SubprocessError, OSError):
             pass
-        serve = subprocess.run(["vllm-sr", "serve", "--config", str(LIVE_ROUTER_CFG)],
+        serve = subprocess.run(["vllm-sr", "serve", "--config", str(LIVE_ROUTER_CFG),
+                                "--minimal", "--image", VLLM_SR_IMAGE],
                                cwd=str(ROOT), env=env, capture_output=True, text=True)
         if serve.returncode != 0:
             return {"ok": False, "step": "serve",

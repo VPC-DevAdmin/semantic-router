@@ -235,6 +235,24 @@ apiserver reports ready. Two traps we hit and fixed:
 Also: the router's OpenAI frontend (Envoy ingress) is **:8899**, not
 8801 — that's the URL the live-demo overlay and `router_client` use.
 
+## vllm-sr version (pinned to v0.3.0 — important)
+
+The harness emits the **v0.3** config schema, and requires the matching
+**v0.3.0** vllm-sr release (CLI + container image). **v0.2.0 silently
+breaks**: a plain `pip install vllm-sr` resolves to 0.2.0, whose launcher
+does NOT start the postgres/redis backends the router's config requires —
+so the ExtProc is left half-wired and Envoy **resets every routed request**
+(HTTP 000, no router log). The symptom looks like a routing/network failure
+but is purely the version. v0.3.0's launcher logs `Storage backends
+required by config: postgres, redis → Starting…` and wires the ExtProc
+correctly. The pin lives in three kept-in-sync places: `VLLM_SR_VERSION`
+in the Makefile (CLI install + `VLLM_SR_IMAGE`), the `--image` in
+`config/router.yaml` serve_args (the `make route` path), and `VLLM_SR_IMAGE`
+in `tools/interactive_server.py` (the UI Apply path). `make setup` warns if
+an older CLI is already installed. (The `RouterDC … mmbert status -1` and
+`embedding_ready:false` log lines are harmless even on v0.3.0 — they're the
+unused tools/RouterDC path; projection-based routing classifies fine.)
+
 ## Current state (as of last commit)
 
 End-to-end mock pipeline works: `make setup` → `make load` →

@@ -20,6 +20,12 @@ serve_args:
   - --config
   - config/router-config.yaml
   - --minimal
+  # Pin the container image to the known-good release. The CLI version and this
+  # image must match; v0.2.0 leaves the request path dead (doesn't start the
+  # postgres/redis backends the router needs). Keep in sync with VLLM_SR_VERSION
+  # in the Makefile and VLLM_SR_IMAGE in tools/interactive_server.py.
+  - --image
+  - ghcr.io/vllm-project/semantic-router/vllm-sr:v0.3.0
 
 # Environment variables merged into the subprocess env. Use these for HF_TOKEN
 # and any provider keys the router itself needs. `vllm-sr serve` forwards

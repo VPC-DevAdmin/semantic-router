@@ -132,7 +132,17 @@ endif
 	@echo ""
 	@echo "[setup] complete. DB initialized at $(DB)."
 	@if command -v vllm-sr >/dev/null 2>&1; then \
-	    echo "[setup] vllm-sr ready."; \
+	    SR_VENV="$$(dirname "$$(dirname "$$(readlink -f "$$(command -v vllm-sr)")")")"; \
+	    SR_VER="$$("$$SR_VENV/bin/python" -m pip show vllm-sr 2>/dev/null | awk '/^Version:/{print $$2}')"; \
+	    case "$$SR_VER" in \
+	      0.0.*|0.1.*|0.2.*) \
+	        echo "[setup] WARN: vllm-sr $$SR_VER is too old. v$(VLLM_SR_VERSION)+ is"; \
+	        echo "        required -- older builds don't start the postgres/redis backends"; \
+	        echo "        the router needs, so every routed request is reset. Upgrade with:"; \
+	        echo "          \"$$SR_VENV/bin/pip\" install --upgrade \"vllm-sr==$(VLLM_SR_VERSION)\""; \
+	        ;; \
+	      *) echo "[setup] vllm-sr ready ($${SR_VER:-version unknown})."; ;; \
+	    esac; \
 	else \
 	    echo "[setup] vllm-sr NOT installed -- \`make route\` (the routing pass)"; \
 	    echo "        is blocked until you install it. Everything else works."; \
@@ -167,9 +177,12 @@ install-vllm-sr-pypi:
 	    echo "[install-vllm-sr-pypi] creating venv at $(VLLM_SR_VENV)"; \
 	    python3 -m venv $(VLLM_SR_VENV); \
 	fi
-	@echo "[install-vllm-sr-pypi] installing vllm-sr from PyPI..."
+	@echo "[install-vllm-sr-pypi] installing vllm-sr==$(VLLM_SR_VERSION) from PyPI..."
 	@$(VLLM_SR_VENV)/bin/python -m pip install --disable-pip-version-check --quiet --upgrade pip wheel setuptools
-	@$(VLLM_SR_VENV)/bin/python -m pip install --disable-pip-version-check --quiet --upgrade vllm-sr
+	@# Pin the version: a bare `pip install vllm-sr` resolves to 0.2.0, which is
+	@# config-incompatible and leaves the router's request path dead (see
+	@# VLLM_SR_VERSION above). Install the known-good release explicitly.
+	@$(VLLM_SR_VENV)/bin/python -m pip install --disable-pip-version-check --quiet --upgrade "vllm-sr==$(VLLM_SR_VERSION)"
 	@ln -sf $(VLLM_SR_VENV)/bin/vllm-sr $(VLLM_SR_BIN_DIR)/vllm-sr
 	@echo "[install-vllm-sr-pypi] installed: $(VLLM_SR_BIN_DIR)/vllm-sr -> $(VLLM_SR_VENV)/bin/vllm-sr"
 	@if ! command -v vllm-sr >/dev/null 2>&1; then \
@@ -201,7 +214,14 @@ ROUTER_CONFIG := config/router-config.yaml
 ROUTER_EMBED_REPO ?= llm-semantic-router/mmbert-embed-32k-2d-matryoshka
 ROUTER_EMBED_NAME := $(notdir $(ROUTER_EMBED_REPO))
 ROUTER_EMBED_DIR  := config/models/$(ROUTER_EMBED_NAME)
-VLLM_SR_IMAGE     ?= ghcr.io/vllm-project/semantic-router/vllm-sr:latest
+# Pin to a known-good vllm-sr release. v0.3.0 is the first release whose
+# config schema matches what build_router_config emits AND whose launcher
+# stands up the postgres/redis backends the router needs. v0.2.0 (still the
+# default on PyPI for a plain `pip install vllm-sr`) silently fails: it doesn't
+# start those backends, so the ExtProc is left half-wired and Envoy resets
+# every request. Both the CLI and the container image are pinned to this.
+VLLM_SR_VERSION   ?= 0.3.0
+VLLM_SR_IMAGE     ?= ghcr.io/vllm-project/semantic-router/vllm-sr:v$(VLLM_SR_VERSION)
 
 # Mock URLs are derived from MOCK_PORT (defined in the mock section below).
 # Two forms because the router (inside Docker) and the harness (on the host)
