@@ -122,6 +122,21 @@ def _upstream_error_text(r: httpx.Response) -> str:
     return (r.text or "(no body)").strip()[:300]
 
 
+# A provider's /models lists every model resource, not just chat ones. Drop the
+# surfaces that /chat/completions can't serve (embeddings, TTS/audio, image,
+# video, rerank, realtime, robotics, …) so the picker only offers usable models.
+_NON_CHAT_HINTS = (
+    "embedding", "embed", "tts", "audio", "image", "imagen", "veo", "whisper",
+    "dall-e", "dalle", "moderation", "rerank", "robotics", "computer-use",
+    "realtime", "transcribe", "-live", "live-", "guard",
+)
+
+
+def _is_chat_model(model_id: str) -> bool:
+    mid = model_id.lower()
+    return not any(h in mid for h in _NON_CHAT_HINTS)
+
+
 def _provider_models(provider: str, base_url: str, api_key: str) -> list[str]:
     """Fetch available model ids from a provider's list endpoint.
 
@@ -144,8 +159,9 @@ def _provider_models(provider: str, base_url: str, api_key: str) -> list[str]:
     ids = [(m.get("id") or m.get("name")) for m in rows if isinstance(m, dict)]
     # Google's /models lists ids as "models/gemini-…", but its OpenAI-compatible
     # chat endpoint wants the bare id — strip the prefix so picked ids work.
-    ids = [i[len("models/"):] if i and i.startswith("models/") else i for i in ids]
-    return sorted({i for i in ids if i})
+    ids = [i[len("models/"):] if i and i.startswith("models/") else i for i in ids if i]
+    chat = sorted({i for i in ids if _is_chat_model(i)})
+    return chat or sorted(set(ids))   # never return empty if the filter is too aggressive
 
 
 def list_models(payload: dict) -> dict:

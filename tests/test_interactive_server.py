@@ -149,6 +149,23 @@ def test_list_models_anthropic_uses_x_api_key(monkeypatch):
     assert "anthropic-version" in cap["headers"]
 
 
+def test_provider_models_filters_non_chat(monkeypatch):
+    # /models lists every resource; the picker should keep only chat-capable
+    # ones (and strip Google's "models/" prefix).
+    ids = ["models/gemini-3.1-pro-preview", "models/gemini-2.5-flash",
+           "models/gemini-embedding-001", "models/gemini-2.5-flash-preview-tts",
+           "models/gemini-3-pro-image", "models/gemini-2.5-flash-native-audio-latest",
+           "models/gemini-3.1-flash-live-preview", "gpt-4.1-nano",
+           "text-embedding-3-small", "whisper-1", "dall-e-3"]
+    monkeypatch.setattr(srv.httpx, "Client",
+                        _models_client({}, {"data": [{"id": i} for i in ids]}))
+    out = srv._provider_models("Google", "https://x/v1", "k")
+    assert {"gemini-3.1-pro-preview", "gemini-2.5-flash", "gpt-4.1-nano"} <= set(out)
+    for bad in ("gemini-embedding-001", "text-embedding-3-small", "whisper-1", "dall-e-3"):
+        assert bad not in out
+    assert not any(any(h in m for h in ("tts", "image", "audio", "live")) for m in out)
+
+
 def test_list_models_no_key_is_friendly_error():
     out = srv.list_models({"provider": "OpenAI",
                            "base_url": "https://api.openai.com/v1", "api_key": ""})
