@@ -207,9 +207,11 @@ def _routing_scores() -> dict:
     container log. Returns {} on any failure (the UI falls back to the matched
     signal names from the response headers)."""
     try:
+        # Tail generously: the router emits a lot between requests (perf,
+        # traces), so the replay line can be well past the last few dozen lines.
         out = subprocess.run(
-            ["docker", "logs", "--tail", "60", ROUTER_LOG_CONTAINER],
-            capture_output=True, text=True, timeout=5).stdout or ""
+            ["docker", "logs", "--tail", "400", ROUTER_LOG_CONTAINER],
+            capture_output=True, text=True, timeout=6).stdout or ""
         for line in reversed(out.splitlines()):
             if '"router_replay_start"' not in line or "{" not in line:
                 continue
