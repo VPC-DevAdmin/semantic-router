@@ -364,6 +364,13 @@ def _emit_backend_ref_openai(cfg: dict) -> dict:
         "provider": "openai",
         "auth_header": "Authorization",
         "auth_prefix": "Bearer",
+        # Pin the chat path explicitly (appended to base_url) instead of relying
+        # on vllm-sr's /v1→base-path regex rewrite, which doesn't fire at runtime
+        # for non-/v1 bases like Google's /v1beta/openai (Google then 404s the
+        # request). With base_url ending in /v1beta/openai this yields the
+        # correct /v1beta/openai/chat/completions; for api.openai.com/v1 it's the
+        # usual /v1/chat/completions.
+        "chat_path": "/chat/completions",
         "weight": 100,
     }
     _apply_api_key(ref, cfg)
