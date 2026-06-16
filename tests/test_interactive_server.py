@@ -80,7 +80,8 @@ class _Resp:
 
 
 def test_vllm_chat_parses_decision(monkeypatch):
-    body = {"model": "tier3", "choices": [{"message": {"content": "the answer"}}]}
+    body = {"model": "tier3", "choices": [{"message": {"content": "the answer"}}],
+            "usage": {"prompt_tokens": 12, "completion_tokens": 30, "total_tokens": 42}}
     headers = {"x-vsr-selected-model": "tier3", "x-vsr-selected-category": "math",
                "x-vsr-selected-reasoning": "on"}
 
@@ -101,6 +102,7 @@ def test_vllm_chat_parses_decision(monkeypatch):
     assert r["served_model"] == "gpt-5.4-mini"
     assert r["category"] == "math" and r["reasoning"] == "on"
     assert r["forced"] is False
+    assert out["usage"]["total_tokens"] == 42    # drives the Opus-4.8 cost compare
 
 
 def test_vllm_chat_unreachable_returns_error(monkeypatch):

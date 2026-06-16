@@ -166,6 +166,16 @@ body {
 .answer pre.code { background:#0d1626; color:#e7ecf5; border-radius:10px; padding:13px 15px;
   overflow-x:auto; margin:0 0 12px; font-size:12.8px; line-height:1.55; }
 .answer pre.code code { font-family:"SF Mono", ui-monospace, Menlo, monospace; }
+/* frontier-cost yardstick under the answer */
+.costline { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:0 18px 14px;
+  padding:8px 12px; background:var(--accent-weak); border:1px solid #dbe3ff; border-radius:9px;
+  font-size:12px; color:var(--muted); }
+.costline .ct-tok { font-weight:700; color:var(--ink); }
+.costline .ct-sep { color:var(--faint); }
+.costline .ct-opus b { color:var(--accent); }
+/* KaTeX: keep display math from overflowing the card; tune inline size */
+.answer .katex { font-size:1.04em; }
+.answer .katex-display { margin:10px 0; overflow-x:auto; overflow-y:hidden; padding:2px 0; }
 .thinking { display:flex; align-items:center; gap:9px; padding:16px 18px; color:var(--muted); font-size:13.5px; }
 .spinner { width:15px; height:15px; border:2px solid var(--border); border-top-color:var(--accent);
   border-radius:50%; animation:spin .7s linear infinite; }

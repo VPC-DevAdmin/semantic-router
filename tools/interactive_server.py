@@ -457,7 +457,8 @@ def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
     content = data["choices"][0]["message"]["content"]
     if isinstance(content, list):
         content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-    return {"routing": routing, "answer": content}
+    # usage drives the live "what would this cost on the frontier?" comparison.
+    return {"routing": routing, "answer": content, "usage": data.get("usage") or {}}
 
 
 # ── Apply overlay → vllm-sr config + reload ───────────────────────────────────

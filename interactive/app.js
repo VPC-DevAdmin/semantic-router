@@ -6,6 +6,7 @@
 const TIER_COLORS = ['#1FB67A', '#11A8C4', '#F2A93B', '#E8743B', '#E64B5C', '#8B5CF6', '#0EA5E9'];
 const tierColor = i => TIER_COLORS[i % TIER_COLORS.length];
 const AXIS_MAX = 0.7;   // top of the difficulty scale (shared by chat meter + cutoff editor)
+const OPUS_RATE_PER_M = 25;   // Opus 4.8 output ~$25 / 1M tokens — the frontier cost yardstick
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
@@ -99,12 +100,21 @@ function welcomeNode() {
   });
   return node;
 }
+// Curated landing-page prompts that override the auto-pick for a category.
+// Keyed by a lowercase substring of the category name. The 'general' override
+// is a meatier-but-still-trivial question than the stock "plural of analysis"
+// — recall + a one-line contrast, which the router should still keep in Tier 1.
+const SUGGESTION_OVERRIDES = [
+  { match: 'general', q: "What's the difference between weather and climate?" },
+];
 function pickSuggestions() {
   const out = [];
   const cats = Object.keys(QUERIES);
   for (const cat of cats) {
     const list = QUERIES[cat] || [];
-    if (list.length) out.push({ cat, q: list[Math.floor(list.length / 2)] });
+    if (!list.length) continue;
+    const ov = SUGGESTION_OVERRIDES.find(o => cat.toLowerCase().includes(o.match));
+    out.push({ cat, q: ov ? ov.q : list[Math.floor(list.length / 2)] });
     if (out.length >= 4) break;
   }
   return out;
@@ -124,9 +134,11 @@ function messageNode(m, chat, idx) {
   } else if (m.error) {
     card.innerHTML = (m.routing ? rationaleHTML(m.routing) : '') + `<div class="answer err">${esc(m.error)}</div>`;
   } else {
-    card.innerHTML = (m.routing ? rationaleHTML(m.routing) : '') + answerHTML(m) + deeperHTML(m);
+    card.innerHTML = (m.routing ? rationaleHTML(m.routing) : '')
+      + answerHTML(m) + costHTML(m) + deeperHTML(m);
     const btn = card.querySelector('.deeper-btn');
     if (btn) btn.onclick = () => { btn.disabled = true; ask(m.query, maxTierId()); };
+    renderMath(card.querySelector('.answer'));
   }
   el.appendChild(card);
   return el;
@@ -142,6 +154,21 @@ function answerHTML(m) {
   const label = `answered by ${esc(r.selected_tier_name || '')} · ${esc(r.served_model || '')}`;
   return `<div class="answer"><span class="model-line">${label}</span>${mdToHtml(m.text)}</div>`;
 }
+// Frontier-cost yardstick: what THIS answer's token count would cost on Opus 4.8.
+function costHTML(m) {
+  const u = m.usage || {};
+  const total = u.total_tokens || ((u.prompt_tokens || 0) + (u.completion_tokens || 0));
+  if (!total) return '';
+  const opus = total / 1e6 * OPUS_RATE_PER_M;
+  const here = CONFIG.tiers.find(t => t.id === (m.routing || {}).selected_tier_id);
+  const onTier = here ? ` on ${esc(here.name)}` : '';
+  return `<div class="costline" title="Same token count priced at Opus 4.8's ~$${OPUS_RATE_PER_M}/M output rate">
+    <span class="ct-tok">${total.toLocaleString()} tokens${onTier}</span>
+    <span class="ct-sep">·</span>
+    <span class="ct-opus">same tokens on <b>Opus 4.8</b> (~$${OPUS_RATE_PER_M}/M) ≈ <b>$${opus.toFixed(4)}</b></span>
+  </div>`;
+}
+
 function deeperHTML(m) {
   const r = m.routing || {};
   const mx = maxTierId();
@@ -158,7 +185,7 @@ function rationaleHTML(r) {
   const head = `<div class="rat-head">
     <span class="rat-badge" style="--c:${color}">routed → ${esc(r.selected_tier_name || '?')}</span>
     <span class="rat-model">${esc(r.served_model || '')}</span>
-    ${conf != null ? `<span class="rat-conf">${conf}% confidence</span>` : ''}
+    ${conf != null ? `<span class="rat-conf" title="The router's confidence in THIS tier choice (from vLLM Semantic Router) — how decisively the difficulty score landed in this tier's band, not a measure of answer quality.">${conf}% confidence</span>` : ''}
     ${r.forced ? '<span class="rat-forced">forced</span>' : ''}
   </div>`;
   return `<div class="rationale">${head}${difficultyMeter(r)}${signalBars(r)}</div>`;
@@ -235,7 +262,12 @@ function signalBars(r) {
   return `<div class="rat-signals"><span class="rat-signals-label">Signals — score vs. threshold</span>${bars}${foot}</div>`;
 }
 
-// minimal markdown: fenced code blocks, inline code, bold, paragraphs
+// minimal markdown: fenced code blocks, inline code, bold, paragraphs.
+// Math spans ($$…$$, $…$, \[…\], \(…\)) are pulled out BEFORE markdown so the
+// `**`/`<br>` passes can't mangle them, then restored verbatim for KaTeX to
+// render (auto-render runs after insert; see renderMath). Math inside code
+// fences is left alone — extraction happens only in the prose segments.
+const MATH_RE = /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$[^$\n]+?\$/g;
 function mdToHtml(src) {
   const parts = String(src == null ? '' : src).split('```');
   let html = '';
@@ -243,15 +275,38 @@ function mdToHtml(src) {
     if (i % 2 === 1) {
       const body = part.replace(/^[a-zA-Z0-9_+-]*\n/, '').replace(/\n$/, '');
       html += `<pre class="code"><code>${esc(body)}</code></pre>`;
-    } else {
-      html += esc(part).split(/\n{2,}/).map(b => b.trim()).filter(Boolean).map(b =>
-        '<p>' + b.replace(/`([^`]+)`/g, '<code class="ic">$1</code>')
-          .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-          .replace(/\n/g, '<br>') + '</p>').join('');
+      return;
     }
+    const math = [];
+    const held = part.replace(MATH_RE, m => ` M${math.push(m) - 1} `);
+    let block = esc(held).split(/\n{2,}/).map(b => b.trim()).filter(Boolean).map(b =>
+      '<p>' + b.replace(/`([^`]+)`/g, '<code class="ic">$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\n/g, '<br>') + '</p>').join('');
+    // Restore math source (esc'd — entities decode back to literal chars in the
+    // DOM text node, which is exactly what KaTeX reads).
+    block = block.replace(/ M(\d+) /g, (_, k) => esc(math[+k]));
+    html += block;
   });
   return html || '<p></p>';
 }
+
+// KaTeX auto-render over a freshly-inserted node (no-op until the CDN lib loads).
+function renderMath(root) {
+  if (root && window.renderMathInElement) {
+    window.renderMathInElement(root, {
+      delimiters: [
+        { left: '$$', right: '$$', display: true },
+        { left: '\\[', right: '\\]', display: true },
+        { left: '\\(', right: '\\)', display: false },
+        { left: '$', right: '$', display: false },
+      ],
+      throwOnError: false,
+    });
+  }
+}
+// If KaTeX finishes loading after the first paint, re-render once.
+window.__katexReady = () => renderMessages();
 
 // ── Ask flow ───────────────────────────────────────────────────────────────────
 async function ask(query, mode) {
@@ -267,7 +322,8 @@ async function ask(query, mode) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query, mode }),
     }).then(r => r.json());
-    am.pending = false; am.routing = res.routing || null; am.text = res.answer || ''; am.error = res.error || null;
+    am.pending = false; am.routing = res.routing || null; am.text = res.answer || '';
+    am.error = res.error || null; am.usage = res.usage || null;
   } catch (e) { am.pending = false; am.error = 'Request failed: ' + e.message; }
   saveChats(); renderMessages();
 }
