@@ -214,6 +214,36 @@ def test_diag_upstreams_builds_chat_url(monkeypatch, tmp_path):
         "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")
 
 
+def test_token_param_for_recognizes_model_family():
+    assert srv._token_param_for("gpt-5.4-mini") == "max_completion_tokens"
+    assert srv._token_param_for("o3-mini") == "max_completion_tokens"
+    assert srv._token_param_for("gpt-4.1-nano") == "max_tokens"     # same base, plain max_tokens
+    assert srv._token_param_for("claude-opus-4-7") == "max_tokens"
+    assert srv._token_param_for("gemini-3.1-pro-preview") == "max_tokens"
+
+
+def test_vllm_chat_pinned_gpt5_uses_max_completion_tokens_first(monkeypatch):
+    # Pinned tier → we know the model → no wasted round-trip.
+    ok = {"choices": [{"message": {"content": "hi"}}]}
+    calls = []
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, url, json):
+            calls.append(json)
+            return _Resp({"x-vsr-selected-model": "gpt-5.4-mini"}, ok)
+
+    monkeypatch.setattr(srv.httpx, "Client", _Client)
+    ov = {"vllm_sr_url": "http://localhost:8899",
+          "tiers": [{"id": "tier3", "name": "Tier 3", "model": "gpt-5.4-mini"}]}
+    out = srv.vllm_chat(ov, "q", "tier3")
+    assert out.get("answer") == "hi"
+    assert len(calls) == 1                                  # no retry
+    assert "max_completion_tokens" in calls[0] and "max_tokens" not in calls[0]
+
+
 def test_vllm_chat_retries_with_max_completion_tokens(monkeypatch):
     # Newer OpenAI models (gpt-5.x/o-series) reject max_tokens and demand
     # max_completion_tokens. Since mode='auto' hides the upstream, vllm_chat

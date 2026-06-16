@@ -388,6 +388,22 @@ def _routing_from_headers(h: dict, overlay: dict, mode: str) -> dict:
     }
 
 
+# Models that reject `max_tokens` and require `max_completion_tokens` (OpenAI
+# gpt-5.x family + o-series reasoning models). Keyed on the model id, NOT the
+# base_url: gpt-4.1-nano shares api.openai.com but takes plain max_tokens.
+# Models discovered the hard way (via a 400 on the auto path) are remembered
+# here so a later PINNED call to the same model uses the right param first try.
+_MCT_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+_mct_learned: set[str] = set()
+
+
+def _token_param_for(model: str) -> str:
+    m = (model or "").lower()
+    if m in _mct_learned or any(m.startswith(p) for p in _MCT_PREFIXES):
+        return "max_completion_tokens"
+    return "max_tokens"
+
+
 def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
     """Forward one query to the live vllm-sr. mode='auto' routes; otherwise mode
     is a tier id to pin. Returns {routing, answer} or {routing, error}."""
@@ -399,22 +415,29 @@ def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
     else:
         pinned = next((t for t in overlay.get("tiers", []) if t.get("id") == mode), None)
         model = (pinned.get("model") if pinned else None) or mode
-    # Token-budget param is provider-split and we don't know the upstream up
-    # front (mode='auto' lets the router pick): Anthropic *requires* `max_tokens`
-    # (and vllm-sr's OAI→Anthropic adapter keys off it), but newer OpenAI models
-    # (gpt-5.x / o-series) REJECT `max_tokens` and require `max_completion_tokens`.
-    # So send `max_tokens` first and, on the specific 400 that asks for the other
-    # one, retry once with `max_completion_tokens`. Omit temperature — some models
+    # Token-budget param is provider-split: Anthropic *requires* `max_tokens`
+    # (vllm-sr's OAI→Anthropic adapter keys off it), but newer OpenAI models
+    # (gpt-5.x / o-series) REJECT it and require `max_completion_tokens`. When a
+    # tier is pinned we know the model, so pick the right param up front via
+    # _token_param_for(); on the auto path the router picks the model so we
+    # default to max_tokens (Anthropic-safe). Either way, if the upstream 400s
+    # asking for the OTHER param, retry once with it — and learn the model so a
+    # future pinned call skips the round-trip. Omit temperature — some models
     # (e.g. gpt-5 reasoning) reject temperature=0.
     msgs = [{"role": "user", "content": query}]
+    first = _token_param_for(model) if mode != "auto" else "max_tokens"
+    alt = "max_tokens" if first == "max_completion_tokens" else "max_completion_tokens"
     try:
         with httpx.Client(timeout=180.0) as c:
             r = c.post(f"{base}/v1/chat/completions",
-                       json={"model": model, "messages": msgs, "max_tokens": 1024})
-            if r.status_code == 400 and "max_completion_tokens" in _upstream_error_text(r):
+                       json={"model": model, "messages": msgs, first: 1024})
+            if r.status_code == 400 and alt in _upstream_error_text(r):
                 r = c.post(f"{base}/v1/chat/completions",
-                           json={"model": model, "messages": msgs,
-                                 "max_completion_tokens": 1024})
+                           json={"model": model, "messages": msgs, alt: 1024})
+                if r.status_code < 400 and alt == "max_completion_tokens":
+                    picked = r.headers.get("x-vsr-selected-model") or model
+                    if picked and picked != "auto":
+                        _mct_learned.add(picked.lower())
     except httpx.HTTPError as exc:
         # Couldn't reach the router at all (connection refused, DNS, timeout).
         return {"error": f"vllm-sr not reachable at {base} ({exc}). Start it with "
