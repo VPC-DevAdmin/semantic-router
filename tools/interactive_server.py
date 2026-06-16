@@ -166,6 +166,61 @@ def list_models(payload: dict) -> dict:
         return {"error": str(exc)}
 
 
+def _to_float(v):
+    try:
+        return round(float(v), 4)
+    except (TypeError, ValueError):
+        return None
+
+
+# x-vsr-matched-* headers name the signals that fired for this query.
+_MATCH_HEADERS = {
+    "x-vsr-matched-embeddings": "embedding",
+    "x-vsr-matched-complexity": "complexity",
+    "x-vsr-matched-structure": "structure",
+    "x-vsr-matched-projections": "projection",
+}
+
+
+def _matched_signals(h: dict) -> list:
+    out = []
+    for hdr, kind in _MATCH_HEADERS.items():
+        for name in (h.get(hdr) or "").split(","):
+            name = name.strip()
+            if name:
+                out.append({"type": kind, "name": name})
+    return out
+
+
+ROUTER_LOG_CONTAINER = "vllm-sr-router-container"
+
+
+def _routing_scores() -> dict:
+    """Best-effort: the per-signal confidences + request difficulty the router
+    actually computed, pulled from the latest router_replay_start in the router
+    container log. Returns {} on any failure (the UI falls back to the matched
+    signal names from the response headers)."""
+    try:
+        out = subprocess.run(
+            ["docker", "logs", "--tail", "60", ROUTER_LOG_CONTAINER],
+            capture_output=True, text=True, timeout=5).stdout or ""
+        for line in reversed(out.splitlines()):
+            if '"router_replay_start"' not in line or "{" not in line:
+                continue
+            j = json.loads(line[line.index("{"):])
+            return {
+                "request_difficulty": _to_float(
+                    (j.get("projection_scores") or {}).get("request_difficulty")),
+                "signal_confidences": {
+                    k: _to_float(v)
+                    for k, v in (j.get("signal_confidences") or {}).items()
+                },
+            }
+    except (subprocess.SubprocessError, OSError, ValueError, KeyError):
+        pass
+    return {}
+
+
 def _tier_for(overlay: dict, selected: str | None):
     """Map x-vsr-selected-model back to a tier. The live config names model cards
     by the REAL model id (vllm-sr forwards the name upstream), so the header is
@@ -216,13 +271,17 @@ def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
         content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
     return {
         "routing": {
-            "selected_tier_id": selected,
+            "selected_tier_id": tier["id"] if tier else selected,
             "selected_tier_name": tier["name"] if tier else selected,
             "served_model": tier["model"] if tier else selected,
             "category": h.get("x-vsr-selected-category"),
             "reasoning": h.get("x-vsr-selected-reasoning"),
+            "confidence": _to_float(h.get("x-vsr-selected-confidence")),
+            "decision": h.get("x-vsr-selected-decision"),
+            "matched": _matched_signals(h),
             "forced": mode != "auto",
             "cache_hit": "x-vsr-selected-model" not in h,
+            **_routing_scores(),
         },
         "answer": content,
     }

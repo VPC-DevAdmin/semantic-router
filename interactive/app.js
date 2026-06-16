@@ -12,18 +12,250 @@ let CONFIG = null;       // overlay from the server (keys masked; key_set flags)
 let QUERIES = {};        // {category: [prompt,...]}
 let routeMode = 'auto';
 
-const tierIndex = id => CONFIG.tiers.findIndex(t => t.id === id);
+// chat sessions (persisted in localStorage)
+let chats = [];          // [{id, title, msgs:[{role, text, query?, routing?, error?, pending?}], ts}]
+let currentId = null;
+
+const tierIndexById = id => CONFIG.tiers.findIndex(t => t.id === id);
 const maxTierId = () => CONFIG.tiers.length ? CONFIG.tiers[CONFIG.tiers.length - 1].id : null;
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 async function boot() {
   CONFIG = await (await fetch('/api/config')).json();
   QUERIES = (await (await fetch('/api/queries')).json()).categories || {};
-  $('routerTag').textContent = 'routes via vllm-sr at ' + (CONFIG.vllm_sr_url || '?');
-  renderPills(); renderKeyBanner(); renderExamples();
+  $('routerTag').textContent = CONFIG.vllm_sr_url || 'vllm-sr';
+  $('routeSummary').textContent = 'Routes every prompt to the right-sized model';
+  loadChats();
+  if (!chats.length) newChat(); else { currentId = chats[0].id; }
+  renderPills(); renderKeyBanner(); renderExamples(); renderChatList(); renderMessages();
 }
 
-// ── Composer ────────────────────────────────────────────────────────────────
+// ── Chat sessions ──────────────────────────────────────────────────────────────
+function loadChats() {
+  try { chats = JSON.parse(localStorage.getItem('sr_chats') || '[]'); } catch { chats = []; }
+  if (!Array.isArray(chats)) chats = [];
+}
+function saveChats() {
+  try { localStorage.setItem('sr_chats', JSON.stringify(chats.slice(0, 60))); } catch { /* quota */ }
+}
+const curChat = () => chats.find(c => c.id === currentId);
+
+function newChat() {
+  const c = { id: 'c' + Date.now().toString(36), title: 'New chat', msgs: [], ts: Date.now() };
+  chats.unshift(c); currentId = c.id;
+  saveChats(); renderChatList(); renderMessages();
+  $('input')?.focus();
+}
+function selectChat(id) { currentId = id; renderChatList(); renderMessages(); closeSidebar(); }
+function deleteChat(id) {
+  chats = chats.filter(c => c.id !== id);
+  if (currentId === id) currentId = chats[0]?.id || null;
+  if (!chats.length) { newChat(); return; }
+  saveChats(); renderChatList(); renderMessages();
+}
+
+function renderChatList() {
+  const host = $('chatList'); host.innerHTML = '';
+  if (!chats.length) { host.innerHTML = '<div class="chat-empty">No conversations yet</div>'; return; }
+  chats.forEach(c => {
+    const el = document.createElement('div');
+    el.className = 'chat-item' + (c.id === currentId ? ' active' : '');
+    el.innerHTML = `<span class="ci-dot"></span><span class="ci-title">${esc(c.title || 'New chat')}</span>
+      <button class="ci-del" title="Delete">✕</button>`;
+    el.onclick = () => selectChat(c.id);
+    el.querySelector('.ci-del').onclick = e => { e.stopPropagation(); deleteChat(c.id); };
+    host.appendChild(el);
+  });
+}
+
+// ── Message rendering ───────────────────────────────────────────────────────────
+function renderMessages() {
+  const host = $('messages');
+  const c = curChat();
+  $('chatTitle').textContent = c ? (c.title || 'New chat') : 'New chat';
+  host.innerHTML = '';
+  if (!c || !c.msgs.length) { host.appendChild(welcomeNode()); return; }
+  const thread = document.createElement('div'); thread.className = 'thread';
+  c.msgs.forEach((m, i) => thread.appendChild(messageNode(m, c, i)));
+  host.appendChild(thread);
+  scrollBottom();
+}
+function scrollBottom() { const h = $('messages'); h.scrollTop = h.scrollHeight; }
+
+function welcomeNode() {
+  const node = $('welcomeTpl').content.cloneNode(true);
+  const sg = node.querySelector('#suggestions');
+  pickSuggestions().forEach(s => {
+    const card = document.createElement('div');
+    card.className = 'sugg-card';
+    card.innerHTML = `<div class="sugg-cat">${esc(s.cat)}</div><div class="sugg-text">${esc(s.q)}</div>`;
+    card.onclick = () => { $('input').value = s.q; autoGrow(); send(); };
+    sg.appendChild(card);
+  });
+  return node;
+}
+function pickSuggestions() {
+  const out = [];
+  const cats = Object.keys(QUERIES);
+  for (const cat of cats) {
+    const list = QUERIES[cat] || [];
+    if (list.length) out.push({ cat, q: list[Math.floor(list.length / 2)] });
+    if (out.length >= 4) break;
+  }
+  return out;
+}
+
+function messageNode(m, chat, idx) {
+  const el = document.createElement('div');
+  el.className = 'msg ' + m.role;
+  if (m.role === 'user') {
+    el.innerHTML = `<div class="bubble">${esc(m.text)}</div>`;
+    return el;
+  }
+  // assistant
+  const card = document.createElement('div'); card.className = 'card';
+  if (m.pending) {
+    card.innerHTML = `<div class="thinking"><span class="spinner"></span> Routing via vLLM Semantic Router…</div>`;
+  } else if (m.error) {
+    card.innerHTML = (m.routing ? rationaleHTML(m.routing) : '') + `<div class="answer err">${esc(m.error)}</div>`;
+  } else {
+    card.innerHTML = (m.routing ? rationaleHTML(m.routing) : '') + answerHTML(m) + deeperHTML(m);
+    const btn = card.querySelector('.deeper-btn');
+    if (btn) btn.onclick = () => { btn.disabled = true; ask(m.query, maxTierId()); };
+  }
+  el.appendChild(card);
+  return el;
+}
+
+function answerHTML(m) {
+  const r = m.routing || {};
+  const tier = CONFIG.tiers.find(t => t.id === r.selected_tier_id);
+  if (tier && !tier.key_set) {
+    return `<div class="answer err">Routed to <strong>${esc(r.selected_tier_name)}</strong>
+      (${esc(r.served_model)}), but this tier has no API key — add one in Settings. The routing above is real.</div>`;
+  }
+  const label = `answered by ${esc(r.selected_tier_name || '')} · ${esc(r.served_model || '')}`;
+  return `<div class="answer"><span class="model-line">${label}</span>${mdToHtml(m.text)}</div>`;
+}
+function deeperHTML(m) {
+  const r = m.routing || {};
+  const mx = maxTierId();
+  if (m.error || !mx || r.selected_tier_id === mx || !m.query) return '';
+  const name = CONFIG.tiers.find(t => t.id === mx)?.name || 'top tier';
+  return `<div class="deeper"><button class="deeper-btn">↑ Get a deeper answer (${esc(name)})</button></div>`;
+}
+
+// routing rationale: selected tier + confidence + difficulty meter + signal scores
+function rationaleHTML(r) {
+  const selIdx = tierIndexById(r.selected_tier_id);
+  const color = selIdx >= 0 ? tierColor(selIdx) : 'var(--accent)';
+  const conf = r.confidence != null ? Math.round(r.confidence * 100) : null;
+  const head = `<div class="rat-head">
+    <span class="rat-badge" style="--c:${color}">routed → ${esc(r.selected_tier_name || '?')}</span>
+    <span class="rat-model">${esc(r.served_model || '')}</span>
+    ${conf != null ? `<span class="rat-conf">${conf}% confidence</span>` : ''}
+    ${r.forced ? '<span class="rat-forced">forced</span>' : ''}
+  </div>`;
+  return `<div class="rationale">${head}${difficultyMeter(r)}${signalChips(r)}</div>`;
+}
+
+function difficultyMeter(r) {
+  const tiers = CONFIG.tiers, cuts = (CONFIG.tier_cutoffs || []).slice();
+  if (tiers.length < 2 || cuts.length !== tiers.length - 1) return '';
+  const lo = 0, hi = Math.max((cuts[cuts.length - 1] || 0.4) * 1.4, 0.12);
+  const edges = [lo, ...cuts, hi];
+  const selIdx = tierIndexById(r.selected_tier_id);
+  let segs = '';
+  for (let i = 0; i < tiers.length; i++) {
+    const w = ((edges[i + 1] - edges[i]) / (hi - lo)) * 100;
+    segs += `<div class="seg-band${i === selIdx ? ' on' : ''}" style="width:${w}%;--c:${tierColor(i)}">
+      <span class="seg-name">${esc(tiers[i].name)}</span></div>`;
+  }
+  const d = r.request_difficulty;
+  let marker = '';
+  if (d != null) {
+    const pct = Math.max(0, Math.min(100, ((d - lo) / (hi - lo)) * 100));
+    marker = `<div class="meter-marker" style="left:${pct}%">
+      <span class="marker-val">difficulty ${Number(d).toFixed(3)}</span></div>`;
+  }
+  return `<div class="meter"><div class="meter-bands">${segs}</div>${marker}</div>`;
+}
+
+const SIGNAL_LABELS = {
+  trivial_lookup: 'Trivial lookup', moderate_complexity: 'Moderate reasoning',
+  frontier_synthesis: 'Frontier synthesis', argumentative_construction: 'Argument construction',
+  short_prompt: 'Short prompt', long_prompt: 'Long prompt', medium_prompt: 'Medium prompt',
+  'query_difficulty:hard': 'High difficulty', 'query_difficulty:medium': 'Medium difficulty',
+  'query_difficulty:easy': 'Low difficulty',
+};
+function niceSignal(key) {
+  const parts = String(key).split(':');
+  if (parts[0] === 'projection') return null;     // shown in the meter
+  const rest = parts.slice(1).join(':');
+  return SIGNAL_LABELS[rest] || rest.replace(/_/g, ' ');
+}
+function signalChips(r) {
+  let rows = [];
+  const sc = r.signal_confidences || {};
+  for (const [k, v] of Object.entries(sc)) {
+    const label = niceSignal(k);
+    if (label) rows.push({ label, score: typeof v === 'number' ? v : null });
+  }
+  if (!rows.length && Array.isArray(r.matched)) {
+    rows = r.matched.filter(m => m.type !== 'projection')
+      .map(m => ({ label: SIGNAL_LABELS[m.name] || m.name.replace(/_/g, ' '), score: null }));
+  }
+  if (!rows.length) return '';
+  rows.sort((a, b) => (b.score || 0) - (a.score || 0));
+  const chips = rows.slice(0, 6).map(s =>
+    `<span class="sig-chip">${esc(s.label)}${s.score != null ? `<b>${s.score.toFixed(2)}</b>` : ''}</span>`).join('');
+  return `<div class="rat-signals"><span class="rat-signals-label">Why</span>${chips}</div>`;
+}
+
+// minimal markdown: fenced code blocks, inline code, bold, paragraphs
+function mdToHtml(src) {
+  const parts = String(src == null ? '' : src).split('```');
+  let html = '';
+  parts.forEach((part, i) => {
+    if (i % 2 === 1) {
+      const body = part.replace(/^[a-zA-Z0-9_+-]*\n/, '').replace(/\n$/, '');
+      html += `<pre class="code"><code>${esc(body)}</code></pre>`;
+    } else {
+      html += esc(part).split(/\n{2,}/).map(b => b.trim()).filter(Boolean).map(b =>
+        '<p>' + b.replace(/`([^`]+)`/g, '<code class="ic">$1</code>')
+          .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+          .replace(/\n/g, '<br>') + '</p>').join('');
+    }
+  });
+  return html || '<p></p>';
+}
+
+// ── Ask flow ───────────────────────────────────────────────────────────────────
+async function ask(query, mode) {
+  let c = curChat();
+  if (!c) { newChat(); c = curChat(); }
+  c.msgs.push({ role: 'user', text: query });
+  if (!c.title || c.title === 'New chat') c.title = query.slice(0, 52);
+  const am = { role: 'assistant', query, pending: true };
+  c.msgs.push(am);
+  saveChats(); renderChatList(); renderMessages();
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, mode }),
+    }).then(r => r.json());
+    am.pending = false; am.routing = res.routing || null; am.text = res.answer || ''; am.error = res.error || null;
+  } catch (e) { am.pending = false; am.error = 'Request failed: ' + e.message; }
+  saveChats(); renderMessages();
+}
+function send() {
+  const q = $('input').value.trim();
+  if (!q) return;
+  $('input').value = ''; autoGrow();
+  ask(q, routeMode);
+}
+
+// ── Composer controls ───────────────────────────────────────────────────────────
 function renderPills() {
   const wrap = $('routePills');
   wrap.querySelectorAll('.pill').forEach(p => p.remove());
@@ -62,97 +294,29 @@ function renderChips() {
   (QUERIES[cat] || []).slice(0, 20).forEach(q => {
     const b = document.createElement('button');
     b.className = 'ex-chip'; b.title = q; b.textContent = q;
-    b.onclick = () => { $('input').value = q; autoGrow(); $('input').focus(); };
+    b.onclick = () => { $('input').value = q; autoGrow(); $('input').focus(); toggleExamples(false); };
     chips.appendChild(b);
   });
 }
-
-// ── Chat ───────────────────────────────────────────────────────────────────────
-function appendUser(text) {
-  $('emptyState')?.remove();
-  const el = document.createElement('div');
-  el.className = 'msg-user'; el.textContent = text;
-  $('chat').appendChild(el); el.scrollIntoView({ block: 'end' });
-}
-function appendAssistant() {
-  const el = document.createElement('div');
-  el.className = 'msg-assistant';
-  el.innerHTML = `<div class="answer"><span class="model-line">routing via vllm-sr…</span></div>`;
-  $('chat').appendChild(el); el.scrollIntoView({ block: 'end' });
-  return el;
+function toggleExamples(force) {
+  const pop = $('examplesPop'), btn = $('exToggle');
+  const open = force != null ? force : pop.hidden;
+  pop.hidden = !open; btn.classList.toggle('on', open);
 }
 
-function routingHTML(r) {
-  const i = tierIndex(r.selected_tier_id);
-  const color = i >= 0 ? tierColor(i) : 'var(--blue)';
-  const ladder = CONFIG.tiers.map((t, j) => {
-    const on = t.id === r.selected_tier_id;
-    return `<span class="tier-chip${on ? ' on' : ''}" ${on ? `style="background:${tierColor(j)};border-color:${tierColor(j)}"` : ''}>
-      <span class="tdot" style="background:${tierColor(j)}"></span>${esc(t.name)}</span>`;
-  }).join('');
-  const meta = [];
-  if (r.category) meta.push(`category <b>${esc(r.category)}</b>`);
-  if (r.reasoning) meta.push(`reasoning <b>${esc(r.reasoning)}</b>`);
-  if (r.cache_hit) meta.push('cache hit');
-  const forced = r.forced
-    ? `<div class="forced-note">You forced this tier; auto would let vllm-sr classify.</div>` : '';
-  return `<div class="routing">
-    <div class="routed-banner">
-      <span class="routed-pill" style="background:${color}">routed → ${esc(r.selected_tier_name || r.selected_tier_id || '?')}</span>
-      <span class="routed-model">${esc(r.served_model || '')}</span>
-      <span class="routed-meta">${meta.join(' · ')}</span>
-    </div>
-    <div class="tier-ladder">${ladder}</div>${forced}
-  </div>`;
-}
-
-function answerHTML(res) {
-  if (res.error) return `<div class="answer err">${esc(res.error)}</div>`;
-  const r = res.routing || {};
-  const tier = CONFIG.tiers.find(t => t.id === r.selected_tier_id);
-  if (tier && !tier.key_set) {
-    return `<div class="answer err">Routed to <strong>${esc(r.selected_tier_name)}</strong>
-      (${esc(r.served_model)}), but it has no API key — add one in Settings. The routing above is real.</div>`;
+// ── Sidebar (mobile) ────────────────────────────────────────────────────────────
+function openSidebar() {
+  $('sidebar').classList.add('open');
+  let scrim = $('scrim');
+  if (!scrim) {
+    scrim = document.createElement('div'); scrim.id = 'scrim'; scrim.className = 'scrim';
+    scrim.onclick = closeSidebar; document.body.appendChild(scrim);
   }
-  return `<div class="answer"><span class="model-line">answered by ${esc(r.selected_tier_name || '')} · ${esc(r.served_model || '')}</span>${esc(res.answer || '')}</div>`;
+  scrim.hidden = false;
 }
-
-function deeperHTML(res) {
-  const r = res.routing || {};
-  const mx = maxTierId();
-  if (res.error || !mx || r.selected_tier_id === mx) return '';
-  const name = CONFIG.tiers.find(t => t.id === mx)?.name || 'top tier';
-  return `<div class="deeper"><button class="deeper-btn">↑ Get a deeper answer (${esc(name)})</button></div>`;
-}
-
-function renderInto(card, query, res) {
-  card.innerHTML = (res.routing ? routingHTML(res.routing) : '') + answerHTML(res) + deeperHTML(res);
-  const btn = card.querySelector('.deeper-btn');
-  if (btn) btn.onclick = () => { btn.disabled = true; ask(query, maxTierId()); };
-  card.scrollIntoView({ block: 'end' });
-}
-
-async function ask(query, mode) {
-  const card = appendAssistant();
-  try {
-    const res = await fetch('/api/chat', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, mode }),
-    }).then(r => r.json());
-    renderInto(card, query, res);
-  } catch (e) {
-    card.innerHTML = `<div class="answer err">Request failed: ${esc(e.message)}.</div>`;
-  }
-}
-function send() {
-  const q = $('input').value.trim();
-  if (!q) return;
-  $('input').value = ''; autoGrow();
-  appendUser(q); ask(q, routeMode);
-}
+function closeSidebar() { $('sidebar').classList.remove('open'); const s = $('scrim'); if (s) s.hidden = true; }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
-
 function renderTierEditors() {
   const host = $('tierEditors'); host.innerHTML = '';
   CONFIG.tiers.forEach((t, i) => {
@@ -170,7 +334,6 @@ function renderTierEditors() {
     setKs(t.key_set);
     node.querySelector('.te-key').oninput = e => setKs(!!e.target.value.trim() || t.key_set);
     node.querySelector('.te-del').onclick = () => root.remove();
-    // Link the model datalist to its input and wire the "load models" button.
     const dl = node.querySelector('.te-models');
     dl.id = 'te-models-' + t.id;
     node.querySelector('.te-model').setAttribute('list', dl.id);
@@ -180,9 +343,6 @@ function renderTierEditors() {
 }
 
 async function loadTierModels(root, tierId, btn) {
-  // Ask the server to fetch this provider's model list with the tier's key.
-  // The key field is blank unless just typed; the server falls back to the
-  // saved overlay key for this tier, so an already-saved tier works too.
   const provider = root.querySelector('.te-provider').value;
   const base_url = root.querySelector('.te-base').value.trim();
   const api_key = root.querySelector('.te-key').value.trim();
@@ -199,9 +359,7 @@ async function loadTierModels(root, tierId, btn) {
     const models = j.models || [];
     dl.innerHTML = models.map(m => `<option value="${esc(m)}"></option>`).join('');
     btn.textContent = models.length ? '✓' : '∅';
-    btn.title = models.length
-      ? `${models.length} models — click the model field to pick`
-      : 'provider returned no models';
+    btn.title = models.length ? `${models.length} models — click the model field to pick` : 'provider returned no models';
   } catch (e) {
     btn.textContent = '!'; btn.title = String(e);
   } finally {
@@ -220,18 +378,14 @@ function renderCutoffs() {
   });
 }
 
-// Plain-language labels for the built-in signals (fall back to the id + the
-// signal's own description for any custom ones).
 const SIGNAL_INFO = {
-  trivial_lookup:             { label: 'Looks trivial',         hint: 'Short factual or lookup-style prompts.' },
-  moderate_complexity:        { label: 'Moderate reasoning',    hint: 'Single- or multi-step reasoning and summarization.' },
-  frontier_synthesis:         { label: 'Frontier synthesis',    hint: 'Hard, novel, cross-source synthesis.' },
+  trivial_lookup: { label: 'Looks trivial', hint: 'Short factual or lookup-style prompts.' },
+  moderate_complexity: { label: 'Moderate reasoning', hint: 'Single- or multi-step reasoning and summarization.' },
+  frontier_synthesis: { label: 'Frontier synthesis', hint: 'Hard, novel, cross-source synthesis.' },
   argumentative_construction: { label: 'Argument construction', hint: 'Building structured arguments or proofs.' },
 };
 const sigInfo = s => SIGNAL_INFO[s.id] || { label: s.id, hint: s.description || '' };
-const sigDir = w => w < 0
-  ? { txt: '↓ toward cheaper tiers', cls: 'down' }
-  : { txt: '↑ toward stronger tiers', cls: 'up' };
+const sigDir = w => w < 0 ? { txt: '↓ toward cheaper tiers', cls: 'down' } : { txt: '↑ toward stronger tiers', cls: 'up' };
 
 function renderSignals() {
   const host = $('signalEditors'); host.innerHTML = '';
@@ -254,7 +408,7 @@ function renderSignals() {
     toggle.onclick = () => {
       const opening = body.hidden;
       body.hidden = !opening;
-      node.querySelector('.sig-chevron') && (toggle.querySelector('.sig-chevron').textContent = opening ? '▾' : '▸');
+      toggle.querySelector('.sig-chevron').textContent = opening ? '▾' : '▸';
     };
     ta.addEventListener('input', () => {
       count.textContent = `${ta.value.split('\n').filter(l => l.trim()).length} examples`;
@@ -274,7 +428,7 @@ function collectConfig() {
       provider: root.querySelector('.te-provider').value,
       model: root.querySelector('.te-model').value.trim(),
       base_url: root.querySelector('.te-base').value.trim(),
-      api_key: keyInput,                       // blank = unchanged (server preserves)
+      api_key: keyInput,
       key_set: !!keyInput || root.dataset.keyset === '1',
     });
   });
@@ -307,7 +461,6 @@ async function persist() {
   collectConfig();
   await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(CONFIG) });
-  // reload masked view (keys never round-trip through the browser)
   CONFIG = await (await fetch('/api/config')).json();
   renderPills(); renderKeyBanner();
 }
@@ -328,8 +481,6 @@ async function applyCfg() {
 }
 
 async function resetCfg() {
-  // discard the local overlay by re-fetching the committed default isn't exposed;
-  // simplest: clear keys client-side and reload from server default by deleting local.
   const st = $('saveStatus'); st.className = 'save-status busy'; st.textContent = 'Resetting…';
   await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...CONFIG, _reset: true }) });
@@ -344,9 +495,12 @@ function autoGrow() {
 
 (async function init() {
   await boot();
+  $('newChat').onclick = newChat;
   $('sendBtn').onclick = send;
   $('input').addEventListener('input', autoGrow);
   $('input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+  $('exToggle').onclick = () => toggleExamples();
+  $('hamburger').onclick = openSidebar;
   $('settingsBtn').onclick = openSettings;
   $('closeSettings').onclick = closeSettings;
   $('addTier').onclick = addTier;

@@ -7,47 +7,81 @@
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
+<div class="app">
 
-<header class="topbar">
-  <div class="brand">
-    <span class="brand-mark">◑</span>
-    <div>
-      <div class="brand-name">Semantic Router <span class="brand-sub">· Live</span></div>
-      <div class="brand-tag" id="routerTag">routes via vllm-sr</div>
+  <!-- ── Sidebar ──────────────────────────────────────────── -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+      <span class="brand-mark">◑</span>
+      <div class="brand-text">
+        <div class="brand-name">Semantic Router</div>
+        <div class="brand-badge">LIVE ROUTING</div>
+      </div>
     </div>
-  </div>
-  <button class="btn" id="settingsBtn">⚙ Settings</button>
-</header>
 
-<div class="keybanner" id="keyBanner" hidden></div>
+    <button class="new-chat" id="newChat"><span class="plus">＋</span> New chat</button>
 
-<main class="chat" id="chat">
-  <div class="empty" id="emptyState">
-    <h1>Ask anything.</h1>
-    <p>Every query is classified by a live vLLM Semantic Router and sent to the
-       model configured for the chosen tier. Pick an example below or type your own.
-       Models &amp; keys live in <strong>Settings</strong>.</p>
-  </div>
-</main>
+    <div class="chat-list" id="chatList"></div>
 
-<!-- Examples + composer -->
-<div class="composer">
-  <div class="examples" id="examples">
-    <span class="route-label">Examples</span>
-    <select id="catSelect" class="cat-select"></select>
-    <div class="ex-chips" id="exChips"></div>
-  </div>
-  <div class="route-pills" id="routePills">
-    <span class="route-label">Route via</span>
-    <button class="pill active" data-mode="auto">auto</button>
-  </div>
-  <div class="input-row">
-    <textarea id="input" rows="1" placeholder="Ask anything…"></textarea>
-    <button class="send" id="sendBtn" title="Send">→</button>
-  </div>
+    <div class="sidebar-foot">
+      <div class="router-status" id="routerStatus" title="Live vLLM Semantic Router endpoint">
+        <span class="status-dot"></span>
+        <span class="router-tag" id="routerTag">vllm-sr</span>
+      </div>
+      <button class="side-btn" id="settingsBtn">⚙ Settings</button>
+    </div>
+  </aside>
+
+  <!-- ── Main ─────────────────────────────────────────────── -->
+  <main class="main">
+    <header class="main-head">
+      <button class="hamburger" id="hamburger" aria-label="Toggle sidebar">☰</button>
+      <div class="head-titles">
+        <div class="main-title" id="chatTitle">New chat</div>
+        <div class="main-sub" id="routeSummary">Routes every prompt to the right-sized model</div>
+      </div>
+    </header>
+
+    <div class="keybanner" id="keyBanner" hidden></div>
+
+    <div class="messages" id="messages"></div>
+
+    <div class="composer">
+      <div class="composer-row controls">
+        <div class="seg" id="routePills"><span class="seg-label">Route</span></div>
+        <button class="ex-toggle" id="exToggle">⊞ Examples</button>
+      </div>
+      <div class="examples-pop" id="examplesPop" hidden>
+        <div class="ex-pop-head">
+          <span class="ex-pop-label">Benchmark prompts</span>
+          <select id="catSelect" class="cat-select"></select>
+        </div>
+        <div class="ex-chips" id="exChips"></div>
+      </div>
+      <div class="input-wrap">
+        <textarea id="input" rows="1" placeholder="Ask anything…"></textarea>
+        <button class="send" id="sendBtn" title="Send">➤</button>
+      </div>
+      <div class="composer-hint">
+        <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line
+      </div>
+    </div>
+  </main>
 </div>
 
-<!-- Settings modal -->
+<!-- Empty-state welcome -->
+<template id="welcomeTpl">
+  <div class="welcome">
+    <span class="welcome-mark">◑</span>
+    <h1>The right model for every prompt.</h1>
+    <p>Each message is classified by a live <strong>vLLM Semantic Router</strong> and dispatched
+       to the model tier that fits — a small, fast model for trivial questions, a frontier model
+       for hard synthesis. Every answer shows the routing decision and why.</p>
+    <div class="suggestions" id="suggestions"></div>
+  </div>
+</template>
+
+<!-- ── Settings modal ───────────────────────────────────────── -->
 <div class="modal-backdrop" id="settingsModal" hidden>
   <div class="modal">
     <div class="modal-head">
