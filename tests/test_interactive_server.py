@@ -70,9 +70,11 @@ def test_build_live_exemplars_applies_edits(tmp_path, monkeypatch):
 
 
 class _Resp:
-    def __init__(self, headers, body):
+    def __init__(self, headers, body, status_code=200, text=""):
         self.headers = headers
         self._body = body
+        self.status_code = status_code
+        self.text = text
     def raise_for_status(self): pass
     def json(self): return self._body
 
@@ -111,3 +113,25 @@ def test_vllm_chat_unreachable_returns_error(monkeypatch):
     monkeypatch.setattr(srv.httpx, "Client", _Boom)
     out = srv.vllm_chat({"vllm_sr_url": "http://localhost:8801", "tiers": []}, "q", "auto")
     assert "not reachable" in out["error"]
+
+
+def test_vllm_chat_upstream_error_surfaces_reason(monkeypatch):
+    # The router routed fine but the upstream model 404'd (e.g. a bad model id).
+    # The UI must show the upstream reason + the routed tier, NOT "not reachable".
+    err_body = {"error": {"message": "The model `gpt-5.4-nano` does not exist"}}
+    headers = {"x-vsr-selected-model": "tier2"}
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, url, json): return _Resp(headers, err_body, status_code=404)
+
+    monkeypatch.setattr(srv.httpx, "Client", _Client)
+    ov = {"vllm_sr_url": "http://localhost:8899",
+          "tiers": [{"id": "tier2", "name": "Tier 2", "model": "gpt-5.4-nano"}]}
+    out = srv.vllm_chat(ov, "q", "auto")
+    assert "not reachable" not in out["error"]
+    assert "404" in out["error"]
+    assert "does not exist" in out["error"]
+    assert "tier2" in out["error"]
