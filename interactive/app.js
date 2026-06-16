@@ -585,6 +585,74 @@ async function resetCfg() {
   st.className = 'save-status ok'; st.textContent = '✓ Reset';
 }
 
+// ── Diagnostics ──────────────────────────────────────────────
+let DIAG_TIMER = null;
+
+async function openDiag() {
+  $('diagModal').hidden = false; closeSidebar();
+  $('diagUpstreams').innerHTML = '<div class="diag-empty">loading…</div>';
+  $('diagContainers').innerHTML = '';
+  $('diagLog').innerHTML = '<div class="diag-empty">loading…</div>';
+  await refreshDiag(true);
+}
+
+async function refreshDiag(full) {
+  let d;
+  try { d = await (await fetch(full ? '/api/diag' : '/api/diag/log')).json(); }
+  catch { $('diagLog').innerHTML = '<div class="diag-empty">router not reachable</div>'; return; }
+  if (full) { renderUpstreams(d.upstreams || []); renderContainers(d.containers || []); }
+  renderDiagLog(d.log || []);
+}
+
+function renderUpstreams(rows) {
+  const el = $('diagUpstreams');
+  if (!rows.length) { el.innerHTML = '<div class="diag-empty">no router-config yet — apply settings first</div>'; return; }
+  el.innerHTML = `<table class="diag-tbl"><thead><tr>
+      <th>Tier</th><th>Model forwarded</th><th>API</th><th>Chat URL</th></tr></thead><tbody>${
+    rows.map(r => `<tr>
+      <td class="mono">${esc(r.name || '—')}</td>
+      <td class="mono">${esc(r.served_model || '—')}</td>
+      <td>${esc(r.api_format || '—')}</td>
+      <td class="mono url">${esc(r.chat_url || '—')}</td></tr>`).join('')}</tbody></table>`;
+}
+
+function renderContainers(rows) {
+  const el = $('diagContainers');
+  if (!rows.length) { el.innerHTML = '<div class="diag-empty">no vllm-sr containers running</div>'; return; }
+  el.innerHTML = rows.map(c => {
+    const up = /^Up\b/.test(c.status || '');
+    return `<span class="diag-cont ${up ? 'up' : 'down'}"><span class="cdot"></span>
+      <span class="cname mono">${esc(c.name)}</span><span class="cstatus">${esc(c.status)}</span></span>`;
+  }).join('');
+}
+
+function renderDiagLog(rows) {
+  const el = $('diagLog');
+  if (!rows.length) { el.innerHTML = '<div class="diag-empty">no log lines yet — send a prompt</div>'; return; }
+  const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
+  el.innerHTML = rows.map(r => {
+    const lvl = (r.level || 'info').toLowerCase();
+    const fields = Object.entries(r.fields || {}).map(([k, v]) =>
+      `<span class="lf"><span class="lk">${esc(k)}</span><span class="lv">${esc(String(v))}</span></span>`).join('');
+    return `<div class="logrow lvl-${esc(lvl)}">
+      <span class="lts">${esc(r.ts || '')}</span>
+      <span class="lmsg">${esc(r.msg || '')}</span>${fields}</div>`;
+  }).join('');
+  if (stick) el.scrollTop = el.scrollHeight;
+}
+
+function toggleDiagAuto() {
+  if ($('diagAuto').checked) {
+    DIAG_TIMER = setInterval(() => refreshDiag(false), 2000);
+  } else if (DIAG_TIMER) { clearInterval(DIAG_TIMER); DIAG_TIMER = null; }
+}
+
+function closeDiag() {
+  $('diagModal').hidden = true;
+  if (DIAG_TIMER) { clearInterval(DIAG_TIMER); DIAG_TIMER = null; }
+  if ($('diagAuto')) $('diagAuto').checked = false;
+}
+
 function autoGrow() {
   const el = $('input'); el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 160) + 'px';
 }
@@ -599,11 +667,16 @@ function autoGrow() {
   $('hamburger').onclick = openSidebar;
   $('tiersBtn').onclick = openTiers;
   $('routingBtn').onclick = openRouting;
+  $('diagBtn').onclick = openDiag;
+  $('diagRefresh').onclick = () => refreshDiag(true);
+  $('diagAuto').onchange = toggleDiagAuto;
   $('addTier').onclick = addTier;
   $('resetCfg').onclick = resetCfg;
   document.querySelectorAll('[data-save]').forEach(b => b.onclick = () => doSave(b.dataset.save));
   document.querySelectorAll('[data-apply]').forEach(b => b.onclick = () => doApply(b.dataset.apply));
-  document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => { $(b.dataset.close).hidden = true; });
+  document.querySelectorAll('[data-close]').forEach(b => b.onclick = () =>
+    (b.dataset.close === 'diagModal' ? closeDiag() : ($(b.dataset.close).hidden = true)));
   ['tiersModal', 'routingModal'].forEach(id => $(id).addEventListener('click',
     e => { if (e.target.id === id) $(id).hidden = true; }));
+  $('diagModal').addEventListener('click', e => { if (e.target.id === 'diagModal') closeDiag(); });
 })();

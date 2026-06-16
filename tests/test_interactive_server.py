@@ -172,6 +172,48 @@ def test_list_models_no_key_is_friendly_error():
     assert "API key" in out["error"]
 
 
+def test_diag_log_parses_and_filters_noise(monkeypatch):
+    raw = "\n".join([
+        '{"level":"info","ts":"2026-06-16T11:22:33Z","msg":"[Perf] preload done"}',
+        'Registered algorithm static',
+        '{"level":"info","ts":"2026-06-16T11:22:34Z","msg":"routing decision",'
+        '"decision":"route_tier3","request_difficulty":0.42,"selected_model":"tier3"}',
+        '{"level":"error","ts":"2026-06-16T11:22:35Z","msg":"upstream error",'
+        '"response_status":404,"error":"model x does not exist"}',
+        'plain text line',
+    ])
+    monkeypatch.setattr(srv, "_docker_logs", lambda *a, **k: raw)
+    rows = srv._diag_log()
+    msgs = [r["msg"] for r in rows]
+    assert "[Perf] preload done" not in msgs            # noise dropped
+    assert "Registered algorithm static" not in msgs
+    dec = next(r for r in rows if r["msg"] == "routing decision")
+    assert dec["ts"] == "11:22:34"                       # HH:MM:SS slice from ISO ts
+    assert dec["fields"]["selected_model"] == "tier3"
+    assert dec["fields"]["request_difficulty"] == 0.42
+    err = next(r for r in rows if r["level"] == "error")
+    assert err["fields"]["response_status"] == 404
+    assert any(r["msg"] == "plain text line" for r in rows)  # non-JSON kept
+
+
+def test_diag_upstreams_builds_chat_url(monkeypatch, tmp_path):
+    cfg = tmp_path / "router-config.yaml"
+    cfg.write_text(
+        "providers:\n"
+        "  models:\n"
+        "    - name: tier4\n"
+        "      provider_model_id: gemini-3.1-pro-preview\n"
+        "      api_format: openai\n"
+        "      backend_refs:\n"
+        "        - base_url: https://generativelanguage.googleapis.com/v1beta/openai\n")
+    monkeypatch.setattr(srv, "LIVE_ROUTER_CFG", cfg)
+    out = srv._diag_upstreams()
+    assert out[0]["name"] == "tier4"
+    assert out[0]["served_model"] == "gemini-3.1-pro-preview"
+    assert out[0]["chat_url"] == (
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")
+
+
 def test_vllm_chat_upstream_error_surfaces_reason(monkeypatch):
     # The router routed fine but the upstream model 404'd (e.g. a bad model id).
     # The UI must show the upstream reason + the routed tier, NOT "not reachable".

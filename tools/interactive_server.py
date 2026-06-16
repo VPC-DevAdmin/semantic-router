@@ -20,6 +20,8 @@ Endpoints:
   GET  /api/queries           -> the benchmark queries grouped by category
   POST /api/chat              -> proxy {query, mode} to vllm-sr; return
                                  {routing, answer | error}
+  GET  /api/diag              -> per-tier upstreams + container status + router log
+  GET  /api/diag/log[?tail=N] -> just the parsed router log rows
   GET  /                      -> the static UI
 
 Stdlib + httpx + pyyaml (deps). Run:  python tools/interactive_server.py --port 8900
@@ -220,6 +222,86 @@ def _matched_signals(h: dict) -> list:
 ROUTER_LOG_CONTAINER = "vllm-sr-router-container"
 
 
+def _docker_logs(container: str, tail: int = 200) -> str:
+    """Tail a container's logs (stdout+stderr merged; the router logs to stderr)."""
+    try:
+        res = subprocess.run(
+            ["docker", "logs", "--tail", str(tail), container],
+            capture_output=True, text=True, timeout=8)
+        return (res.stdout or "") + (res.stderr or "")
+    except (subprocess.SubprocessError, OSError):
+        return ""
+
+
+# Startup spam to hide from the diagnostics log view (keeps the per-request story).
+_LOG_NOISE = ("[Perf]", "Registered algorithm")
+
+
+def _diag_log(tail: int = 250) -> list:
+    """Parse the router log into compact rows for the UI: level, message, and a
+    handful of the interesting fields per event. Drops the preload/registration
+    spam so the per-request flow (classify → decide → call → usage) is legible."""
+    keep_fields = (
+        "decision", "selected_model", "request_difficulty", "reason_code",
+        "routing_latency_ms", "response_status", "model", "completion_latency_ms",
+        "total_tokens", "category", "reason", "backend", "error", "score",
+        "matched", "threshold", "rule",
+    )
+    rows: list = []
+    for line in _docker_logs(ROUTER_LOG_CONTAINER, tail).splitlines():
+        line = line.strip()
+        if not line or any(n in line for n in _LOG_NOISE):
+            continue
+        if line.startswith("{"):
+            try:
+                j = json.loads(line)
+            except ValueError:
+                rows.append({"level": "info", "msg": line[:400], "fields": {}})
+                continue
+            fields = {k: j[k] for k in keep_fields if k in j and j[k] not in (None, "")}
+            rows.append({"level": j.get("level", "info"),
+                         "ts": (j.get("ts") or "")[11:19],   # HH:MM:SS
+                         "msg": j.get("msg", ""), "fields": fields})
+        else:
+            rows.append({"level": "info", "msg": line[:400], "fields": {}})
+    return rows[-250:]
+
+
+def _diag_upstreams() -> list:
+    """Per-tier upstream the router will call, from the live router-config — the
+    provider, the model id forwarded, and the exact chat URL."""
+    try:
+        cfg = yaml.safe_load(LIVE_ROUTER_CFG.read_text())
+    except (OSError, yaml.YAMLError):
+        return []
+    out = []
+    for m in (cfg.get("providers", {}) or {}).get("models", []) or []:
+        ref = (m.get("backend_refs") or [{}])[0]
+        base = (ref.get("base_url") or ref.get("endpoint") or "").rstrip("/")
+        out.append({
+            "name": m.get("name"),
+            "served_model": m.get("provider_model_id"),
+            "api_format": m.get("api_format"),
+            "base_url": base,
+            "chat_url": (base + "/chat/completions") if base else "",
+        })
+    return out
+
+
+def _diag_containers() -> list:
+    try:
+        res = subprocess.run(["docker", "ps", "--format", "{{.Names}}\t{{.Status}}"],
+                             capture_output=True, text=True, timeout=6)
+        rows = []
+        for line in (res.stdout or "").splitlines():
+            if "vllm-sr" in line:
+                name, _, status = line.partition("\t")
+                rows.append({"name": name, "status": status})
+        return rows
+    except (subprocess.SubprocessError, OSError):
+        return []
+
+
 def _routing_scores() -> dict:
     """Best-effort: the per-signal confidences + request difficulty the router
     actually computed, pulled from the latest router_replay_start in the router
@@ -228,12 +310,7 @@ def _routing_scores() -> dict:
     try:
         # Tail generously: the router emits a lot between requests (perf,
         # traces), so the replay line can be well past the last few dozen lines.
-        # The router writes its JSON logs to the container's STDERR, so merge
-        # both streams (docker logs forwards container stderr to its stderr).
-        res = subprocess.run(
-            ["docker", "logs", "--tail", "400", ROUTER_LOG_CONTAINER],
-            capture_output=True, text=True, timeout=6)
-        out = (res.stdout or "") + (res.stderr or "")
+        out = _docker_logs(ROUTER_LOG_CONTAINER, 400)
         for line in reversed(out.splitlines()):
             if '"router_replay_start"' not in line or "{" not in line:
                 continue
@@ -607,6 +684,15 @@ def _make_handler():
                 return
             if path == "/api/apply/status":
                 self._json(200, _apply_snapshot())
+                return
+            if path == "/api/diag":
+                self._json(200, {"upstreams": _diag_upstreams(),
+                                 "containers": _diag_containers(),
+                                 "log": _diag_log()})
+                return
+            if path == "/api/diag/log":
+                tail = int(self.path.split("tail=", 1)[1]) if "tail=" in self.path else 250
+                self._json(200, {"log": _diag_log(tail)})
                 return
             rel = "index.html" if path in ("/", "") else path.lstrip("/")
             f = (STATIC_DIR / rel).resolve()

@@ -31,6 +31,7 @@
       <div class="foot-btns">
         <button class="side-btn" id="tiersBtn">▦ Model tiers</button>
         <button class="side-btn" id="routingBtn">⚖ Routing</button>
+        <button class="side-btn" id="diagBtn">◳ Diagnostics</button>
       </div>
     </div>
   </aside>
@@ -141,6 +142,33 @@
       <button class="btn primary" data-apply="routing">Save &amp; Apply</button>
     </div>
     <div class="save-status" id="routingStatus"></div>
+  </div>
+</div>
+
+<!-- ════════════════ Diagnostics modal ════════════════ -->
+<div class="modal-backdrop" id="diagModal" hidden>
+  <div class="modal wide">
+    <div class="modal-head">
+      <h2>Diagnostics</h2>
+      <button class="icon-btn modal-close" data-close="diagModal">✕</button>
+    </div>
+    <p class="modal-intro">What the router is actually doing behind the scenes — the exact upstream
+       each tier calls, the running containers, and the live router log (decisions, scores, upstream
+       calls, errors). Read straight from <code>docker</code> and the live
+       <code>router-config.yaml</code>.</p>
+
+    <h3 class="sec">Upstreams <span class="sec-tag">the URL each tier forwards to</span></h3>
+    <div class="diag-upstreams" id="diagUpstreams"></div>
+
+    <h3 class="sec">Containers <span class="sec-tag">vllm-sr docker stack</span></h3>
+    <div class="diag-containers" id="diagContainers"></div>
+
+    <h3 class="sec">Router log
+      <span class="sec-tag">classify → decide → call → usage</span>
+      <label class="diag-auto"><input type="checkbox" id="diagAuto"> auto-refresh</label>
+      <button class="mini-btn" id="diagRefresh">↻ refresh</button>
+    </h3>
+    <div class="diag-log" id="diagLog"></div>
   </div>
 </div>
 
