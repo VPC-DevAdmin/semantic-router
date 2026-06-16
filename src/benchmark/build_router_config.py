@@ -811,12 +811,41 @@ def _emit_tier5_frontier_lane() -> dict:
 # Build
 # ─────────────────────────────────────────────────────────────────────────
 
+def _rename_models_to_real(config: dict, real_map: dict[str, str]) -> None:
+    """Rewrite the model identifier from the tier id to the real upstream model
+    id, in place.
+
+    vllm-sr v0.3 forwards the model card **name** (not provider_model_id) to the
+    upstream — so against a real provider, a card named `tier2` makes OpenAI 404
+    with "model tier2 does not exist". The mock + benchmark want tier-id names
+    (TierLookup + x-vsr headers speak tier ids), so the default build keeps them;
+    the live path calls this to make the name the real model id everywhere it's
+    referenced: providers.models[].name/provider_model_id, routing.modelCards[],
+    and routing.decisions[].modelRefs[].model. Band/projection names (tier2_band)
+    and decision names (route_tier2) are NOT models and stay tier-keyed."""
+    for m in config.get("providers", {}).get("models", []):
+        real = real_map.get(m.get("name"))
+        if real:
+            m["name"] = real
+            m["provider_model_id"] = real
+    for c in config.get("routing", {}).get("modelCards", []):
+        real = real_map.get(c.get("name"))
+        if real:
+            c["name"] = real
+    for d in config.get("routing", {}).get("decisions", []):
+        for ref in d.get("modelRefs", []):
+            real = real_map.get(ref.get("model"))
+            if real:
+                ref["model"] = real
+
+
 def build(
     exemplars_path: Path,
     backends_path: Path,
     eval_set_path: Path | None,
     *,
     mock_endpoint: str | None = None,
+    served_model_names: str = "tier",
 ) -> dict:
     """Read both inputs, validate, emit a vllm-sr v0.3 config dict.
 
@@ -926,6 +955,16 @@ def build(
             },
         },
     }
+    # Live backends need the real model id as the card name (vllm-sr forwards
+    # the name upstream). Mock/benchmark keep tier-id names. Duplicate real
+    # models across tiers would collide — acceptable for the demo (distinct
+    # model per tier); flagged here rather than silently handled.
+    if served_model_names == "real":
+        real_map = {
+            tid: ((be["backends"].get(tid, {}) or {}).get("model") or "").strip() or tid
+            for tid in tier_ids
+        }
+        _rename_models_to_real(config, real_map)
     return config
 
 
@@ -949,6 +988,18 @@ def main() -> None:
             "host.docker.internal:18811/v1. Pipeline-verification only."
         ),
     )
+    p.add_argument(
+        "--served-model-names",
+        choices=["tier", "real"],
+        default="tier",
+        help=(
+            "Which identifier the model cards use (and therefore what vllm-sr "
+            "forwards upstream). 'tier' (default) keeps tier1..tier5 — right for "
+            "the local mock + benchmark. 'real' uses each tier's actual model id "
+            "(TIER{N}_1_MODEL), required against real providers or they 404 on "
+            "'model tier2 does not exist'. The live demo's Apply passes 'real'."
+        ),
+    )
     args = p.parse_args()
 
     config = build(
@@ -956,6 +1007,7 @@ def main() -> None:
         args.backends,
         args.check_against_eval,
         mock_endpoint=args.mock_endpoint,
+        served_model_names=args.served_model_names,
     )
     args.out.write_text(yaml.safe_dump(config, sort_keys=False, default_flow_style=False))
     print(f"Wrote {args.out}", file=sys.stderr)

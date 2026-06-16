@@ -166,11 +166,27 @@ def list_models(payload: dict) -> dict:
         return {"error": str(exc)}
 
 
+def _tier_for(overlay: dict, selected: str | None):
+    """Map x-vsr-selected-model back to a tier. The live config names model cards
+    by the REAL model id (vllm-sr forwards the name upstream), so the header is
+    the model id, not the tier id — match on either."""
+    if not selected:
+        return None
+    return next((t for t in overlay.get("tiers", [])
+                 if t.get("id") == selected or t.get("model") == selected), None)
+
+
 def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
     """Forward one query to the live vllm-sr. mode='auto' routes; otherwise mode
     is a tier id to pin. Returns {routing, answer} or {routing?, error}."""
     base = (overlay.get("vllm_sr_url") or "http://localhost:8899").rstrip("/")
-    model = "auto" if mode == "auto" else mode    # tier id pins a tier
+    # mode 'auto' routes; otherwise it's a tier id to pin. The live config names
+    # model cards by the real model id, so pin by that name (fall back to the id).
+    if mode == "auto":
+        model = "auto"
+    else:
+        pinned = next((t for t in overlay.get("tiers", []) if t.get("id") == mode), None)
+        model = (pinned.get("model") if pinned else None) or mode
     body = {"model": model, "messages": [{"role": "user", "content": query}],
             "temperature": 0.0, "max_completion_tokens": 800}
     try:
@@ -194,7 +210,7 @@ def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
     data = r.json()
     h = {k.lower(): v for k, v in r.headers.items()}
     selected = h.get("x-vsr-selected-model") or data.get("model")
-    tier = next((t for t in overlay["tiers"] if t["id"] == selected), None)
+    tier = _tier_for(overlay, selected)
     content = data["choices"][0]["message"]["content"]
     if isinstance(content, list):
         content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
@@ -341,7 +357,11 @@ def apply_overlay(overlay: dict) -> dict:
         subprocess.run(
             [sys.executable, "-m", "benchmark.build_router_config",
              "--exemplars", str(LIVE_EXEMPLARS), "--backends", str(CANON_BACKENDS),
-             "--out", str(LIVE_ROUTER_CFG)],
+             "--out", str(LIVE_ROUTER_CFG),
+             # vllm-sr forwards the model card NAME upstream, so against real
+             # providers the card must be named with the real model id (else
+             # OpenAI 404s on "model tier2 does not exist").
+             "--served-model-names", "real"],
             cwd=str(ROOT), env=env, check=True, capture_output=True, text=True)
         if not _docker_ready():
             return {"ok": False, "step": "docker",

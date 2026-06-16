@@ -129,6 +129,33 @@ def test_model_card_name_is_tier_id(monkeypatch) -> None:
     assert decision_model_refs <= model_card_names
 
 
+def test_served_model_names_real_uses_upstream_ids(monkeypatch) -> None:
+    """`served_model_names='real'` (the live demo's Apply path) names the model
+    cards by the REAL upstream model id — because vllm-sr v0.3 forwards the card
+    NAME upstream, so a card named `tier2` 404s against a real provider."""
+    monkeypatch.setenv("TIER1_1_URL", "http://localhost:8001/v1")
+    monkeypatch.setenv("TIER1_1_MODEL", "Qwen3-1.7B")
+    monkeypatch.setenv("TIER2_1_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("TIER2_1_MODEL", "gpt-5.4-nano")
+    monkeypatch.setenv("TIER2_1_API_KEY", "sk-test")
+
+    from benchmark.build_router_config import build
+    cfg = build(
+        exemplars_path=ROOT / "config" / "router-exemplars.yaml",
+        backends_path=ROOT / "config" / "router-backends.yaml",
+        eval_set_path=None,
+        served_model_names="real",
+    )
+    models = {m["name"]: m["provider_model_id"] for m in cfg["providers"]["models"]}
+    # tier2's card is now named by its real model id, name == provider_model_id.
+    assert "gpt-5.4-nano" in models and models["gpt-5.4-nano"] == "gpt-5.4-nano"
+    assert "tier2" not in models
+    # modelCards + decision modelRefs follow the same renaming.
+    assert "gpt-5.4-nano" in {c["name"] for c in cfg["routing"]["modelCards"]}
+    refs = {ref["model"] for d in cfg["routing"]["decisions"] for ref in d["modelRefs"]}
+    assert "gpt-5.4-nano" in refs and "tier2" not in refs
+
+
 def test_build_module_loads_dotenv(tmp_path) -> None:
     """`python -m benchmark.build_router_config` (how the Makefile invokes
     the build) must load .env, otherwise `_apply_backend_env_overrides`

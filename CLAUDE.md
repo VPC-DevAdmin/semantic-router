@@ -253,6 +253,22 @@ an older CLI is already installed. (The `RouterDC … mmbert status -1` and
 `embedding_ready:false` log lines are harmless even on v0.3.0 — they're the
 unused tools/RouterDC path; projection-based routing classifies fine.)
 
+Two more v0.3 behaviors that cost real debugging time:
+
+- **Every `routing.decisions` entry needs an `algorithm` block.** Ours
+  omitted it; without it the per-decision selector won't resolve the model
+  and `selection_method` stays empty. `build_router_config` now emits
+  `algorithm: {type: static}` on every decision (one model per tier).
+- **vllm-sr forwards the model card `name` upstream — NOT
+  `provider_model_id`.** So a card named `tier2` makes a real provider 404
+  with "model tier2 does not exist". The mock accepts any name, hiding this.
+  `build_router_config --served-model-names real` renames the cards (and
+  modelRefs) to the real model id; the live demo's Apply passes it. `make
+  route` / the benchmark keep tier-id names (default `tier`), so
+  `x-vsr-selected-model` still speaks tier ids there. On the live path the
+  header is the real model id, so `interactive_server` maps it back to a tier
+  by `id OR model`, and pinning a tier sends the tier's real model name.
+
 ## Current state (as of last commit)
 
 End-to-end mock pipeline works: `make setup` → `make load` →
