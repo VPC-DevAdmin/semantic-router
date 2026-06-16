@@ -279,6 +279,13 @@ def apply_overlay(overlay: dict) -> dict:
             _ensure_router_model()
         except (subprocess.SubprocessError, OSError):
             pass
+        # Apply must REPLACE the running stack so the new config takes effect.
+        # `vllm-sr serve` on an already-running stack no-ops — it leaves the old
+        # config live (e.g. the mock-backed config from `make route`), so the UI
+        # would keep showing mock answers despite real models being configured.
+        # Stop first to guarantee the rebuilt config is loaded on relaunch.
+        subprocess.run(["vllm-sr", "stop"], cwd=str(ROOT), env=env,
+                       capture_output=True, text=True)
         serve = subprocess.run(["vllm-sr", "serve", "--config", str(LIVE_ROUTER_CFG),
                                 "--minimal", "--image", VLLM_SR_IMAGE],
                                cwd=str(ROOT), env=env, capture_output=True, text=True)
