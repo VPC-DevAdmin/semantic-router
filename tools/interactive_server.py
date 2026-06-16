@@ -465,7 +465,11 @@ def apply_overlay(overlay: dict) -> dict:
              # vllm-sr forwards the model card NAME upstream, so against real
              # providers the card must be named with the real model id (else
              # OpenAI 404s on "model tier2 does not exist").
-             "--served-model-names", "real"],
+             "--served-model-names", "real",
+             # No promotion lanes: route purely by the difficulty band the UI
+             # meter shows (lanes override it on soft embedding matches and
+             # over-route ambiguous prompts to the frontier model).
+             "--lanes", "off"],
             cwd=str(ROOT), env=env, check=True, capture_output=True, text=True)
         _apply_set(step=1, phase="docker", detail="checking the Docker daemon")
         if not _docker_ready():

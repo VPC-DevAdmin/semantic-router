@@ -643,6 +643,7 @@ def _emit_decisions(
     tier_ids: list[str],
     complexity_signals: list[dict],
     emb_signals: list[dict],
+    lanes: bool = True,
 ) -> list[dict]:
     """Build the `routing.decisions[]` list, conditional on which signals
     are configured.
@@ -654,6 +655,12 @@ def _emit_decisions(
     `query_difficulty` complexity signal (no `needs_reasoning` etc.),
     the four-signal-era lanes don't emit.
 
+    `lanes=False` drops ALL promotion lanes — routing becomes purely the
+    difficulty band (what the live demo's meter shows). The lanes promote
+    to the top tier on a *soft* embedding match (vllm-sr's 0.5 floor, below
+    the configured threshold), which over-routes ambiguous prompts; the demo
+    turns them off so the visible band is the whole story.
+
     Band decisions (one per tier) always emit.
     """
     complexity_ids = {s["id"] for s in complexity_signals}
@@ -663,12 +670,13 @@ def _emit_decisions(
     # Lane decisions FIRST, so a quick read of the generated config shows
     # the higher-priority overrides up top. Each is conditional on its
     # referenced signals being defined.
-    if {"needs_reasoning", "needs_expertise"} <= complexity_ids:
-        decisions.append(_emit_tier5_frontier_lane())
-    if {"needs_judgment", "demands_commitment"} <= complexity_ids:
-        decisions.append(_emit_tier5_committed_judgment_lane())
-    if "frontier_synthesis" in emb_ids:
-        decisions.append(_emit_tier5_embedding_frontier_lane("frontier_synthesis"))
+    if lanes:
+        if {"needs_reasoning", "needs_expertise"} <= complexity_ids:
+            decisions.append(_emit_tier5_frontier_lane())
+        if {"needs_judgment", "demands_commitment"} <= complexity_ids:
+            decisions.append(_emit_tier5_committed_judgment_lane())
+        if "frontier_synthesis" in emb_ids:
+            decisions.append(_emit_tier5_embedding_frontier_lane("frontier_synthesis"))
 
     # Band decisions (one per tier) always emit.
     decisions.extend(_emit_decision_for_band(tier_id) for tier_id in tier_ids)
@@ -853,6 +861,7 @@ def build(
     *,
     mock_endpoint: str | None = None,
     served_model_names: str = "tier",
+    lanes: bool = True,
 ) -> dict:
     """Read both inputs, validate, emit a vllm-sr v0.3 config dict.
 
@@ -943,7 +952,7 @@ def build(
                 "mappings": [_emit_tier_band_mapping(tier_ids, cutoffs)],
             },
             "decisions": _emit_decisions(
-                tier_ids, signals, emb_signals
+                tier_ids, signals, emb_signals, lanes=lanes
             ),
         },
         # Disable semantic cache: avoids Milvus startup dependency for the
@@ -1007,6 +1016,17 @@ def main() -> None:
             "'model tier2 does not exist'. The live demo's Apply passes 'real'."
         ),
     )
+    p.add_argument(
+        "--lanes",
+        choices=["on", "off"],
+        default="on",
+        help=(
+            "Promotion lanes (override the difficulty band to push certain "
+            "prompts to the top tier on a soft embedding match). 'on' (default) "
+            "for the benchmark; the live demo passes 'off' so routing is purely "
+            "the difficulty band shown in the UI meter — no hidden overrides."
+        ),
+    )
     args = p.parse_args()
 
     config = build(
@@ -1015,6 +1035,7 @@ def main() -> None:
         args.check_against_eval,
         mock_endpoint=args.mock_endpoint,
         served_model_names=args.served_model_names,
+        lanes=(args.lanes == "on"),
     )
     args.out.write_text(yaml.safe_dump(config, sort_keys=False, default_flow_style=False))
     print(f"Wrote {args.out}", file=sys.stderr)

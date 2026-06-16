@@ -129,6 +129,20 @@ def test_model_card_name_is_tier_id(monkeypatch) -> None:
     assert decision_model_refs <= model_card_names
 
 
+def test_lanes_off_drops_promotion_lanes() -> None:
+    """`lanes=False` (the live demo) drops promotion lanes — routing is purely
+    the difficulty band. Default (benchmark) keeps them."""
+    from benchmark.build_router_config import build
+    kw = dict(exemplars_path=ROOT / "config" / "router-exemplars.yaml",
+              backends_path=ROOT / "config" / "router-backends.yaml", eval_set_path=None)
+    on = {d["name"] for d in build(**kw)["routing"]["decisions"]}
+    off = {d["name"] for d in build(**kw, lanes=False)["routing"]["decisions"]}
+    assert "route_tier5_embedding_frontier" in on
+    assert "route_tier5_embedding_frontier" not in off
+    # band decisions survive in both
+    assert {"route_tier1", "route_tier5"} <= off
+
+
 def test_served_model_names_real_uses_upstream_ids(monkeypatch) -> None:
     """`served_model_names='real'` (the live demo's Apply path) names the model
     cards by the REAL upstream model id — because vllm-sr v0.3 forwards the card
