@@ -116,6 +116,56 @@ def _upstream_error_text(r: httpx.Response) -> str:
     return (r.text or "(no body)").strip()[:400]
 
 
+def _provider_models(provider: str, base_url: str, api_key: str) -> list[str]:
+    """Fetch available model ids from a provider's list endpoint.
+
+    OpenAI and OpenAI-compatible providers (including Google's
+    `/v1beta/openai` shim) answer `GET {base_url}/models` with a Bearer
+    header; Anthropic answers `GET {base_url}/models` with `x-api-key` +
+    `anthropic-version`. Returns sorted model ids; raises on failure."""
+    base = (base_url or "").rstrip("/")
+    if not base:
+        raise ValueError("no base URL configured for this tier")
+    if (provider or "").lower() == "anthropic" or "anthropic.com" in base:
+        headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+    else:
+        headers = {"Authorization": f"Bearer {api_key}"}
+    with httpx.Client(timeout=20.0) as c:
+        r = c.get(f"{base}/models", headers=headers)
+    r.raise_for_status()
+    payload = r.json()
+    rows = payload.get("data") or payload.get("models") or []
+    ids = [(m.get("id") or m.get("name")) for m in rows if isinstance(m, dict)]
+    return sorted({i for i in ids if i})
+
+
+def list_models(payload: dict) -> dict:
+    """Resolve a tier's credentials (form values, falling back to the saved
+    overlay's key when the form key is blank/masked) and return its provider's
+    model list, or {error}."""
+    tier_id = payload.get("tier_id")
+    provider = payload.get("provider") or ""
+    base_url = payload.get("base_url") or ""
+    api_key = (payload.get("api_key") or "").strip()
+    if not api_key and tier_id:
+        saved = next((t for t in load_overlay().get("tiers", [])
+                      if t.get("id") == tier_id), None)
+        if saved:
+            api_key = (saved.get("api_key") or "").strip()
+            base_url = base_url or saved.get("base_url") or ""
+            provider = provider or saved.get("provider") or ""
+    if not api_key:
+        return {"error": "No API key for this tier — paste one (then it works "
+                         "immediately) or Save first."}
+    try:
+        return {"models": _provider_models(provider, base_url, api_key)}
+    except httpx.HTTPStatusError as exc:
+        return {"error": f"HTTP {exc.response.status_code} from "
+                         f"{provider or 'provider'}: {_upstream_error_text(exc.response)}"}
+    except (httpx.HTTPError, ValueError) as exc:
+        return {"error": str(exc)}
+
+
 def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
     """Forward one query to the live vllm-sr. mode='auto' routes; otherwise mode
     is a tier id to pin. Returns {routing, answer} or {routing?, error}."""
@@ -397,6 +447,8 @@ def _make_handler():
                 self._json(200, {"ok": True})
             elif path == "/api/apply":
                 self._json(200, apply_overlay(load_overlay()))
+            elif path == "/api/models":
+                self._json(200, list_models(payload))
             elif path == "/api/chat":
                 self._json(200, vllm_chat(load_overlay(), payload.get("query", ""),
                                           payload.get("mode", "auto")))

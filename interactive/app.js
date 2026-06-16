@@ -170,8 +170,44 @@ function renderTierEditors() {
     setKs(t.key_set);
     node.querySelector('.te-key').oninput = e => setKs(!!e.target.value.trim() || t.key_set);
     node.querySelector('.te-del').onclick = () => root.remove();
+    // Link the model datalist to its input and wire the "load models" button.
+    const dl = node.querySelector('.te-models');
+    dl.id = 'te-models-' + t.id;
+    node.querySelector('.te-model').setAttribute('list', dl.id);
+    node.querySelector('.te-load').onclick = ev => loadTierModels(root, t.id, ev.currentTarget);
     host.appendChild(node);
   });
+}
+
+async function loadTierModels(root, tierId, btn) {
+  // Ask the server to fetch this provider's model list with the tier's key.
+  // The key field is blank unless just typed; the server falls back to the
+  // saved overlay key for this tier, so an already-saved tier works too.
+  const provider = root.querySelector('.te-provider').value;
+  const base_url = root.querySelector('.te-base').value.trim();
+  const api_key = root.querySelector('.te-key').value.trim();
+  const dl = root.querySelector('.te-models');
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const res = await fetch('/api/models', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tier_id: tierId, provider, base_url, api_key }),
+    });
+    const j = await res.json();
+    if (j.error) { btn.textContent = '!'; btn.title = j.error; return; }
+    const models = j.models || [];
+    dl.innerHTML = models.map(m => `<option value="${esc(m)}"></option>`).join('');
+    btn.textContent = models.length ? '✓' : '∅';
+    btn.title = models.length
+      ? `${models.length} models — click the model field to pick`
+      : 'provider returned no models';
+  } catch (e) {
+    btn.textContent = '!'; btn.title = String(e);
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { btn.textContent = orig; btn.title = 'Load models from provider (uses this tier\'s key)'; }, 2000);
+  }
 }
 
 function renderCutoffs() {

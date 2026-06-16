@@ -100,7 +100,13 @@
           <option value="OpenAI-compatible">OpenAI-compatible (vLLM / local)</option>
         </select>
       </label>
-      <label>Model <input class="te-model" placeholder="model id"></label>
+      <label>Model
+        <span class="te-model-row" style="display:flex;gap:6px;align-items:center">
+          <input class="te-model" placeholder="model id" style="flex:1;min-width:0">
+          <button type="button" class="icon-btn te-load" title="Load models from provider (uses this tier's key)">⤓</button>
+          <datalist class="te-models"></datalist>
+        </span>
+      </label>
       <label>Base URL <input class="te-base" placeholder="provider default"></label>
       <label>API key <input class="te-key" type="password" placeholder="paste to set"></label>
     </div>

@@ -115,6 +115,46 @@ def test_vllm_chat_unreachable_returns_error(monkeypatch):
     assert "not reachable" in out["error"]
 
 
+def _models_client(captured, body):
+    class _C:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, url, headers):
+            captured["url"] = url
+            captured["headers"] = headers
+            return _Resp({}, body)
+    return _C
+
+
+def test_list_models_openai_bearer_and_sorted(monkeypatch):
+    cap = {}
+    monkeypatch.setattr(srv.httpx, "Client",
+                        _models_client(cap, {"data": [{"id": "gpt-x"}, {"id": "gpt-a"}]}))
+    out = srv.list_models({"tier_id": "tier2", "provider": "OpenAI",
+                           "base_url": "https://api.openai.com/v1", "api_key": "sk-x"})
+    assert out["models"] == ["gpt-a", "gpt-x"]            # sorted, deduped
+    assert cap["url"] == "https://api.openai.com/v1/models"
+    assert cap["headers"]["Authorization"] == "Bearer sk-x"
+
+
+def test_list_models_anthropic_uses_x_api_key(monkeypatch):
+    cap = {}
+    monkeypatch.setattr(srv.httpx, "Client",
+                        _models_client(cap, {"data": [{"id": "claude-opus-4-7"}]}))
+    out = srv.list_models({"provider": "Anthropic",
+                           "base_url": "https://api.anthropic.com/v1", "api_key": "k"})
+    assert out["models"] == ["claude-opus-4-7"]
+    assert cap["headers"]["x-api-key"] == "k"
+    assert "anthropic-version" in cap["headers"]
+
+
+def test_list_models_no_key_is_friendly_error():
+    out = srv.list_models({"provider": "OpenAI",
+                           "base_url": "https://api.openai.com/v1", "api_key": ""})
+    assert "API key" in out["error"]
+
+
 def test_vllm_chat_upstream_error_surfaces_reason(monkeypatch):
     # The router routed fine but the upstream model 404'd (e.g. a bad model id).
     # The UI must show the upstream reason + the routed tier, NOT "not reachable".
