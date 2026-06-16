@@ -107,14 +107,19 @@ def _upstream_error_text(r: httpx.Response) -> str:
     OpenAI/Anthropic-style {"error": {"message": ...}} shape, falling back to
     raw text. Truncated; safe on non-JSON bodies."""
     try:
-        e = r.json().get("error")
+        j = r.json()
+        e = j.get("error")
         if isinstance(e, dict) and e.get("message"):
             return str(e["message"])[:400]
         if e:
             return str(e)[:400]
+        # Some adapters return a completion-shaped body (not an error object) on a
+        # 4xx — dumping that raw JSON is noise, so summarize instead.
+        if isinstance(j, dict) and "choices" in j:
+            return "the upstream rejected the request (empty/blocked completion, no error detail)"
     except ValueError:
         pass
-    return (r.text or "(no body)").strip()[:400]
+    return (r.text or "(no body)").strip()[:300]
 
 
 def _provider_models(provider: str, base_url: str, api_key: str) -> list[str]:
@@ -232,9 +237,30 @@ def _tier_for(overlay: dict, selected: str | None):
                  if t.get("id") == selected or t.get("model") == selected), None)
 
 
+def _routing_from_headers(h: dict, overlay: dict, mode: str) -> dict:
+    """The routing decision the router published on the response headers. Present
+    on BOTH success and error responses (the router decides before forwarding),
+    so the UI can show the rationale even when the upstream rejects the call."""
+    selected = h.get("x-vsr-selected-model")
+    tier = _tier_for(overlay, selected)
+    return {
+        "selected_tier_id": tier["id"] if tier else selected,
+        "selected_tier_name": tier["name"] if tier else selected,
+        "served_model": tier["model"] if tier else selected,
+        "category": h.get("x-vsr-selected-category"),
+        "reasoning": h.get("x-vsr-selected-reasoning"),
+        "confidence": _to_float(h.get("x-vsr-selected-confidence")),
+        "decision": h.get("x-vsr-selected-decision"),
+        "matched": _matched_signals(h),
+        "forced": mode != "auto",
+        "cache_hit": "x-vsr-selected-model" not in h,
+        **_routing_scores(),
+    }
+
+
 def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
     """Forward one query to the live vllm-sr. mode='auto' routes; otherwise mode
-    is a tier id to pin. Returns {routing, answer} or {routing?, error}."""
+    is a tier id to pin. Returns {routing, answer} or {routing, error}."""
     base = (overlay.get("vllm_sr_url") or "http://localhost:8899").rstrip("/")
     # mode 'auto' routes; otherwise it's a tier id to pin. The live config names
     # model cards by the real model id, so pin by that name (fall back to the id).
@@ -243,8 +269,11 @@ def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
     else:
         pinned = next((t for t in overlay.get("tiers", []) if t.get("id") == mode), None)
         model = (pinned.get("model") if pinned else None) or mode
+    # Use `max_tokens` (not max_completion_tokens): Anthropic *requires* it and
+    # vllm-sr's OAI→Anthropic adapter keys off it; OpenAI/Google accept it too.
+    # Omit temperature — some models (e.g. gpt-5 reasoning) reject temperature=0.
     body = {"model": model, "messages": [{"role": "user", "content": query}],
-            "temperature": 0.0, "max_completion_tokens": 800}
+            "max_tokens": 1024}
     try:
         with httpx.Client(timeout=180.0) as c:
             r = c.post(f"{base}/v1/chat/completions", json=body)
@@ -252,40 +281,22 @@ def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
         # Couldn't reach the router at all (connection refused, DNS, timeout).
         return {"error": f"vllm-sr not reachable at {base} ({exc}). Start it with "
                          f"`make route` (and configure your models in Settings → Apply)."}
-    if r.status_code >= 400:
-        # The router routed the query and forwarded upstream, but the upstream
-        # (or router) returned an error. Surface it — plus the tier it routed to,
-        # which the x-vsr headers still carry — so model-id / key mistakes are
-        # obvious (e.g. a 404 "model not found" on a placeholder model id).
-        hh = {k.lower(): v for k, v in r.headers.items()}
-        sel = hh.get("x-vsr-selected-model")
-        where = f" routing → {sel}," if sel else ""
-        return {"error": f"Upstream returned HTTP {r.status_code}.{where} "
-                         f"{_upstream_error_text(r)} — check this tier's model id "
-                         f"and API key in Settings."}
-    data = r.json()
     h = {k.lower(): v for k, v in r.headers.items()}
-    selected = h.get("x-vsr-selected-model") or data.get("model")
-    tier = _tier_for(overlay, selected)
+    routing = _routing_from_headers(h, overlay, mode)
+    if r.status_code >= 400:
+        # Routed fine, but the upstream rejected the call. Keep the rationale so
+        # the UI still shows which tier + why, alongside the upstream error.
+        who = routing.get("selected_tier_name") or h.get("x-vsr-selected-model") or "the tier"
+        served = routing.get("served_model") or "?"
+        return {"routing": routing,
+                "error": f"{who} ({served}) returned HTTP {r.status_code}: "
+                         f"{_upstream_error_text(r)} — check this tier's model id and "
+                         f"API key in Settings."}
+    data = r.json()
     content = data["choices"][0]["message"]["content"]
     if isinstance(content, list):
         content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-    return {
-        "routing": {
-            "selected_tier_id": tier["id"] if tier else selected,
-            "selected_tier_name": tier["name"] if tier else selected,
-            "served_model": tier["model"] if tier else selected,
-            "category": h.get("x-vsr-selected-category"),
-            "reasoning": h.get("x-vsr-selected-reasoning"),
-            "confidence": _to_float(h.get("x-vsr-selected-confidence")),
-            "decision": h.get("x-vsr-selected-decision"),
-            "matched": _matched_signals(h),
-            "forced": mode != "auto",
-            "cache_hit": "x-vsr-selected-model" not in h,
-            **_routing_scores(),
-        },
-        "answer": content,
-    }
+    return {"routing": routing, "answer": content}
 
 
 # ── Apply overlay → vllm-sr config + reload ───────────────────────────────────

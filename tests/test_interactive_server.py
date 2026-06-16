@@ -174,4 +174,7 @@ def test_vllm_chat_upstream_error_surfaces_reason(monkeypatch):
     assert "not reachable" not in out["error"]
     assert "404" in out["error"]
     assert "does not exist" in out["error"]
-    assert "tier2" in out["error"]
+    # names the routed tier (by name) + its model, and carries the routing data
+    # so the UI can still show the rationale on an upstream error.
+    assert "Tier 2" in out["error"] and "gpt-5.4-nano" in out["error"]
+    assert out["routing"]["selected_tier_id"] == "tier2"
