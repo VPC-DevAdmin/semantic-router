@@ -209,9 +209,12 @@ def _routing_scores() -> dict:
     try:
         # Tail generously: the router emits a lot between requests (perf,
         # traces), so the replay line can be well past the last few dozen lines.
-        out = subprocess.run(
+        # The router writes its JSON logs to the container's STDERR, so merge
+        # both streams (docker logs forwards container stderr to its stderr).
+        res = subprocess.run(
             ["docker", "logs", "--tail", "400", ROUTER_LOG_CONTAINER],
-            capture_output=True, text=True, timeout=6).stdout or ""
+            capture_output=True, text=True, timeout=6)
+        out = (res.stdout or "") + (res.stderr or "")
         for line in reversed(out.splitlines()):
             if '"router_replay_start"' not in line or "{" not in line:
                 continue
