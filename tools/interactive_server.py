@@ -101,6 +101,21 @@ def grouped_queries() -> dict:
 
 # ── vllm-sr proxy ──────────────────────────────────────────────────────────────
 
+def _upstream_error_text(r: httpx.Response) -> str:
+    """Pull the human-readable error out of an upstream error response — the
+    OpenAI/Anthropic-style {"error": {"message": ...}} shape, falling back to
+    raw text. Truncated; safe on non-JSON bodies."""
+    try:
+        e = r.json().get("error")
+        if isinstance(e, dict) and e.get("message"):
+            return str(e["message"])[:400]
+        if e:
+            return str(e)[:400]
+    except ValueError:
+        pass
+    return (r.text or "(no body)").strip()[:400]
+
+
 def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
     """Forward one query to the live vllm-sr. mode='auto' routes; otherwise mode
     is a tier id to pin. Returns {routing, answer} or {routing?, error}."""
@@ -111,10 +126,21 @@ def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
     try:
         with httpx.Client(timeout=180.0) as c:
             r = c.post(f"{base}/v1/chat/completions", json=body)
-        r.raise_for_status()
     except httpx.HTTPError as exc:
+        # Couldn't reach the router at all (connection refused, DNS, timeout).
         return {"error": f"vllm-sr not reachable at {base} ({exc}). Start it with "
                          f"`make route` (and configure your models in Settings → Apply)."}
+    if r.status_code >= 400:
+        # The router routed the query and forwarded upstream, but the upstream
+        # (or router) returned an error. Surface it — plus the tier it routed to,
+        # which the x-vsr headers still carry — so model-id / key mistakes are
+        # obvious (e.g. a 404 "model not found" on a placeholder model id).
+        hh = {k.lower(): v for k, v in r.headers.items()}
+        sel = hh.get("x-vsr-selected-model")
+        where = f" routing → {sel}," if sel else ""
+        return {"error": f"Upstream returned HTTP {r.status_code}.{where} "
+                         f"{_upstream_error_text(r)} — check this tier's model id "
+                         f"and API key in Settings."}
     data = r.json()
     h = {k.lower(): v for k, v in r.headers.items()}
     selected = h.get("x-vsr-selected-model") or data.get("model")
