@@ -322,12 +322,13 @@ def test_google_oai_compat_backend_emits_provider_gemini(monkeypatch) -> None:
     assert t3["provider_model_id"] == "gemini-3.1-pro-preview"
     assert t3["api_format"] == "openai"          # OpenAI-format body
     ref = t3["backend_refs"][0]
-    # base_url normalized to .../v1 (NOT .../v1beta/openai): the gemini cluster's
-    # Envoy route regex `^/v1 → /v1beta/openai` does that translation. Baking
-    # /v1beta/openai in too double-applies → /v1beta/openaibeta/openai/... (404).
-    assert ref["base_url"] == "https://generativelanguage.googleapis.com/v1"
-    assert ref["provider"] == "gemini"           # the type that resolves the path
-    assert "chat_path" not in ref                # verbatim chat_path would drop the base path
+    assert ref["provider"] == "gemini"
+    # Decouple the two path stages (see _emit_backend_ref_gemini): base_url path
+    # drives the route regex REPLACEMENT (/v1beta/openai); chat_path (verbatim)
+    # drives the PRE-rewrite path (/v1/chat/completions). regex maps ^/v1 →
+    # /v1beta/openai once → /v1beta/openai/chat/completions (Google's endpoint).
+    assert ref["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+    assert ref["chat_path"] == "/v1/chat/completions"
     assert ref["api_key"] == "AIza-test"
     assert "api_key_env" not in ref
     # No reasoning_family attached anywhere for this model (would route

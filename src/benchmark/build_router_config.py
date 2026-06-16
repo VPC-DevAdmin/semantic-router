@@ -386,36 +386,39 @@ def _emit_backend_ref_gemini(cfg: dict) -> dict:
     """Google Gemini via its OpenAI-compatibility surface
     (`generativelanguage.googleapis.com/v1beta/openai`).
 
-    Uses the `gemini` provider TYPE so vllm-sr resolves the path as
-    base_url-path + the gemini default suffix → `/v1beta/openai/chat/completions`
-    (Google's real endpoint). Critically NO `chat_path` (that would be taken
-    verbatim and drop the `/v1beta/openai` prefix). Auth defaults to
-    `Authorization: Bearer <key>` for the gemini type, which is what this
-    surface wants. The request BODY is still plain OpenAI format
-    (api_format=openai on the model) — vllm-sr has no native Gemini body
-    translation, and Google's compat surface reads OpenAI bodies.
+    Uses the `gemini` provider TYPE; auth defaults to `Authorization: Bearer
+    <key>`, which is what this surface wants. The request BODY stays plain
+    OpenAI format (api_format=openai on the model) — vllm-sr has no native
+    Gemini body translation, and Google's compat surface reads OpenAI bodies.
 
-    No `reasoning_family` is attached anywhere for this model on purpose: for a
-    non-openai profile vllm-sr would route reasoning_effort into
-    chat_template_kwargs, which Google's compat surface doesn't read and may
-    reject. Gemini then applies its own default thinking level.
+    Path resolution here is a TWO-stage trap that three wire captures pinned
+    down. vllm-sr's gemini cluster does both:
+      1. ResolveChatPath sets the pre-rewrite path. With `chat_path` set it is
+         used VERBATIM (base_url path ignored); empty → base_url path + suffix.
+      2. The Envoy route then applies a regex rewrite `^/v1(.*)` →
+         `<base_url-path>\\1` — i.e. the REPLACEMENT string is the base_url path.
+    Both stages key off base_url, so you cannot satisfy them by tuning base_url
+    alone:
+      • base `/v1beta/openai`, no chat_path → pre-rewrite `/v1beta/openai/chat/
+        completions`, regex replaces `^/v1` → doubles to
+        `/v1beta/openaibeta/openai/chat/completions` (404).
+      • base `/v1`,            no chat_path → pre-rewrite `/v1/chat/completions`,
+        regex `^/v1`→`/v1` is a no-op → stays `/v1/chat/completions` (404).
+    The fix DECOUPLES the two stages: base_url path drives the regex
+    REPLACEMENT (= `/v1beta/openai`), and `chat_path` (verbatim) drives the
+    PRE-rewrite path (= `/v1/chat/completions`). The regex then maps `^/v1` →
+    `/v1beta/openai` exactly once → `/v1beta/openai/chat/completions` (Google's
+    real endpoint).
 
-    base_url is normalized to scheme://host/v1 — NOT .../v1beta/openai. The
-    gemini cluster's Envoy route applies a regex rewrite `^/v1(.*)` →
-    `/v1beta/openai\\1`, so it expects the resolved chat path to be
-    `/v1/chat/completions` and translates it to Google's real
-    `/v1beta/openai/chat/completions`. If we bake `/v1beta/openai` into base_url
-    (so ResolveChatPath yields `/v1beta/openai/chat/completions`), the SAME
-    regex fires a second time and mangles it to
-    `/v1beta/openaibeta/openai/chat/completions` (observed on the wire → GFE
-    404). Feeding `/v1` lets ResolveChatPath produce `/v1/chat/completions` and
-    the route regex do the one, correct translation.
+    No `reasoning_family` anywhere (would route reasoning_effort into
+    chat_template_kwargs that Google rejects).
     """
     u = urlparse(cfg["base_url"])
     ref: dict[str, Any] = {
         "name": "primary",
-        "base_url": f"{u.scheme}://{u.netloc}/v1",
+        "base_url": f"{u.scheme}://{u.netloc}/v1beta/openai",   # → regex replacement
         "provider": "gemini",
+        "chat_path": "/v1/chat/completions",                    # → pre-rewrite path (verbatim)
         "weight": 100,
     }
     _apply_api_key(ref, cfg)

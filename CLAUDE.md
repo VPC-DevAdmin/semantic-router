@@ -268,23 +268,25 @@ Two more v0.3 behaviors that cost real debugging time:
   `x-vsr-selected-model` still speaks tier ids there. On the live path the
   header is the real model id, so `interactive_server` maps it back to a tier
   by `id OR model`, and pinning a tier sends the tier's real model name.
-- **Google Gemini needs the `gemini` provider TYPE, never a pinned
-  `chat_path`.** vllm-sr's `ProviderProfile.ResolveChatPath` uses `chat_path`
-  **verbatim** when set (the base_url path is then ignored) and only appends
-  the type-default `/chat/completions` suffix to the base_url path when
-  `chat_path` is empty. So a Gemini backend wants `provider: gemini` +
-  `base_url: https://generativelanguage.googleapis.com/v1beta/openai` + **no
-  `chat_path`** → resolves to `/v1beta/openai/chat/completions` (Google's real
-  endpoint). The body stays OpenAI format (`api_format: openai`; vllm-sr has no
-  native Gemini body translation, and the compat surface reads OpenAI bodies).
-  Do **not** attach a `reasoning_family` to a Gemini model — for a non-openai
-  profile vllm-sr routes `reasoning_effort` into `chat_template_kwargs`, which
-  Google rejects; leave it off and Gemini uses its own default thinking level.
-  `build_router_config` selects this shape automatically for any
+- **Google Gemini needs the `gemini` provider TYPE plus a DECOUPLED path
+  (`base_url` `/v1beta/openai` + `chat_path` `/v1/chat/completions`).** The
+  gemini cluster does TWO path transforms, both keyed off base_url, which three
+  Envoy wire captures pinned down: (1) `ProviderProfile.ResolveChatPath` builds
+  the pre-rewrite path — `chat_path` is used **verbatim** when set, else
+  base_url-path + `/chat/completions`; (2) the Envoy route then regex-rewrites
+  `^/v1(.*)` → `<base_url-path>\1` (the **replacement string is the base_url
+  path**). Tuning base_url alone can't win: `/v1beta/openai` + no chat_path
+  doubles to `/v1beta/openaibeta/openai/chat/completions`; `/v1` + no chat_path
+  is a `^/v1`→`/v1` no-op → stays `/v1/chat/completions`. Both 404. The fix
+  DECOUPLES the stages: `base_url: …/v1beta/openai` drives the regex
+  replacement, and `chat_path: /v1/chat/completions` (verbatim) drives the
+  pre-rewrite path → the regex maps `^/v1` → `/v1beta/openai` exactly once →
+  `/v1beta/openai/chat/completions` (Google's real endpoint). Body stays OpenAI
+  format (`api_format: openai`; no native Gemini body translation). Do **not**
+  attach a `reasoning_family` — for a non-openai profile vllm-sr routes
+  `reasoning_effort` into `chat_template_kwargs`, which Google rejects.
+  `build_router_config` emits this shape for any
   `generativelanguage.googleapis.com` base_url (`_emit_backend_ref_gemini`).
-  (A previous `chat_path: /chat/completions` we briefly pinned on ALL HTTPS
-  vendors is what 404'd Google — it dropped the `/v1beta/openai` prefix; the
-  Envoy upstream log showed `:path /chat/completions` → GFE 404 `gfet4t7`.)
 
 ## Current state (as of last commit)
 
