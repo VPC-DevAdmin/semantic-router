@@ -32,6 +32,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -313,15 +314,45 @@ def _router_ready() -> bool:
         return False
 
 
-def _wait_router_ready(deadline_s: float) -> bool:
-    """Poll /ready up to deadline_s seconds. Bounded so the Apply request never
-    hangs on the multi-minute first-run model download — we report honestly
-    instead of blocking."""
-    end = time.monotonic() + deadline_s
-    while time.monotonic() < end:
+# ── Apply progress (background thread + polled status) ───────────────────────
+# Apply is slow (stop → rebuild → launch → wait-for-ready). We run it off the
+# request thread and publish step-by-step status the UI polls, so the user sees
+# a progress bar that completes only when the router actually answers /ready.
+APPLY_STEPS = [
+    "Rebuilding router config",
+    "Checking Docker",
+    "Preparing routing model",
+    "Stopping current router",
+    "Launching vLLM Semantic Router",
+    "Waiting for the router to come online",
+]
+_apply_lock = threading.Lock()
+_apply_state = {
+    "running": False, "done": False, "ok": None, "step": 0,
+    "steps": APPLY_STEPS, "phase": "idle", "detail": "", "failed_step": None,
+}
+
+
+def _apply_set(**kw) -> None:
+    with _apply_lock:
+        _apply_state.update(kw)
+
+
+def _apply_snapshot() -> dict:
+    with _apply_lock:
+        return dict(_apply_state)
+
+
+def _wait_router_ready(deadline_s: float, progress: bool = False) -> bool:
+    """Poll /ready up to deadline_s seconds. With progress=True, publish the
+    elapsed wait to the apply status so the UI can show it live."""
+    start = time.monotonic()
+    while time.monotonic() - start < deadline_s:
         if _router_ready():
             return True
-        time.sleep(1.0)
+        if progress:
+            _apply_set(detail=f"waiting for the router apiserver… {int(time.monotonic() - start)}s")
+        time.sleep(1.5)
     return False
 
 
@@ -413,6 +444,7 @@ def apply_overlay(overlay: dict) -> dict:
             env[f"TIER{i}_1_PROVIDER"] = t["provider"]
     build_live_exemplars(overlay)
     try:
+        _apply_set(step=0, phase="building", detail="compiling exemplars + backends")
         subprocess.run(
             [sys.executable, "-m", "benchmark.build_router_config",
              "--exemplars", str(LIVE_EXEMPLARS), "--backends", str(CANON_BACKENDS),
@@ -422,6 +454,7 @@ def apply_overlay(overlay: dict) -> dict:
              # OpenAI 404s on "model tier2 does not exist").
              "--served-model-names", "real"],
             cwd=str(ROOT), env=env, check=True, capture_output=True, text=True)
+        _apply_set(step=1, phase="docker", detail="checking the Docker daemon")
         if not _docker_ready():
             return {"ok": False, "step": "docker",
                     "detail": "Docker daemon not reachable. vllm-sr runs as a Docker "
@@ -430,6 +463,7 @@ def apply_overlay(overlay: dict) -> dict:
                               "(sudo usermod -aG docker $USER, then re-login)."}
         # Pre-seed the embedding model so the first launch doesn't fail trying to
         # download it behind a firewalled HF Xet CDN. Best-effort.
+        _apply_set(step=2, phase="model", detail="ensuring the routing model is present")
         try:
             _ensure_router_model()
         except (subprocess.SubprocessError, OSError):
@@ -439,8 +473,11 @@ def apply_overlay(overlay: dict) -> dict:
         # config live (e.g. the mock-backed config from `make route`), so the UI
         # would keep showing mock answers despite real models being configured.
         # Stop first to guarantee the rebuilt config is loaded on relaunch.
+        _apply_set(step=3, phase="stopping", detail="tearing down the running stack")
         subprocess.run(["vllm-sr", "stop"], cwd=str(ROOT), env=env,
                        capture_output=True, text=True)
+        _apply_set(step=4, phase="launching",
+                   detail="starting containers (router, envoy, datastores)")
         serve = subprocess.run(["vllm-sr", "serve", "--config", str(LIVE_ROUTER_CFG),
                                 "--minimal", "--image", VLLM_SR_IMAGE],
                                cwd=str(ROOT), env=env, capture_output=True, text=True)
@@ -448,11 +485,11 @@ def apply_overlay(overlay: dict) -> dict:
             return {"ok": False, "step": "serve",
                     "detail": _clean_log(serve.stderr or serve.stdout)}
         # `vllm-sr serve` exits 0 once the stack is *launched* — not once the
-        # router is *ready*. On first launch the router still has to download
-        # its embedding model (~2-3 min), and it can crash mid-startup. Poll
-        # /ready briefly so we report the truth instead of a premature "OK".
-        if _wait_router_ready(20.0):
-            return {"ok": True, "detail": "Router config rebuilt and vllm-sr is live."}
+        # router is *ready*. Poll /ready (publishing progress) until it answers,
+        # so the UI's bar completes only when the router can actually route.
+        _apply_set(step=5, phase="waiting", detail="waiting for the router apiserver…")
+        if _wait_router_ready(240.0, progress=True):
+            return {"ok": True, "detail": "Router is live and serving."}
         return {"ok": True, "warming": True,
                 "detail": "vllm-sr launched. On first launch it downloads its routing "
                           "model (~2-3 min) before it can route — your first query may "
@@ -464,6 +501,22 @@ def apply_overlay(overlay: dict) -> dict:
     except subprocess.CalledProcessError as exc:
         return {"ok": False, "step": "build",
                 "detail": _clean_log(exc.stderr or exc.stdout or str(exc))}
+
+
+def _run_apply(overlay: dict) -> None:
+    """Background runner: drive apply_overlay, publishing terminal status the UI
+    polls. apply_overlay updates the per-step state as it goes."""
+    _apply_set(running=True, done=False, ok=None, step=0, phase="start",
+               detail="saving + rebuilding…", failed_step=None)
+    try:
+        result = apply_overlay(overlay)
+        ok = bool(result.get("ok"))
+        _apply_set(running=False, done=True, ok=ok, step=len(APPLY_STEPS),
+                   phase="done" if ok else "error", detail=result.get("detail", ""),
+                   failed_step=None if ok else result.get("step"))
+    except Exception as exc:  # noqa: BLE001 — surface any unexpected failure to the UI
+        _apply_set(running=False, done=True, ok=False, phase="error",
+                   detail=f"{type(exc).__name__}: {exc}", failed_step="unexpected")
 
 
 # ── HTTP server ──────────────────────────────────────────────────────────────
@@ -496,6 +549,9 @@ def _make_handler():
             if path == "/api/queries":
                 self._json(200, grouped_queries())
                 return
+            if path == "/api/apply/status":
+                self._json(200, _apply_snapshot())
+                return
             rel = "index.html" if path in ("/", "") else path.lstrip("/")
             f = (STATIC_DIR / rel).resolve()
             if not str(f).startswith(str(STATIC_DIR.resolve())) or not f.is_file():
@@ -525,7 +581,14 @@ def _make_handler():
                     merge_overlay(payload)
                 self._json(200, {"ok": True})
             elif path == "/api/apply":
-                self._json(200, apply_overlay(load_overlay()))
+                # Non-blocking: launch the apply on a worker thread and let the
+                # client poll /api/apply/status for the progress bar.
+                if _apply_snapshot().get("running"):
+                    self._json(200, {"started": False, "running": True})
+                else:
+                    overlay = load_overlay()
+                    threading.Thread(target=_run_apply, args=(overlay,), daemon=True).start()
+                    self._json(200, {"started": True})
             elif path == "/api/models":
                 self._json(200, list_models(payload))
             elif path == "/api/chat":

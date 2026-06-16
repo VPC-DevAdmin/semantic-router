@@ -28,6 +28,10 @@ async function boot() {
   loadChats();
   if (!chats.length) newChat(); else { currentId = chats[0].id; }
   renderPills(); renderKeyBanner(); renderExamples(); renderChatList(); renderMessages();
+  // If the page was reloaded while an Apply was in flight, re-attach to it so
+  // the sidebar status reflects the reload progress.
+  fetch('/api/apply/status').then(r => r.json())
+    .then(s => { if (s && s.running) pollApply(null); }).catch(() => {});
 }
 
 // ── Chat sessions ──────────────────────────────────────────────────────────────
@@ -471,13 +475,55 @@ async function saveCfg() {
   st.className = 'save-status ok'; st.textContent = '✓ Saved (config/live_demo.local.json)';
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function applyProgressHTML(s) {
+  const steps = s.steps || [];
+  const total = steps.length || 6;
+  const idx = Math.min(s.step || 0, total);
+  const waiting = !s.done && idx >= total - 1;
+  const pct = s.done ? 100 : (waiting ? 92 : Math.round((idx / total) * 100));
+  const label = s.done
+    ? (s.ok ? '✓ Router is live and serving' : `✕ Apply failed${s.failed_step ? ` · ${esc(s.failed_step)}` : ''}`)
+    : `Step ${Math.min(idx + 1, total)} of ${total} — ${esc(steps[idx] || s.phase || 'working…')}`;
+  const cls = s.done ? (s.ok ? 'ok' : 'err') : '';
+  return `<div class="apply-prog ${cls}">
+    <div class="ap-bar"><div class="ap-fill ${waiting ? 'indet' : ''}" style="width:${pct}%"></div></div>
+    <div class="ap-label">${label}</div>
+    ${s.detail ? `<div class="ap-detail">${esc(s.detail)}</div>` : ''}
+  </div>`;
+}
+
+function setRouterStatus(state) {
+  const dot = document.querySelector('#routerStatus .status-dot');
+  if (dot) dot.className = 'status-dot' + (state === 'live' ? '' : state === 'warming' ? ' warm' : ' down');
+  $('routerTag').textContent = state === 'warming' ? 'reloading vllm-sr…' : (CONFIG.vllm_sr_url || 'vllm-sr');
+}
+
+// Poll the background apply until done, driving both the modal progress bar
+// (if `st` is given) and the always-visible sidebar status dot.
+async function pollApply(st) {
+  for (;;) {
+    let s;
+    try { s = await (await fetch('/api/apply/status')).json(); } catch { await sleep(1200); continue; }
+    if (st) st.innerHTML = applyProgressHTML(s);
+    if (s.running) setRouterStatus('warming');
+    if (s.done) {
+      if (st) st.className = 'save-status ' + (s.ok ? 'ok' : 'err');
+      setRouterStatus(s.ok ? 'live' : 'down');
+      return s;
+    }
+    await sleep(1200);
+  }
+}
+
 async function applyCfg() {
-  const st = $('saveStatus'); st.className = 'save-status busy';
-  st.textContent = 'Saving + rebuilding router config + reloading vllm-sr…';
+  const st = $('saveStatus'); st.className = 'save-status';
+  st.innerHTML = applyProgressHTML({ steps: [], step: 0, detail: 'Saving settings…' });
+  setRouterStatus('warming');
   await persist();
-  const res = await fetch('/api/apply', { method: 'POST' }).then(r => r.json());
-  if (res.ok) { st.className = 'save-status ok'; st.textContent = '✓ ' + res.detail; }
-  else { st.className = 'save-status err'; st.textContent = `✕ apply failed (${res.step}): ${res.detail}`; }
+  await fetch('/api/apply', { method: 'POST' });
+  await pollApply(st);
 }
 
 async function resetCfg() {

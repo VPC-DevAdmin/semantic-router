@@ -281,6 +281,25 @@ body {
 .save-status.ok { color:var(--ok); }
 .save-status.err { color:var(--bad); white-space:pre-wrap; }
 
+/* apply progress bar */
+.apply-prog { margin-top:2px; }
+.ap-bar { height:8px; background:var(--border); border-radius:6px; overflow:hidden; }
+.ap-fill { height:100%; background:var(--accent); border-radius:6px; transition:width .45s ease; }
+.apply-prog.ok .ap-fill { background:var(--ok); }
+.apply-prog.err .ap-fill { background:var(--bad); }
+.ap-fill.indet { background-image:linear-gradient(90deg,var(--accent),#7e96ff,var(--accent));
+  background-size:200% 100%; animation:apshift 1.1s linear infinite; }
+@keyframes apshift { to { background-position:-200% 0; } }
+.ap-label { font-size:13px; font-weight:700; margin-top:9px; color:var(--ink); }
+.apply-prog.ok .ap-label { color:var(--ok); }
+.apply-prog.err .ap-label { color:var(--bad); }
+.ap-detail { font-size:12px; font-weight:500; color:var(--muted); margin-top:3px; }
+
+/* sidebar status dot — warming state */
+.status-dot.warm { background:var(--warn); box-shadow:0 0 0 3px rgba(199,119,0,.22);
+  animation:pulse 1.1s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.4; } }
+
 /* ── Mobile ───────────────────────────────────────────────────── */
 @media (max-width:840px) {
   .app { grid-template-columns:1fr; }
