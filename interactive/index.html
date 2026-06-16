@@ -164,11 +164,16 @@
     <div class="diag-containers" id="diagContainers"></div>
 
     <h3 class="sec">Router log
-      <span class="sec-tag">classify → decide → call → usage</span>
+      <span class="sec-tag">classify → decide (ExtProc)</span>
       <label class="diag-auto"><input type="checkbox" id="diagAuto"> auto-refresh</label>
       <button class="mini-btn" id="diagRefresh">↻ refresh</button>
     </h3>
     <div class="diag-log" id="diagLog"></div>
+
+    <h3 class="sec">Upstream calls <span class="sec-tag">Envoy — the actual HTTP call to the model (path + status)</span></h3>
+    <p class="sec-note">The router decides the tier, then Envoy makes the call. A routed-but-failed
+       request (e.g. an upstream 404) shows up here, not in the router log above.</p>
+    <div class="diag-log" id="diagEnvoyLog"></div>
   </div>
 </div>
 

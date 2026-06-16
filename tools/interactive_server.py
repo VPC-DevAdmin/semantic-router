@@ -220,6 +220,7 @@ def _matched_signals(h: dict) -> list:
 
 
 ROUTER_LOG_CONTAINER = "vllm-sr-router-container"
+ENVOY_LOG_CONTAINER = "vllm-sr-envoy-container"
 
 
 def _docker_logs(container: str, tail: int = 200) -> str:
@@ -237,10 +238,26 @@ def _docker_logs(container: str, tail: int = 200) -> str:
 _LOG_NOISE = ("[Perf]", "Registered algorithm")
 
 
-def _diag_log(tail: int = 250) -> list:
-    """Parse the router log into compact rows for the UI: level, message, and a
-    handful of the interesting fields per event. Drops the preload/registration
-    spam so the per-request flow (classify → decide → call → usage) is legible."""
+def _plain_level(line: str) -> str:
+    """Best-effort severity for a non-JSON log line (Envoy access logs, raw
+    upstream errors). Surfaces 4xx/5xx and connection failures so the row that
+    actually explains a routed-but-failed call stands out."""
+    low = line.lower()
+    if any(w in low for w in ("error", "reset", "refused", "timeout", "failed",
+                              "no healthy upstream", " uf", " uc", " urx")):
+        return "error"
+    if re.search(r"\b[45]\d\d\b", line):
+        return "warn"
+    return "info"
+
+
+def _diag_log(container: str = ROUTER_LOG_CONTAINER, tail: int = 250) -> list:
+    """Parse a container log into compact rows for the UI: level, message, and a
+    handful of the interesting fields per event. The router emits JSON events
+    (classify → decide → call → usage) — we drop the preload/registration spam
+    and pull the interesting fields. Envoy emits plain access lines (the actual
+    upstream call: path + status) — those go through _plain_level so a 404/reset
+    is flagged."""
     keep_fields = (
         "decision", "selected_model", "request_difficulty", "reason_code",
         "routing_latency_ms", "response_status", "model", "completion_latency_ms",
@@ -248,7 +265,7 @@ def _diag_log(tail: int = 250) -> list:
         "matched", "threshold", "rule",
     )
     rows: list = []
-    for line in _docker_logs(ROUTER_LOG_CONTAINER, tail).splitlines():
+    for line in _docker_logs(container, tail).splitlines():
         line = line.strip()
         if not line or any(n in line for n in _LOG_NOISE):
             continue
@@ -256,14 +273,14 @@ def _diag_log(tail: int = 250) -> list:
             try:
                 j = json.loads(line)
             except ValueError:
-                rows.append({"level": "info", "msg": line[:400], "fields": {}})
+                rows.append({"level": _plain_level(line), "msg": line[:400], "fields": {}})
                 continue
             fields = {k: j[k] for k in keep_fields if k in j and j[k] not in (None, "")}
             rows.append({"level": j.get("level", "info"),
                          "ts": (j.get("ts") or "")[11:19],   # HH:MM:SS
                          "msg": j.get("msg", ""), "fields": fields})
         else:
-            rows.append({"level": "info", "msg": line[:400], "fields": {}})
+            rows.append({"level": _plain_level(line), "msg": line[:400], "fields": {}})
     return rows[-250:]
 
 
@@ -688,11 +705,13 @@ def _make_handler():
             if path == "/api/diag":
                 self._json(200, {"upstreams": _diag_upstreams(),
                                  "containers": _diag_containers(),
-                                 "log": _diag_log()})
+                                 "log": _diag_log(ROUTER_LOG_CONTAINER),
+                                 "envoy_log": _diag_log(ENVOY_LOG_CONTAINER)})
                 return
             if path == "/api/diag/log":
                 tail = int(self.path.split("tail=", 1)[1]) if "tail=" in self.path else 250
-                self._json(200, {"log": _diag_log(tail)})
+                self._json(200, {"log": _diag_log(ROUTER_LOG_CONTAINER, tail),
+                                 "envoy_log": _diag_log(ENVOY_LOG_CONTAINER, tail)})
                 return
             rel = "index.html" if path in ("/", "") else path.lstrip("/")
             f = (STATIC_DIR / rel).resolve()

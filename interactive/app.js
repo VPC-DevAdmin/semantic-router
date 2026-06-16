@@ -593,6 +593,7 @@ async function openDiag() {
   $('diagUpstreams').innerHTML = '<div class="diag-empty">loading…</div>';
   $('diagContainers').innerHTML = '';
   $('diagLog').innerHTML = '<div class="diag-empty">loading…</div>';
+  $('diagEnvoyLog').innerHTML = '<div class="diag-empty">loading…</div>';
   await refreshDiag(true);
 }
 
@@ -601,7 +602,8 @@ async function refreshDiag(full) {
   try { d = await (await fetch(full ? '/api/diag' : '/api/diag/log')).json(); }
   catch { $('diagLog').innerHTML = '<div class="diag-empty">router not reachable</div>'; return; }
   if (full) { renderUpstreams(d.upstreams || []); renderContainers(d.containers || []); }
-  renderDiagLog(d.log || []);
+  renderDiagLog($('diagLog'), d.log || []);
+  renderDiagLog($('diagEnvoyLog'), d.envoy_log || []);
 }
 
 function renderUpstreams(rows) {
@@ -626,8 +628,7 @@ function renderContainers(rows) {
   }).join('');
 }
 
-function renderDiagLog(rows) {
-  const el = $('diagLog');
+function renderDiagLog(el, rows) {
   if (!rows.length) { el.innerHTML = '<div class="diag-empty">no log lines yet — send a prompt</div>'; return; }
   const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
   el.innerHTML = rows.map(r => {
