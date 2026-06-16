@@ -686,6 +686,11 @@ def _emit_decision_for_band(tier_id: str) -> dict:
             "conditions": [{"type": "projection", "name": f"{tier_id}_band"}],
         },
         "modelRefs": [{"model": tier_id, "use_reasoning": False}],
+        # Required by vllm-sr v0.3: without a per-decision algorithm the selector
+        # passes the modelRef's logical name (tier id) straight upstream instead
+        # of resolving it to the model's provider_model_id. `static` picks the
+        # single configured model — exactly our one-model-per-tier shape.
+        "algorithm": {"type": "static"},
     }
 
 
@@ -723,6 +728,7 @@ def _emit_tier5_embedding_frontier_lane(embedding_signal_id: str) -> dict:
             ],
         },
         "modelRefs": [{"model": "tier5", "use_reasoning": False}],
+        "algorithm": {"type": "static"},
     }
 
 
@@ -756,6 +762,7 @@ def _emit_tier5_committed_judgment_lane() -> dict:
             ],
         },
         "modelRefs": [{"model": "tier5", "use_reasoning": False}],
+        "algorithm": {"type": "static"},
     }
 
 
@@ -796,6 +803,7 @@ def _emit_tier5_frontier_lane() -> dict:
             ],
         },
         "modelRefs": [{"model": "tier5", "use_reasoning": False}],
+        "algorithm": {"type": "static"},
     }
 
 
