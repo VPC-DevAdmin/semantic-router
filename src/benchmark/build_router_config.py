@@ -399,10 +399,22 @@ def _emit_backend_ref_gemini(cfg: dict) -> dict:
     non-openai profile vllm-sr would route reasoning_effort into
     chat_template_kwargs, which Google's compat surface doesn't read and may
     reject. Gemini then applies its own default thinking level.
+
+    base_url is normalized to scheme://host/v1 — NOT .../v1beta/openai. The
+    gemini cluster's Envoy route applies a regex rewrite `^/v1(.*)` →
+    `/v1beta/openai\\1`, so it expects the resolved chat path to be
+    `/v1/chat/completions` and translates it to Google's real
+    `/v1beta/openai/chat/completions`. If we bake `/v1beta/openai` into base_url
+    (so ResolveChatPath yields `/v1beta/openai/chat/completions`), the SAME
+    regex fires a second time and mangles it to
+    `/v1beta/openaibeta/openai/chat/completions` (observed on the wire → GFE
+    404). Feeding `/v1` lets ResolveChatPath produce `/v1/chat/completions` and
+    the route regex do the one, correct translation.
     """
+    u = urlparse(cfg["base_url"])
     ref: dict[str, Any] = {
         "name": "primary",
-        "base_url": cfg["base_url"].rstrip("/"),
+        "base_url": f"{u.scheme}://{u.netloc}/v1",
         "provider": "gemini",
         "weight": 100,
     }

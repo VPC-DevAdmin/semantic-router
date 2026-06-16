@@ -322,7 +322,10 @@ def test_google_oai_compat_backend_emits_provider_gemini(monkeypatch) -> None:
     assert t3["provider_model_id"] == "gemini-3.1-pro-preview"
     assert t3["api_format"] == "openai"          # OpenAI-format body
     ref = t3["backend_refs"][0]
-    assert ref["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+    # base_url normalized to .../v1 (NOT .../v1beta/openai): the gemini cluster's
+    # Envoy route regex `^/v1 → /v1beta/openai` does that translation. Baking
+    # /v1beta/openai in too double-applies → /v1beta/openaibeta/openai/... (404).
+    assert ref["base_url"] == "https://generativelanguage.googleapis.com/v1"
     assert ref["provider"] == "gemini"           # the type that resolves the path
     assert "chat_path" not in ref                # verbatim chat_path would drop the base path
     assert ref["api_key"] == "AIza-test"
