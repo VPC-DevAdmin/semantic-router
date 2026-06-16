@@ -5,6 +5,7 @@
 
 const TIER_COLORS = ['#1FB67A', '#11A8C4', '#F2A93B', '#E8743B', '#E64B5C', '#8B5CF6', '#0EA5E9'];
 const tierColor = i => TIER_COLORS[i % TIER_COLORS.length];
+const AXIS_MAX = 0.7;   // top of the difficulty scale (shared by chat meter + cutoff editor)
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
@@ -160,13 +161,13 @@ function rationaleHTML(r) {
     ${conf != null ? `<span class="rat-conf">${conf}% confidence</span>` : ''}
     ${r.forced ? '<span class="rat-forced">forced</span>' : ''}
   </div>`;
-  return `<div class="rationale">${head}${difficultyMeter(r)}${signalChips(r)}</div>`;
+  return `<div class="rationale">${head}${difficultyMeter(r)}${signalBars(r)}</div>`;
 }
 
 function difficultyMeter(r) {
   const tiers = CONFIG.tiers, cuts = (CONFIG.tier_cutoffs || []).slice();
   if (tiers.length < 2 || cuts.length !== tiers.length - 1) return '';
-  const lo = 0, hi = Math.max((cuts[cuts.length - 1] || 0.4) * 1.4, 0.12);
+  const lo = 0, hi = AXIS_MAX;
   const edges = [lo, ...cuts, hi];
   const selIdx = tierIndexById(r.selected_tier_id);
   let segs = '';
@@ -192,28 +193,46 @@ const SIGNAL_LABELS = {
   'query_difficulty:hard': 'High difficulty', 'query_difficulty:medium': 'Medium difficulty',
   'query_difficulty:easy': 'Low difficulty',
 };
-function niceSignal(key) {
-  const parts = String(key).split(':');
-  if (parts[0] === 'projection') return null;     // shown in the meter
-  const rest = parts.slice(1).join(':');
-  return SIGNAL_LABELS[rest] || rest.replace(/_/g, ' ');
-}
-function signalChips(r) {
-  let rows = [];
+// Per-signal bars: each tunable signal's score against its threshold, with the
+// bar lit up when the score crosses (the signal "fired"). Pairs the live score
+// (from the router log) with the threshold the user set (from CONFIG).
+function signalBars(r) {
   const sc = r.signal_confidences || {};
-  for (const [k, v] of Object.entries(sc)) {
-    const label = niceSignal(k);
-    if (label) rows.push({ label, score: typeof v === 'number' ? v : null });
+  const rows = (CONFIG.signals || []).map(s => {
+    const score = sc['embedding:' + s.id];
+    return {
+      label: (SIGNAL_INFO[s.id] || {}).label || SIGNAL_LABELS[s.id] || s.id.replace(/_/g, ' '),
+      score: typeof score === 'number' ? score : null,
+      threshold: s.threshold ?? null,
+      down: (s.weight ?? 0) < 0,
+    };
+  }).filter(x => x.score != null);
+  if (!rows.length) {
+    // No live scores (log read failed) — fall back to matched-signal names.
+    const names = (r.matched || []).filter(m => m.type !== 'projection')
+      .map(m => SIGNAL_LABELS[m.name] || m.name.replace(/_/g, ' '));
+    if (!names.length) return '';
+    return `<div class="rat-signals"><span class="rat-signals-label">Signals that fired</span>${
+      names.map(n => `<span class="sigbar-name" style="margin-right:10px">${esc(n)}</span>`).join('')}</div>`;
   }
-  if (!rows.length && Array.isArray(r.matched)) {
-    rows = r.matched.filter(m => m.type !== 'projection')
-      .map(m => ({ label: SIGNAL_LABELS[m.name] || m.name.replace(/_/g, ' '), score: null }));
-  }
-  if (!rows.length) return '';
   rows.sort((a, b) => (b.score || 0) - (a.score || 0));
-  const chips = rows.slice(0, 6).map(s =>
-    `<span class="sig-chip">${esc(s.label)}${s.score != null ? `<b>${s.score.toFixed(2)}</b>` : ''}</span>`).join('');
-  return `<div class="rat-signals"><span class="rat-signals-label">Why</span>${chips}</div>`;
+  const bars = rows.map(x => {
+    const crossed = x.threshold != null && x.score >= x.threshold;
+    const fill = Math.max(0, Math.min(100, x.score * 100));
+    const thr = x.threshold != null ? Math.max(0, Math.min(100, x.threshold * 100)) : null;
+    return `<div class="sigbar${crossed ? ' crossed' : ''}${x.down ? ' down' : ''}">
+      <div class="sigbar-head">
+        <span class="sigbar-name">${esc(x.label)}</span>
+        <span class="sigbar-nums"><b>${x.score.toFixed(2)}</b>${x.threshold != null ? ` / thr ${x.threshold.toFixed(2)}` : ''}</span>
+      </div>
+      <div class="sigbar-track"><div class="sigbar-fill" style="width:${fill}%"></div>${
+        thr != null ? `<div class="sigbar-thresh" style="left:${thr}%" title="threshold ${x.threshold.toFixed(2)}"></div>` : ''}</div>
+    </div>`;
+  }).join('');
+  const foot = r.request_difficulty != null
+    ? `<div class="rat-foot">Combined difficulty score <b>${Number(r.request_difficulty).toFixed(3)}</b> → ${esc(r.selected_tier_name || '')}</div>`
+    : '';
+  return `<div class="rat-signals"><span class="rat-signals-label">Signals — score vs. threshold</span>${bars}${foot}</div>`;
 }
 
 // minimal markdown: fenced code blocks, inline code, bold, paragraphs
@@ -280,8 +299,8 @@ function renderKeyBanner() {
   if (CONFIG.tiers.length && withKey === CONFIG.tiers.length) { banner.hidden = true; return; }
   banner.hidden = false;
   banner.innerHTML = `⚠ ${withKey === 0 ? 'No API keys set' : (CONFIG.tiers.length - withKey) + ' tier(s) have no API key'} — `
-    + `routing runs, but a tier with no key can't answer. <a id="bannerSettings">Open Settings →</a>`;
-  $('bannerSettings').onclick = openSettings;
+    + `routing runs, but a tier with no key can't answer. <a id="bannerSettings">Open Model tiers →</a>`;
+  $('bannerSettings').onclick = openTiers;
 }
 
 function renderExamples() {
@@ -372,24 +391,45 @@ async function loadTierModels(root, tierId, btn) {
   }
 }
 
+// ── Routing: difficulty cutoffs (band preview + sliders) ────────────────────────
+function renderScoreAxis() {
+  const host = $('scoreAxis'); if (!host) return;
+  const cuts = CONFIG.tier_cutoffs || [];
+  const edges = [0, ...cuts, AXIS_MAX];
+  host.innerHTML = CONFIG.tiers.map((t, i) => {
+    const w = Math.max(0, ((edges[i + 1] - edges[i]) / AXIS_MAX) * 100);
+    return `<div class="ax-band" style="width:${w}%;background:${tierColor(i)}"><span class="ax-name">${esc(t.name)}</span></div>`;
+  }).join('');
+}
 function renderCutoffs() {
+  renderScoreAxis();
   const host = $('cutoffEditors'); host.innerHTML = '';
   (CONFIG.tier_cutoffs || []).forEach((c, i) => {
-    const l = document.createElement('label');
-    l.innerHTML = `${esc(CONFIG.tiers[i]?.name || 'T' + (i + 1))} → ${esc(CONFIG.tiers[i + 1]?.name || 'T' + (i + 2))}
-      <input class="cutoff" type="number" step="0.01" value="${c}">`;
-    host.appendChild(l);
+    const row = document.createElement('div'); row.className = 'cutoff-row';
+    row.innerHTML = `<span class="co-label">${esc(CONFIG.tiers[i]?.name || 'T' + (i + 1))} → ${esc(CONFIG.tiers[i + 1]?.name || 'T' + (i + 2))}</span>
+      <input type="range" min="0" max="${AXIS_MAX}" step="0.01" value="${c}">
+      <span class="co-val">${(+c).toFixed(2)}</span>`;
+    const input = row.querySelector('input'), val = row.querySelector('.co-val');
+    input.addEventListener('input', () => {
+      const cuts = CONFIG.tier_cutoffs;
+      const lo = i > 0 ? cuts[i - 1] + 0.01 : 0.005;
+      const hi = i < cuts.length - 1 ? cuts[i + 1] - 0.01 : AXIS_MAX - 0.005;
+      const v = Math.min(Math.max(parseFloat(input.value), lo), hi);
+      input.value = v.toFixed(2); cuts[i] = v; val.textContent = v.toFixed(2);
+      renderScoreAxis();
+    });
+    host.appendChild(row);
   });
 }
 
 const SIGNAL_INFO = {
-  trivial_lookup: { label: 'Looks trivial', hint: 'Short factual or lookup-style prompts.' },
+  trivial_lookup: { label: 'Looks trivial', hint: 'Short factual or lookup-style prompts — should route cheap.' },
   moderate_complexity: { label: 'Moderate reasoning', hint: 'Single- or multi-step reasoning and summarization.' },
-  frontier_synthesis: { label: 'Frontier synthesis', hint: 'Hard, novel, cross-source synthesis.' },
+  frontier_synthesis: { label: 'Frontier synthesis', hint: 'Hard, novel, cross-source synthesis — should route to the frontier model.' },
   argumentative_construction: { label: 'Argument construction', hint: 'Building structured arguments or proofs.' },
 };
 const sigInfo = s => SIGNAL_INFO[s.id] || { label: s.id, hint: s.description || '' };
-const sigDir = w => w < 0 ? { txt: '↓ toward cheaper tiers', cls: 'down' } : { txt: '↑ toward stronger tiers', cls: 'up' };
+const sigDir = w => w < 0 ? { txt: '↓ cheaper', cls: 'down' } : { txt: '↑ stronger', cls: 'up' };
 
 function renderSignals() {
   const host = $('signalEditors'); host.innerHTML = '';
@@ -397,31 +437,31 @@ function renderSignals() {
     const node = $('signalEditorTpl').content.cloneNode(true);
     const root = node.querySelector('.signal-editor');
     root.dataset.id = s.id;
-    const info = sigInfo(s), dir = sigDir(s.weight ?? 0);
-    const cands = s.candidates || [];
-    node.querySelector('.sig-label').textContent = info.label;
-    const d = node.querySelector('.sig-dir'); d.textContent = dir.txt; d.className = 'sig-dir ' + dir.cls;
-    node.querySelector('.sig-count').textContent = `${cands.length} examples`;
-    node.querySelector('.sig-blurb').textContent = info.hint;
-    node.querySelector('.sig-cands-ta').value = cands.join('\n');
-    node.querySelector('.sig-weight').value = s.weight ?? 0;
-    node.querySelector('.sig-threshold').value = s.threshold ?? 0.5;
-    const toggle = node.querySelector('.sig-toggle'), body = node.querySelector('.sig-body');
-    const ta = node.querySelector('.sig-cands-ta');
-    const count = node.querySelector('.sig-count');
-    toggle.onclick = () => {
-      const opening = body.hidden;
-      body.hidden = !opening;
-      toggle.querySelector('.sig-chevron').textContent = opening ? '▾' : '▸';
+    node.querySelector('.sig-label').textContent = sigInfo(s).label;
+    node.querySelector('.sig-blurb').textContent = sigInfo(s).hint;
+    const w = node.querySelector('.sig-weight'), t = node.querySelector('.sig-threshold');
+    const wv = node.querySelector('.sig-weight-val'), tv = node.querySelector('.sig-threshold-val');
+    const dir = node.querySelector('.sig-dir');
+    w.value = s.weight ?? 0; t.value = s.threshold ?? 0.6;
+    const syncW = () => {
+      const v = parseFloat(w.value);
+      wv.textContent = (v > 0 ? '+' : '') + v.toFixed(2);
+      const d = sigDir(v); dir.textContent = d.txt; dir.className = 'sig-dir ' + d.cls;
     };
-    ta.addEventListener('input', () => {
-      count.textContent = `${ta.value.split('\n').filter(l => l.trim()).length} examples`;
-    });
+    const syncT = () => { tv.textContent = parseFloat(t.value).toFixed(2); };
+    syncW(); syncT();
+    w.addEventListener('input', syncW);
+    t.addEventListener('input', syncT);
+    const ta = node.querySelector('.sig-cands-ta'), count = node.querySelector('.sig-count');
+    const cands = s.candidates || [];
+    ta.value = cands.join('\n'); count.textContent = cands.length;
+    ta.addEventListener('input', () => { count.textContent = ta.value.split('\n').filter(l => l.trim()).length; });
     host.appendChild(node);
   });
 }
 
-function collectConfig() {
+// ── Collect per modal (only the open modal's editors are in the DOM) ────────────
+function collectTiers() {
   CONFIG.vllm_sr_url = $('vllmUrl').value.trim() || CONFIG.vllm_sr_url;
   const tiers = [];
   $('tierEditors').querySelectorAll('.tier-editor').forEach((root, i) => {
@@ -437,7 +477,9 @@ function collectConfig() {
     });
   });
   CONFIG.tiers = tiers;
-  CONFIG.tier_cutoffs = [...$('cutoffEditors').querySelectorAll('.cutoff')].map(i => parseFloat(i.value) || 0);
+}
+function collectRouting() {
+  CONFIG.tier_cutoffs = [...$('cutoffEditors').querySelectorAll('input[type=range]')].map(i => parseFloat(i.value) || 0);
   CONFIG.signals = [...$('signalEditors').querySelectorAll('.signal-editor')].map(root => ({
     id: root.dataset.id,
     weight: parseFloat(root.querySelector('.sig-weight').value) || 0,
@@ -446,33 +488,50 @@ function collectConfig() {
     candidates: root.querySelector('.sig-cands-ta').value.split('\n').map(x => x.trim()).filter(Boolean),
   }));
 }
+function collectFor(which) { if (which === 'tiers') collectTiers(); else if (which === 'routing') collectRouting(); }
 
 function addTier() {
-  collectConfig();
+  collectTiers();
   CONFIG.tiers.push({ id: `tier${Date.now().toString(36)}`, name: `Tier ${CONFIG.tiers.length + 1}`,
     provider: 'OpenAI-compatible', model: '', base_url: '', api_key: '', key_set: false });
   renderTierEditors();
 }
 
-function openSettings() {
+function openTiers() {
   $('vllmUrl').value = CONFIG.vllm_sr_url || '';
-  renderTierEditors(); renderCutoffs(); renderSignals();
-  $('saveStatus').textContent = ''; $('settingsModal').hidden = false;
+  renderTierEditors();
+  $('tiersStatus').textContent = ''; $('tiersStatus').className = 'save-status';
+  $('tiersModal').hidden = false; closeSidebar();
 }
-const closeSettings = () => { $('settingsModal').hidden = true; };
+function openRouting() {
+  renderSignals(); renderCutoffs();
+  $('routingStatus').textContent = ''; $('routingStatus').className = 'save-status';
+  $('routingModal').hidden = false; closeSidebar();
+}
 
-async function persist() {
-  collectConfig();
+async function persist(which) {
+  collectFor(which);
   await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(CONFIG) });
   CONFIG = await (await fetch('/api/config')).json();
   renderPills(); renderKeyBanner();
 }
 
-async function saveCfg() {
-  const st = $('saveStatus'); st.className = 'save-status busy'; st.textContent = 'Saving…';
-  await persist();
+async function doSave(which) {
+  const st = which === 'tiers' ? $('tiersStatus') : $('routingStatus');
+  st.className = 'save-status busy'; st.textContent = 'Saving…';
+  await persist(which);
   st.className = 'save-status ok'; st.textContent = '✓ Saved (config/live_demo.local.json)';
+}
+
+async function doApply(which) {
+  const st = which === 'tiers' ? $('tiersStatus') : $('routingStatus');
+  st.className = 'save-status';
+  st.innerHTML = applyProgressHTML({ steps: [], step: 0, detail: 'Saving settings…' });
+  setRouterStatus('warming');
+  await persist(which);
+  await fetch('/api/apply', { method: 'POST' });
+  await pollApply(st);
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -517,21 +576,12 @@ async function pollApply(st) {
   }
 }
 
-async function applyCfg() {
-  const st = $('saveStatus'); st.className = 'save-status';
-  st.innerHTML = applyProgressHTML({ steps: [], step: 0, detail: 'Saving settings…' });
-  setRouterStatus('warming');
-  await persist();
-  await fetch('/api/apply', { method: 'POST' });
-  await pollApply(st);
-}
-
 async function resetCfg() {
-  const st = $('saveStatus'); st.className = 'save-status busy'; st.textContent = 'Resetting…';
+  const st = $('tiersStatus'); st.className = 'save-status busy'; st.textContent = 'Resetting…';
   await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...CONFIG, _reset: true }) });
   CONFIG = await (await fetch('/api/config')).json();
-  openSettings(); renderPills(); renderKeyBanner();
+  openTiers(); renderPills(); renderKeyBanner();
   st.className = 'save-status ok'; st.textContent = '✓ Reset';
 }
 
@@ -547,11 +597,13 @@ function autoGrow() {
   $('input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
   $('exToggle').onclick = () => toggleExamples();
   $('hamburger').onclick = openSidebar;
-  $('settingsBtn').onclick = openSettings;
-  $('closeSettings').onclick = closeSettings;
+  $('tiersBtn').onclick = openTiers;
+  $('routingBtn').onclick = openRouting;
   $('addTier').onclick = addTier;
-  $('saveCfg').onclick = saveCfg;
-  $('applyCfg').onclick = applyCfg;
   $('resetCfg').onclick = resetCfg;
-  $('settingsModal').addEventListener('click', e => { if (e.target.id === 'settingsModal') closeSettings(); });
+  document.querySelectorAll('[data-save]').forEach(b => b.onclick = () => doSave(b.dataset.save));
+  document.querySelectorAll('[data-apply]').forEach(b => b.onclick = () => doApply(b.dataset.apply));
+  document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => { $(b.dataset.close).hidden = true; });
+  ['tiersModal', 'routingModal'].forEach(id => $(id).addEventListener('click',
+    e => { if (e.target.id === id) $(id).hidden = true; }));
 })();
