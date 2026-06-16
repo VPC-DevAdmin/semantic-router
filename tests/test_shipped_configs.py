@@ -300,14 +300,17 @@ def test_openai_https_backend_emits_provider_openai(monkeypatch, tmp_path) -> No
     assert "protocol" not in ref
 
 
-def test_google_oai_compat_backend_emits_provider_openai(monkeypatch) -> None:
-    """Google Gemini's OAI-compatible endpoint should flow through the
-    same `provider: openai` + Bearer-auth path as OpenAI itself, since
-    Google designed that endpoint to be OAI-format-equivalent."""
+def test_google_oai_compat_backend_emits_provider_gemini(monkeypatch) -> None:
+    """Google's OAI-compat endpoint must use the `gemini` provider TYPE — NOT
+    `openai` with a pinned chat_path. vllm-sr's ResolveChatPath appends the
+    gemini type-default suffix to the base_url path → /v1beta/openai/chat/
+    completions (Google's real endpoint). A `chat_path` would be taken verbatim
+    and drop the /v1beta/openai prefix, which is what 404'd Google before.
+    Body stays OpenAI format (api_format=openai)."""
     monkeypatch.setenv(
         "TIER3_1_URL", "https://generativelanguage.googleapis.com/v1beta/openai"
     )
-    monkeypatch.setenv("TIER3_1_MODEL", "gemini-2.5-flash")
+    monkeypatch.setenv("TIER3_1_MODEL", "gemini-3.1-pro-preview")
     monkeypatch.setenv("TIER3_1_API_KEY", "AIza-test")
     from benchmark.build_router_config import build
     cfg = build(
@@ -316,18 +319,34 @@ def test_google_oai_compat_backend_emits_provider_openai(monkeypatch) -> None:
         eval_set_path=None,
     )
     t3 = next(m for m in cfg["providers"]["models"] if m["name"] == "tier3")
-    assert t3["provider_model_id"] == "gemini-2.5-flash"
-    assert t3["api_format"] == "openai"
+    assert t3["provider_model_id"] == "gemini-3.1-pro-preview"
+    assert t3["api_format"] == "openai"          # OpenAI-format body
     ref = t3["backend_refs"][0]
     assert ref["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
-    assert ref["provider"] == "openai"
-    assert ref["auth_header"] == "Authorization"
-    assert ref["auth_prefix"] == "Bearer"
-    # Key is resolved at build time and inlined as `api_key`,
-    # so the router service reads it from the config (its docker
-    # container doesn't have TIER{N}_{i}_API_KEY env vars).
-    assert ref["api_key"] == "sk-test" or ref["api_key"] == "AIza-test"
+    assert ref["provider"] == "gemini"           # the type that resolves the path
+    assert "chat_path" not in ref                # verbatim chat_path would drop the base path
+    assert ref["api_key"] == "AIza-test"
     assert "api_key_env" not in ref
+    # No reasoning_family attached anywhere for this model (would route
+    # reasoning_effort into chat_template_kwargs that Google rejects).
+    assert "reasoning_family" not in ref and "reasoning_family" not in t3
+
+
+def test_openai_https_backend_has_no_verbatim_chat_path(monkeypatch) -> None:
+    """The OpenAI vendor ref must NOT pin chat_path either — base_url `/v1` +
+    the openai type-default suffix already yields /v1/chat/completions."""
+    monkeypatch.setenv("TIER3_1_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("TIER3_1_MODEL", "gpt-5-mini")
+    monkeypatch.setenv("TIER3_1_API_KEY", "sk-test")
+    from benchmark.build_router_config import build
+    cfg = build(
+        exemplars_path=ROOT / "config" / "router-exemplars.yaml",
+        backends_path=ROOT / "config" / "router-backends.yaml",
+        eval_set_path=None,
+    )
+    ref = next(m for m in cfg["providers"]["models"]
+               if m["name"] == "tier3")["backend_refs"][0]
+    assert "chat_path" not in ref
 
 
 def test_anthropic_backend_still_takes_anthropic_path(monkeypatch) -> None:

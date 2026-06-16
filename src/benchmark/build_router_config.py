@@ -288,6 +288,10 @@ def _is_anthropic(base_url: str) -> bool:
     return "anthropic.com" in base_url.lower()
 
 
+def _is_google(base_url: str) -> bool:
+    return "generativelanguage.googleapis.com" in base_url.lower()
+
+
 def _is_https(base_url: str) -> bool:
     return base_url.lower().startswith("https://")
 
@@ -356,6 +360,14 @@ def _emit_backend_ref_openai(cfg: dict) -> dict:
     Fireworks, etc.). Mirrors the upstream canonical config.yaml shape:
     `provider: openai`, `base_url:` (with scheme), `auth_header` +
     `auth_prefix` for Bearer auth, key resolved inline from env at build.
+
+    No `chat_path`: vllm-sr's ProviderProfile.ResolveChatPath uses chat_path
+    VERBATIM when set (the base_url path is then ignored), and only appends the
+    type-default suffix (`/chat/completions`) to the base_url path when it's
+    empty. So for base_url `https://api.openai.com/v1` the resolved upstream
+    path is the correct `/v1/chat/completions`. (An earlier explicit
+    `chat_path: /chat/completions` here forced the path to drop the base path —
+    which is exactly what 404'd Google's `/v1beta/openai` surface.)
     """
     base = cfg["base_url"].rstrip("/")
     ref: dict[str, Any] = {
@@ -364,13 +376,34 @@ def _emit_backend_ref_openai(cfg: dict) -> dict:
         "provider": "openai",
         "auth_header": "Authorization",
         "auth_prefix": "Bearer",
-        # Pin the chat path explicitly (appended to base_url) instead of relying
-        # on vllm-sr's /v1→base-path regex rewrite, which doesn't fire at runtime
-        # for non-/v1 bases like Google's /v1beta/openai (Google then 404s the
-        # request). With base_url ending in /v1beta/openai this yields the
-        # correct /v1beta/openai/chat/completions; for api.openai.com/v1 it's the
-        # usual /v1/chat/completions.
-        "chat_path": "/chat/completions",
+        "weight": 100,
+    }
+    _apply_api_key(ref, cfg)
+    return ref
+
+
+def _emit_backend_ref_gemini(cfg: dict) -> dict:
+    """Google Gemini via its OpenAI-compatibility surface
+    (`generativelanguage.googleapis.com/v1beta/openai`).
+
+    Uses the `gemini` provider TYPE so vllm-sr resolves the path as
+    base_url-path + the gemini default suffix → `/v1beta/openai/chat/completions`
+    (Google's real endpoint). Critically NO `chat_path` (that would be taken
+    verbatim and drop the `/v1beta/openai` prefix). Auth defaults to
+    `Authorization: Bearer <key>` for the gemini type, which is what this
+    surface wants. The request BODY is still plain OpenAI format
+    (api_format=openai on the model) — vllm-sr has no native Gemini body
+    translation, and Google's compat surface reads OpenAI bodies.
+
+    No `reasoning_family` is attached anywhere for this model on purpose: for a
+    non-openai profile vllm-sr would route reasoning_effort into
+    chat_template_kwargs, which Google's compat surface doesn't read and may
+    reject. Gemini then applies its own default thinking level.
+    """
+    ref: dict[str, Any] = {
+        "name": "primary",
+        "base_url": cfg["base_url"].rstrip("/"),
+        "provider": "gemini",
         "weight": 100,
     }
     _apply_api_key(ref, cfg)
@@ -392,8 +425,10 @@ def _emit_provider_model(tier_id: str, cfg: dict) -> dict:
     directly), so the per-vendor model names live in `.env` rather than
     leaking into the router's compiled config.
 
-    Three backend_ref shapes (chosen by base_url):
+    Four backend_ref shapes (chosen by base_url):
       • anthropic.com → Anthropic provider (handles OAI→Anthropic shape).
+      • generativelanguage.googleapis.com → Gemini provider TYPE (so the path
+        resolves to /v1beta/openai/chat/completions); body stays OpenAI format.
       • Any other HTTPS → generic OpenAI-compatible vendor (api.openai.com,
         OpenRouter, etc.). Uses Bearer auth, `provider: openai`.
       • HTTP (localhost) → the existing local-OAI shape (`protocol: http`).
@@ -402,6 +437,9 @@ def _emit_provider_model(tier_id: str, cfg: dict) -> dict:
     if _is_anthropic(base_url):
         api_format = "anthropic"
         ref = _emit_backend_ref_anthropic(cfg)
+    elif _is_google(base_url):
+        api_format = "openai"   # OpenAI-format body; gemini profile only fixes path/auth
+        ref = _emit_backend_ref_gemini(cfg)
     elif _is_https(base_url):
         api_format = "openai"
         ref = _emit_backend_ref_openai(cfg)
