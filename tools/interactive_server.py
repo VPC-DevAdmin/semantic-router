@@ -142,6 +142,9 @@ def _provider_models(provider: str, base_url: str, api_key: str) -> list[str]:
     payload = r.json()
     rows = payload.get("data") or payload.get("models") or []
     ids = [(m.get("id") or m.get("name")) for m in rows if isinstance(m, dict)]
+    # Google's /models lists ids as "models/gemini-…", but its OpenAI-compatible
+    # chat endpoint wants the bare id — strip the prefix so picked ids work.
+    ids = [i[len("models/"):] if i and i.startswith("models/") else i for i in ids]
     return sorted({i for i in ids if i})
 
 
@@ -463,7 +466,12 @@ def apply_overlay(overlay: dict) -> dict:
     env.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
     for i, t in enumerate(overlay.get("tiers", []), start=1):
         if t.get("model"):
-            env[f"TIER{i}_1_MODEL"] = t["model"]
+            model = t["model"]
+            # Google's /models lists "models/gemini-…" but its OpenAI-compatible
+            # chat endpoint 404s on that — it wants the bare id. Auto-correct.
+            if (t.get("provider") or "").lower() == "google" and model.startswith("models/"):
+                model = model[len("models/"):]
+            env[f"TIER{i}_1_MODEL"] = model
         if t.get("base_url"):
             env[f"TIER{i}_1_URL"] = t["base_url"]
         if (t.get("api_key") or "").strip():
