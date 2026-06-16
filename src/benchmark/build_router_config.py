@@ -823,7 +823,14 @@ def _rename_models_to_real(config: dict, real_map: dict[str, str]) -> None:
     referenced: providers.models[].name/provider_model_id, routing.modelCards[],
     and routing.decisions[].modelRefs[].model. Band/projection names (tier2_band)
     and decision names (route_tier2) are NOT models and stay tier-keyed."""
-    for m in config.get("providers", {}).get("models", []):
+    providers = config.get("providers", {})
+    defaults = providers.get("defaults", {})
+    # default_model must reference a card name; rename it alongside the cards
+    # or vllm-sr fatals with "default_model ... not found in routing.modelCards".
+    real = real_map.get(defaults.get("default_model"))
+    if real:
+        defaults["default_model"] = real
+    for m in providers.get("models", []):
         real = real_map.get(m.get("name"))
         if real:
             m["name"] = real

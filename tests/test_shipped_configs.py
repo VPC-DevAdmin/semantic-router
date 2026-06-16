@@ -150,6 +150,9 @@ def test_served_model_names_real_uses_upstream_ids(monkeypatch) -> None:
     # tier2's card is now named by its real model id, name == provider_model_id.
     assert "gpt-5.4-nano" in models and models["gpt-5.4-nano"] == "gpt-5.4-nano"
     assert "tier2" not in models
+    # providers.defaults.default_model (default_tier: tier2) must rename too, or
+    # vllm-sr fatals "default_model not found in routing.modelCards".
+    assert cfg["providers"]["defaults"]["default_model"] in models
     # modelCards + decision modelRefs follow the same renaming.
     assert "gpt-5.4-nano" in {c["name"] for c in cfg["routing"]["modelCards"]}
     refs = {ref["model"] for d in cfg["routing"]["decisions"] for ref in d["modelRefs"]}
