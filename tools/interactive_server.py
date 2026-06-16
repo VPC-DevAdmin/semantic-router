@@ -399,14 +399,22 @@ def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
     else:
         pinned = next((t for t in overlay.get("tiers", []) if t.get("id") == mode), None)
         model = (pinned.get("model") if pinned else None) or mode
-    # Use `max_tokens` (not max_completion_tokens): Anthropic *requires* it and
-    # vllm-sr's OAI→Anthropic adapter keys off it; OpenAI/Google accept it too.
-    # Omit temperature — some models (e.g. gpt-5 reasoning) reject temperature=0.
-    body = {"model": model, "messages": [{"role": "user", "content": query}],
-            "max_tokens": 1024}
+    # Token-budget param is provider-split and we don't know the upstream up
+    # front (mode='auto' lets the router pick): Anthropic *requires* `max_tokens`
+    # (and vllm-sr's OAI→Anthropic adapter keys off it), but newer OpenAI models
+    # (gpt-5.x / o-series) REJECT `max_tokens` and require `max_completion_tokens`.
+    # So send `max_tokens` first and, on the specific 400 that asks for the other
+    # one, retry once with `max_completion_tokens`. Omit temperature — some models
+    # (e.g. gpt-5 reasoning) reject temperature=0.
+    msgs = [{"role": "user", "content": query}]
     try:
         with httpx.Client(timeout=180.0) as c:
-            r = c.post(f"{base}/v1/chat/completions", json=body)
+            r = c.post(f"{base}/v1/chat/completions",
+                       json={"model": model, "messages": msgs, "max_tokens": 1024})
+            if r.status_code == 400 and "max_completion_tokens" in _upstream_error_text(r):
+                r = c.post(f"{base}/v1/chat/completions",
+                           json={"model": model, "messages": msgs,
+                                 "max_completion_tokens": 1024})
     except httpx.HTTPError as exc:
         # Couldn't reach the router at all (connection refused, DNS, timeout).
         return {"error": f"vllm-sr not reachable at {base} ({exc}). Start it with "

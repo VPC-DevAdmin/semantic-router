@@ -214,6 +214,36 @@ def test_diag_upstreams_builds_chat_url(monkeypatch, tmp_path):
         "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")
 
 
+def test_vllm_chat_retries_with_max_completion_tokens(monkeypatch):
+    # Newer OpenAI models (gpt-5.x/o-series) reject max_tokens and demand
+    # max_completion_tokens. Since mode='auto' hides the upstream, vllm_chat
+    # sends max_tokens first then retries once on that specific 400.
+    err = {"error": {"message": "Unsupported parameter: 'max_tokens' is not "
+                                 "supported with this model. Use "
+                                 "'max_completion_tokens' instead."}}
+    ok = {"choices": [{"message": {"content": "hi"}}]}
+    calls = []
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, url, json):
+            calls.append(json)
+            if "max_tokens" in json:
+                return _Resp({"x-vsr-selected-model": "tier3"}, err, status_code=400)
+            return _Resp({"x-vsr-selected-model": "tier3"}, ok)
+
+    monkeypatch.setattr(srv.httpx, "Client", _Client)
+    ov = {"vllm_sr_url": "http://localhost:8899",
+          "tiers": [{"id": "tier3", "name": "Tier 3", "model": "gpt-5.4-mini"}]}
+    out = srv.vllm_chat(ov, "q", "auto")
+    assert out.get("answer") == "hi"               # retry succeeded
+    assert len(calls) == 2
+    assert "max_tokens" in calls[0] and "max_completion_tokens" not in calls[0]
+    assert "max_completion_tokens" in calls[1] and "max_tokens" not in calls[1]
+
+
 def test_vllm_chat_upstream_error_surfaces_reason(monkeypatch):
     # The router routed fine but the upstream model 404'd (e.g. a bad model id).
     # The UI must show the upstream reason + the routed tier, NOT "not reachable".
