@@ -1,0 +1,27 @@
+{
+  // Cloudflare Workers Static Assets — serves the demo/ replay site as a
+  // path-mounted static site at enterpriseai.center/demos/semantic-router.
+  // Auto-deployed by Cloudflare Workers Builds on every push to main.
+  //
+  // "name" matches the existing Worker so deploys UPDATE it (not create a new one).
+  // The build command (set in Settings > Builds) runs tools/build_demo_site.sh,
+  // which nests demo/ -> dist/demos/semantic-router/ so the asset keys mirror the
+  // mount path. assets.directory therefore points at "dist", not "demo".
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "semantic-router",
+  "compatibility_date": "2026-06-18",
+  "observability": { "enabled": true },
+  // wrangler runs this BEFORE deploy/dev, so the default Workers Builds deploy
+  // command (`npx wrangler deploy`) produces dist/ on its own — no dashboard
+  // build command needed; the whole pipeline lives in the repo.
+  "build": {
+    "command": "bash tools/build_demo_site.sh"
+  },
+  "assets": {
+    "directory": "dist"
+  },
+  "routes": [
+    { "pattern": "enterpriseai.center/demos/semantic-router", "zone_name": "enterpriseai.center" },
+    { "pattern": "enterpriseai.center/demos/semantic-router/*", "zone_name": "enterpriseai.center" }
+  ]
+}

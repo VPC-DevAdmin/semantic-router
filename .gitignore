@@ -96,3 +96,9 @@ data/Semantic_router.json
 # the generated vllm-sr config from it are local-only.
 config/live_demo.local.json
 config/live_exemplars.local.yaml
+
+# Cloudflare Workers (path-mounted demo site)
+dist/
+.wrangler
+.dev.vars*
+!.dev.vars.example
