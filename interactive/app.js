@@ -7,6 +7,19 @@ const TIER_COLORS = ['#1FB67A', '#11A8C4', '#F2A93B', '#E8743B', '#E64B5C', '#8B
 const tierColor = i => TIER_COLORS[i % TIER_COLORS.length];
 const AXIS_MAX = 0.7;   // top of the difficulty scale (shared by chat meter + cutoff editor)
 const OPUS_RATE_PER_M = 25;   // Opus 4.8 output ~$25 / 1M tokens — the frontier cost yardstick
+// Approximate blended $/1M-token list prices for the tier models, used to price
+// the ROUTED answer so the frontier comparison has a baseline. First match wins;
+// edit to taste. Unknown models fall back to the frontier-only line.
+const MODEL_RATES_PER_M = [
+  { match: /opus/i, rate: 25 },
+  { match: /sonnet/i, rate: 6 },
+  { match: /gpt-5/i, rate: 2 },
+  { match: /gemini[-.\s]*3[.\d]*[-\s]*pro|gemini.*pro/i, rate: 10 },
+  { match: /flash-?lite/i, rate: 0.3 },
+  { match: /flash/i, rate: 0.6 },
+  { match: /nano|mini|haiku/i, rate: 0.4 },
+];
+const rateForModel = model => (MODEL_RATES_PER_M.find(r => r.match.test(model || '')) || {}).rate ?? null;
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
@@ -174,18 +187,36 @@ function answerHTML(m) {
   const label = `answered by ${esc(r.selected_tier_name || '')} · ${esc(r.served_model || '')}`;
   return `<div class="answer"><span class="model-line">${label}</span>${mdToHtml(m.text)}</div>`;
 }
-// Frontier-cost yardstick: what THIS answer's token count would cost on Opus 4.8.
+// Cost line: what THIS answer cost on the routed tier vs the same tokens on the
+// frontier (Opus 4.8) — the routed side is what makes the comparison mean
+// something (a 100× gap, not a bare frontier figure).
 function costHTML(m) {
   const u = m.usage || {};
   const total = u.total_tokens || ((u.prompt_tokens || 0) + (u.completion_tokens || 0));
   if (!total) return '';
+  const r = m.routing || {};
+  const here = CONFIG.tiers.find(t => t.id === r.selected_tier_id);
+  const fmt = v => '$' + (v < 0.01 ? v.toFixed(5) : v.toFixed(4));
   const opus = total / 1e6 * OPUS_RATE_PER_M;
-  const here = CONFIG.tiers.find(t => t.id === (m.routing || {}).selected_tier_id);
-  const onTier = here ? ` on ${esc(here.name)}` : '';
-  return `<div class="costline" title="Same token count priced at Opus 4.8's ~$${OPUS_RATE_PER_M}/M output rate">
-    <span class="ct-tok">${total.toLocaleString()} tokens${onTier}</span>
+  const routedRate = rateForModel(r.served_model || here?.model);
+  const routedCost = routedRate != null ? total / 1e6 * routedRate : null;
+  const tierName = here ? esc(here.name) : 'routed';
+  // Routed cost (when we have a rate for the model) + frontier comparison.
+  const routedSpan = routedCost != null
+    ? `<span class="ct-here"><b>${fmt(routedCost)}</b> on ${tierName}</span>`
+    : `<span class="ct-here">${tierName}</span>`;
+  const mult = (routedCost != null && routedCost > 0)
+    ? `<span class="ct-mult">${Math.round(opus / routedCost)}× cheaper</span>` : '';
+  const title = routedCost != null
+    ? `${total.toLocaleString()} tokens · ${fmt(routedCost)} on ${here?.name} (~$${routedRate}/M) vs ${fmt(opus)} on Opus 4.8 (~$${OPUS_RATE_PER_M}/M). Approximate blended list prices.`
+    : `Same token count priced at Opus 4.8's ~$${OPUS_RATE_PER_M}/M rate.`;
+  return `<div class="costline" title="${title}">
+    <span class="ct-tok">${total.toLocaleString()} tokens</span>
     <span class="ct-sep">·</span>
-    <span class="ct-opus">same tokens on <b>Opus 4.8</b> (~$${OPUS_RATE_PER_M}/M) ≈ <b>$${opus.toFixed(4)}</b></span>
+    ${routedSpan}
+    <span class="ct-sep">vs</span>
+    <span class="ct-opus"><b>${fmt(opus)}</b> on Opus 4.8</span>
+    ${mult}
   </div>`;
 }
 
@@ -206,10 +237,18 @@ function rationaleHTML(r) {
   // contradiction — suppress it. Forced is labelled "(manual)" to distinguish.
   const conf = (!r.forced && r.confidence != null) ? Math.round(r.confidence * 100) : null;
   const verb = r.forced ? 'forced →' : 'routed →';
+  const cat = r.category ? esc(r.category) : null;
+  // The % is vllm-sr's own confidence in how it CLASSIFIED this prompt (the
+  // category/decision it picked) — the classification that then selects the
+  // tier. It is NOT a head-to-head vs another tier, and not answer quality.
+  const confTip = cat
+    ? `vLLM Semantic Router classified this prompt as “${cat}” with ${conf}% confidence — that classification is what picks the tier. It's the router's own score, not a head-to-head vs Tier 2 and not answer quality.`
+    : `vLLM Semantic Router's confidence in how it classified this prompt — the decision that picks the tier. Not a head-to-head vs another tier, and not answer quality.`;
   const head = `<div class="rat-head">
     <span class="rat-badge${r.forced ? ' forced' : ''}" style="--c:${color}">${verb} ${esc(r.selected_tier_name || '?')}${r.forced ? ' <span class="rat-manual">(manual)</span>' : ''}</span>
     <span class="rat-model">${esc(r.served_model || '')}</span>
-    ${conf != null ? `<span class="rat-conf" title="The router's confidence in THIS tier choice (from vLLM Semantic Router) — how decisively the difficulty score landed in this tier's band, not a measure of answer quality.">${conf}% confidence</span>` : ''}
+    ${cat ? `<span class="rat-cat" title="The prompt category the router classified this as — this is what the confidence below refers to.">${cat}</span>` : ''}
+    ${conf != null ? `<span class="rat-conf${cat ? ' has-cat' : ''}" title="${confTip}">${conf}% confidence</span>` : ''}
   </div>`;
   return `<div class="rationale">${head}${difficultyMeter(r)}${signalBars(r)}</div>`;
 }
