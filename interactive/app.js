@@ -51,9 +51,10 @@ function saveChats() {
 }
 const curChat = () => chats.find(c => c.id === currentId);
 
+let justAddedChatId = null;
 function newChat() {
   const c = { id: 'c' + Date.now().toString(36), title: 'New chat', msgs: [], ts: Date.now() };
-  chats.unshift(c); currentId = c.id;
+  chats.unshift(c); currentId = c.id; justAddedChatId = c.id;
   saveChats(); renderChatList(); renderMessages();
   $('input')?.focus();
 }
@@ -70,13 +71,15 @@ function renderChatList() {
   if (!chats.length) { host.innerHTML = '<div class="chat-empty">No conversations yet</div>'; return; }
   chats.forEach(c => {
     const el = document.createElement('div');
-    el.className = 'chat-item' + (c.id === currentId ? ' active' : '');
+    el.className = 'chat-item' + (c.id === currentId ? ' active' : '')
+      + (c.id === justAddedChatId ? ' ci-enter' : '');   // slide-in only the new one
     el.innerHTML = `<span class="ci-dot"></span><span class="ci-title">${esc(c.title || 'New chat')}</span>
       <button class="ci-del" title="Delete">✕</button>`;
     el.onclick = () => selectChat(c.id);
     el.querySelector('.ci-del').onclick = e => { e.stopPropagation(); deleteChat(c.id); };
     host.appendChild(el);
   });
+  justAddedChatId = null;
 }
 
 // ── Message rendering ───────────────────────────────────────────────────────────
@@ -135,7 +138,11 @@ function messageNode(m, chat, idx) {
   // assistant
   const card = document.createElement('div'); card.className = 'card';
   if (m.pending) {
-    card.innerHTML = `<div class="thinking"><span class="spinner"></span> Routing via vLLM Semantic Router…</div>`;
+    card.innerHTML = `<div class="thinking">
+      <span class="ladder-loader" aria-hidden="true">${[0, 1, 2, 3, 4].map(i =>
+        `<span class="ll-seg" style="--i:${i};background:${tierColor(i)}"></span>`).join('')}</span>
+      <span class="thinking-label">Routing via vLLM Semantic Router<span class="dots"></span></span>
+    </div>`;
   } else if (m.error) {
     card.innerHTML = (m.routing ? rationaleHTML(m.routing) : '') + `<div class="answer err">${esc(m.error)}</div>`;
   } else {
@@ -148,7 +155,7 @@ function messageNode(m, chat, idx) {
         + answerHTML(m) + costHTML(m) + deeperHTML(m);
     }
     card.innerHTML = m._html;
-    if (!m._animated) { card.classList.add('card-enter'); m._animated = true; }
+    if (!m._animated) { card.classList.add('card-enter'); animateCounts(card); m._animated = true; }
     const btn = card.querySelector('.deeper-btn');
     if (btn) btn.onclick = () => { btn.disabled = true; ask(m.query, maxTierId()); };
     renderMath(card.querySelector('.answer'));
@@ -265,16 +272,17 @@ function signalBars(r) {
       names.map(n => `<span class="sigbar-name" style="margin-right:10px">${esc(n)}</span>`).join('')}</div>`;
   }
   rows.sort((a, b) => (b.score || 0) - (a.score || 0));
-  const bars = rows.map(x => {
+  const bars = rows.map((x, i) => {
     const crossed = x.threshold != null && x.score >= x.threshold;
     const fill = Math.max(0, Math.min(100, x.score * 100));
     const thr = x.threshold != null ? Math.max(0, Math.min(100, x.threshold * 100)) : null;
+    // --w + staggered delay drive a left-to-right fill animation (CSS barFill).
     return `<div class="sigbar${crossed ? ' crossed' : ''}${x.down ? ' down' : ''}">
       <div class="sigbar-head">
         <span class="sigbar-name">${esc(x.label)}</span>
         <span class="sigbar-nums"><b>${x.score.toFixed(2)}</b>${x.threshold != null ? ` / thr ${x.threshold.toFixed(2)}` : ''}</span>
       </div>
-      <div class="sigbar-track"><div class="sigbar-fill" style="width:${fill}%"></div>${
+      <div class="sigbar-track"><div class="sigbar-fill" style="--w:${fill}%;animation-delay:${i * 60}ms"></div>${
         thr != null ? `<div class="sigbar-thresh" style="left:${thr}%" title="threshold ${x.threshold.toFixed(2)}"></div>` : ''}</div>
     </div>`;
   }).join('');
@@ -370,6 +378,32 @@ function renderMath(root) {
 // If KaTeX finishes loading after the first paint, re-render once.
 window.__katexReady = () => renderMessages();
 
+const _reduceMotion = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// Count-up tween for the confidence % and difficulty numbers on a freshly-shown
+// card (runs once — gated by m._animated). Honors prefers-reduced-motion.
+function animateCounts(root) {
+  if (!root || _reduceMotion()) return;
+  const tween = (el, to, dec, pre, suf) => {
+    const dur = 600, t0 = performance.now();
+    const step = t => {
+      const k = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - k, 3);
+      el.textContent = pre + (to * e).toFixed(dec) + suf;
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  };
+  const conf = root.querySelector('.rat-conf');
+  let m = conf && conf.textContent.match(/(\d+)%/);
+  if (m) tween(conf, +m[1], 0, '', '% confidence');
+  const mv = root.querySelector('.marker-val');
+  m = mv && mv.textContent.match(/([\d.]+)/);
+  if (m) tween(mv, +m[1], 3, 'difficulty ', '');
+  const fb = root.querySelector('.rat-foot b');
+  m = fb && fb.textContent.match(/([\d.]+)/);
+  if (m) tween(fb, +m[1], 3, '', '');
+}
+
 // ── Ask flow ───────────────────────────────────────────────────────────────────
 async function ask(query, mode) {
   let c = curChat();
@@ -431,8 +465,11 @@ function renderExamples() {
 function renderChips() {
   const cat = $('catSelect').value;
   const chips = $('exChips');
+  const list = QUERIES[cat] || [];
   chips.innerHTML = '';
-  (QUERIES[cat] || []).slice(0, 20).forEach(q => {
+  const label = document.querySelector('.ex-pop-label');
+  if (label) label.textContent = `Benchmark prompts · ${list.length}`;
+  list.forEach(q => {              // surface ALL prompts (scrollable, with count)
     const b = document.createElement('button');
     b.className = 'ex-chip'; b.title = q; b.textContent = q;
     b.onclick = () => { $('input').value = q; autoGrow(); $('input').focus(); toggleExamples(false); };
@@ -564,6 +601,7 @@ function renderCutoffs() {
       <input type="range" min="0" max="${AXIS_MAX}" step="0.01" value="${c}">
       <span class="co-val">${(+c).toFixed(2)}</span>`;
     const input = row.querySelector('input'), val = row.querySelector('.co-val');
+    let dragTimer = null;
     input.addEventListener('input', () => {
       const cuts = CONFIG.tier_cutoffs;
       const lo = i > 0 ? cuts[i - 1] + 0.01 : 0.005;
@@ -571,6 +609,8 @@ function renderCutoffs() {
       const v = Math.min(Math.max(parseFloat(input.value), lo), hi);
       input.value = v.toFixed(2); cuts[i] = v; val.textContent = v.toFixed(2);
       renderScoreAxis(); livePreview();
+      const ax = $('scoreAxis'); ax.classList.add('dragging');
+      clearTimeout(dragTimer); dragTimer = setTimeout(() => ax.classList.remove('dragging'), 220);
     });
     host.appendChild(row);
   });

@@ -502,3 +502,82 @@ input[type=range]::-moz-range-thumb { width:16px; height:16px; border-radius:50%
 @keyframes shakeX { 10%,90%{transform:translateX(-2px);} 20%,80%{transform:translateX(3px);}
   30%,50%,70%{transform:translateX(-6px);} 40%,60%{transform:translateX(6px);} }
 .modal.apply-fail { animation:shakeX .5s; box-shadow:0 0 0 2px var(--bad), 0 24px 70px rgba(13,22,38,.4); }
+
+/* ═══════════════ Batch 3 — motion & polish ═══════════════ */
+/* Branded loader: a traveling pulse along a 5-segment tier ladder */
+.ladder-loader { display:inline-flex; gap:4px; align-items:center; }
+.ll-seg { width:16px; height:8px; border-radius:3px; opacity:.32;
+  animation:llPulse 1.3s ease-in-out infinite; animation-delay:calc(var(--i) * .13s); }
+@keyframes llPulse { 0%,100% { opacity:.28; transform:scaleY(.7); } 45% { opacity:1; transform:scaleY(1.15); } }
+.thinking-label .dots::after { content:""; animation:dots 1.4s steps(4,end) infinite; }
+@keyframes dots { 0%{content:"";} 25%{content:"·";} 50%{content:"··";} 75%{content:"···";} 100%{content:"";} }
+
+/* Signal bars: staggered left-to-right fill (width held in --w) */
+.sigbar-fill { width:var(--w,0); animation:barFill .6s cubic-bezier(.22,.61,.36,1) both; }
+@keyframes barFill { from { width:0; } to { width:var(--w,0); } }
+
+/* Difficulty marker slides into place rather than snapping */
+.meter-marker { animation:markerSlide .5s cubic-bezier(.22,.61,.36,1) both; }
+@keyframes markerSlide { from { opacity:0; transform:translateX(-10px); } to { opacity:1; transform:none; } }
+
+/* Active tier segment: soft glow/pulse when a route lands */
+.seg-band.on { animation:tierGlow 1.8s ease-in-out 1; }
+@keyframes tierGlow { 0%,100% { box-shadow:inset 0 0 0 0 transparent; }
+  40% { box-shadow:inset 0 0 14px -2px var(--c); } }
+
+/* Answer body soft fade-in */
+.answer { animation:answerIn .4s ease-out both; }
+@keyframes answerIn { from { opacity:0; transform:translateY(3px); } to { opacity:1; transform:none; } }
+
+/* Status dot: slow breathing pulse when live (not down/warming) */
+.status-dot:not(.down):not(.warm) { animation:breathe 2.6s ease-in-out infinite; }
+@keyframes breathe { 0%,100% { box-shadow:0 0 0 3px rgba(25,169,116,.22); }
+  50% { box-shadow:0 0 0 5px rgba(25,169,116,.08); } }
+
+/* Ambient brand glow behind the logo */
+.brand-mark { position:relative; }
+.brand-mark::after { content:""; position:absolute; inset:-6px; border-radius:14px; z-index:-1;
+  background:radial-gradient(circle, rgba(58,107,255,.45), transparent 70%);
+  filter:blur(8px); animation:brandBreathe 5s ease-in-out infinite; }
+@keyframes brandBreathe { 0%,100% { opacity:.45; } 50% { opacity:.8; } }
+
+/* Tier dots: subtle gradient sheen to reinforce the cheap→frontier scale */
+.tier-dot, .leg-dot, .ci-dot { background-image:linear-gradient(145deg, rgba(255,255,255,.45), rgba(0,0,0,.06)); }
+
+/* Hover lift + press feedback (spring-ish ease-out) */
+.btn, .mini-btn, .btn-mini, .side-btn, .pill, .ex-chip, .sugg-card, .deeper-btn, .icon-btn {
+  transition:transform .12s cubic-bezier(.22,.61,.36,1), box-shadow .15s, background .15s, border-color .15s; }
+.btn:hover, .side-btn:hover, .pill:hover, .deeper-btn:hover { transform:translateY(-1px); }
+.btn:active, .mini-btn:active, .btn-mini:active, .side-btn:active, .pill:active,
+.ex-chip:active, .sugg-card:active, .deeper-btn:active, .icon-btn:active { transform:scale(.97); }
+.ex-chip:hover { transform:translateY(-1px); box-shadow:var(--shadow); }
+
+/* Soft glow ring on focused inputs (replaces the hard border jump) */
+.field input:focus, .te-grid input:focus, .te-provider:focus, .cutoff:focus, .sig-cands-ta:focus,
+#vllmUrl:focus, #input:focus, .cat-select:focus, .te-model:focus, .te-base:focus, .te-key:focus, .te-name:focus {
+  outline:none; border-color:var(--accent); box-shadow:0 0 0 4px rgba(47,84,255,.14); }
+
+/* "Get a deeper answer" CTA — soft glow to draw the eye */
+.deeper-btn { box-shadow:0 0 0 0 rgba(139,92,246,.0); animation:ctaGlow 3s ease-in-out infinite; }
+@keyframes ctaGlow { 0%,100% { box-shadow:0 2px 10px rgba(139,92,246,.18); }
+  50% { box-shadow:0 2px 18px rgba(139,92,246,.36); } }
+
+/* Slider thumb: smooth transition + glow while active */
+input[type=range]::-webkit-slider-thumb { transition:transform .1s, box-shadow .15s; }
+input[type=range]:active::-webkit-slider-thumb { transform:scale(1.18); box-shadow:0 0 0 6px rgba(47,84,255,.16); }
+input[type=range]:active::-moz-range-thumb { box-shadow:0 0 0 6px rgba(47,84,255,.16); }
+
+/* Cutoff band: smooth resize + brief glow while dragging */
+.ax-band { transition:width .12s ease-out, filter .15s; }
+.score-axis.dragging { filter:saturate(1.15); }
+.score-axis.dragging .ax-band { box-shadow:inset 0 0 0 1px rgba(255,255,255,.4); }
+
+/* Sidebar conversation items: slide-in for the new one, smooth highlight on select */
+.chat-item { transition:background .2s, color .2s; }
+.chat-item.ci-enter { animation:chatItemIn .3s cubic-bezier(.22,.61,.36,1) both; }
+@keyframes chatItemIn { from { opacity:0; transform:translateX(-10px); } to { opacity:1; transform:none; } }
+
+/* Benchmark-prompt row: momentum scroll + faded right edge (more to scroll) */
+.ex-chips { scroll-behavior:smooth; -webkit-overflow-scrolling:touch;
+  -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 24px), transparent);
+  mask-image:linear-gradient(to right, #000 calc(100% - 24px), transparent); }
