@@ -42,7 +42,12 @@ function loadChats() {
   if (!Array.isArray(chats)) chats = [];
 }
 function saveChats() {
-  try { localStorage.setItem('sr_chats', JSON.stringify(chats.slice(0, 60))); } catch { /* quota */ }
+  // Drop transient `_`-prefixed fields (e.g. _html render cache, _animated) so
+  // they don't bloat or stale localStorage.
+  try {
+    localStorage.setItem('sr_chats',
+      JSON.stringify(chats.slice(0, 60), (k, v) => (k.startsWith('_') ? undefined : v)));
+  } catch { /* quota */ }
 }
 const curChat = () => chats.find(c => c.id === currentId);
 
@@ -134,8 +139,16 @@ function messageNode(m, chat, idx) {
   } else if (m.error) {
     card.innerHTML = (m.routing ? rationaleHTML(m.routing) : '') + `<div class="answer err">${esc(m.error)}</div>`;
   } else {
-    card.innerHTML = (m.routing ? rationaleHTML(m.routing) : '')
-      + answerHTML(m) + costHTML(m) + deeperHTML(m);
+    // Freeze the resolved card: build its HTML once and reuse. Re-renders
+    // (triggered by sending a NEW message, or a settings change) then can't
+    // mutate a prior answer's text/rationale. `_html` is in-memory only —
+    // saveChats() drops `_`-prefixed keys so it never bloats localStorage.
+    if (m._html == null) {
+      m._html = (m.routing ? rationaleHTML(m.routing) : '')
+        + answerHTML(m) + costHTML(m) + deeperHTML(m);
+    }
+    card.innerHTML = m._html;
+    if (!m._animated) { card.classList.add('card-enter'); m._animated = true; }
     const btn = card.querySelector('.deeper-btn');
     if (btn) btn.onclick = () => { btn.disabled = true; ask(m.query, maxTierId()); };
     renderMath(card.querySelector('.answer'));
@@ -181,12 +194,15 @@ function deeperHTML(m) {
 function rationaleHTML(r) {
   const selIdx = tierIndexById(r.selected_tier_id);
   const color = selIdx >= 0 ? tierColor(selIdx) : 'var(--accent)';
-  const conf = r.confidence != null ? Math.round(r.confidence * 100) : null;
+  // Confidence is an AUTO-routing signal; when a tier is forced the router
+  // didn't choose, so showing a "% confidence" alongside "forced" is a
+  // contradiction — suppress it. Forced is labelled "(manual)" to distinguish.
+  const conf = (!r.forced && r.confidence != null) ? Math.round(r.confidence * 100) : null;
+  const verb = r.forced ? 'forced →' : 'routed →';
   const head = `<div class="rat-head">
-    <span class="rat-badge" style="--c:${color}">routed → ${esc(r.selected_tier_name || '?')}</span>
+    <span class="rat-badge${r.forced ? ' forced' : ''}" style="--c:${color}">${verb} ${esc(r.selected_tier_name || '?')}${r.forced ? ' <span class="rat-manual">(manual)</span>' : ''}</span>
     <span class="rat-model">${esc(r.served_model || '')}</span>
     ${conf != null ? `<span class="rat-conf" title="The router's confidence in THIS tier choice (from vLLM Semantic Router) — how decisively the difficulty score landed in this tier's band, not a measure of answer quality.">${conf}% confidence</span>` : ''}
-    ${r.forced ? '<span class="rat-forced">forced</span>' : ''}
   </div>`;
   return `<div class="rationale">${head}${difficultyMeter(r)}${signalBars(r)}</div>`;
 }
@@ -206,9 +222,15 @@ function difficultyMeter(r) {
   const d = r.request_difficulty;
   let marker = '';
   if (d != null) {
-    const pct = Math.max(0, Math.min(100, ((d - lo) / (hi - lo)) * 100));
-    marker = `<div class="meter-marker" style="left:${pct}%">
-      <span class="marker-val">difficulty ${Number(d).toFixed(3)}</span></div>`;
+    // The score can go slightly negative (cheap signals subtract); a negative
+    // "difficulty" reads as a bug, so clamp the SHOWN value to 0. The marker
+    // position is clamped 0–100 so it always stays on the scale, and the value
+    // label is anchored (left/center/right) so it never clips the card edge.
+    const shown = Math.max(0, d);
+    const pct = Math.max(0, Math.min(100, ((shown - lo) / (hi - lo)) * 100));
+    const anchor = pct < 12 ? 'left' : pct > 88 ? 'right' : 'center';
+    marker = `<div class="meter-marker anc-${anchor}" style="left:${pct}%">
+      <span class="marker-val">difficulty ${shown.toFixed(3)}</span></div>`;
   }
   return `<div class="meter"><div class="meter-bands">${segs}</div>${marker}</div>`;
 }
@@ -257,7 +279,7 @@ function signalBars(r) {
     </div>`;
   }).join('');
   const foot = r.request_difficulty != null
-    ? `<div class="rat-foot">Combined difficulty score <b>${Number(r.request_difficulty).toFixed(3)}</b> → ${esc(r.selected_tier_name || '')}</div>`
+    ? `<div class="rat-foot">Combined difficulty score <b>${Math.max(0, r.request_difficulty).toFixed(3)}</b> → ${esc(r.selected_tier_name || '')}</div>`
     : '';
   return `<div class="rat-signals"><span class="rat-signals-label">Signals — score vs. threshold</span>${bars}${foot}</div>`;
 }
@@ -268,6 +290,49 @@ function signalBars(r) {
 // render (auto-render runs after insert; see renderMath). Math inside code
 // fences is left alone — extraction happens only in the prose segments.
 const MATH_RE = /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$[^$\n]+?\$/g;
+
+// Inline spans: code, ***bold-italic***, **bold**, *italic*, _italic_, links.
+function mdInline(t) {
+  return t
+    .replace(/`([^`]+)`/g, '<code class="ic">$1</code>')
+    .replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*\n]+)\*/g, '<em>$1</em>')
+    .replace(/(^|[\s(])_([^_\n]+)_/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+const _isBlockStart = l => /^#{1,6}\s/.test(l) || /^\s*[-*+]\s/.test(l)
+  || /^\s*\d+[.)]\s/.test(l) || /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(l);
+// Block-level markdown over an already-esc'd string (math placeholders survive
+// intact). Handles headings, ordered/unordered lists, horizontal rules, and
+// paragraphs; inline formatting is applied per line.
+function renderBlocks(s) {
+  const lines = s.split('\n');
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const ln = lines[i];
+    if (!ln.trim()) { i++; continue; }
+    const h = ln.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { const lvl = Math.min(6, h[1].length + 2); out.push(`<h${lvl} class="md-h">${mdInline(h[2].trim())}</h${lvl}>`); i++; continue; }
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(ln)) { out.push('<hr class="md-hr">'); i++; continue; }
+    if (/^\s*[-*+]\s+/.test(ln)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) { items.push(mdInline(lines[i].replace(/^\s*[-*+]\s+/, '').trim())); i++; }
+      out.push('<ul class="md-ul">' + items.map(x => `<li>${x}</li>`).join('') + '</ul>'); continue;
+    }
+    if (/^\s*\d+[.)]\s+/.test(ln)) {
+      const items = [];
+      while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) { items.push(mdInline(lines[i].replace(/^\s*\d+[.)]\s+/, '').trim())); i++; }
+      out.push('<ol class="md-ol">' + items.map(x => `<li>${x}</li>`).join('') + '</ol>'); continue;
+    }
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !_isBlockStart(lines[i])) { para.push(mdInline(lines[i].trim())); i++; }
+    out.push('<p>' + para.join('<br>') + '</p>');
+  }
+  return out.join('');
+}
+
 function mdToHtml(src) {
   const parts = String(src == null ? '' : src).split('```');
   let html = '';
@@ -278,14 +343,11 @@ function mdToHtml(src) {
       return;
     }
     const math = [];
-    const held = part.replace(MATH_RE, m => ` M${math.push(m) - 1} `);
-    let block = esc(held).split(/\n{2,}/).map(b => b.trim()).filter(Boolean).map(b =>
-      '<p>' + b.replace(/`([^`]+)`/g, '<code class="ic">$1</code>')
-        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/\n/g, '<br>') + '</p>').join('');
+    const held = part.replace(MATH_RE, m => `@@M${math.push(m) - 1}@@`);
+    let block = renderBlocks(esc(held));
     // Restore math source (esc'd — entities decode back to literal chars in the
     // DOM text node, which is exactly what KaTeX reads).
-    block = block.replace(/ M(\d+) /g, (_, k) => esc(math[+k]));
+    block = block.replace(/@@M(\d+)@@/g, (_, k) => esc(math[+k]));
     html += block;
   });
   return html || '<p></p>';
@@ -719,8 +781,24 @@ function autoGrow() {
   $('newChat').onclick = newChat;
   $('sendBtn').onclick = send;
   $('input').addEventListener('input', autoGrow);
-  $('input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
-  $('exToggle').onclick = () => toggleExamples();
+  // Enter submits; Shift+Enter newlines. Guard IME composition (e.isComposing /
+  // keyCode 229) so committing a candidate doesn't fire a send. keydown (not
+  // keypress) so it fires reliably across browsers.
+  $('input').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+      e.preventDefault(); toggleExamples(false); send();
+    }
+  });
+  // Focusing/typing in the composer closes the Examples popover so it can't sit
+  // over the send button and swallow the click/submit.
+  $('input').addEventListener('focus', () => toggleExamples(false));
+  $('exToggle').onclick = e => { e.stopPropagation(); toggleExamples(); };
+  // Click-away closes the Examples popover.
+  document.addEventListener('click', e => {
+    const pop = $('examplesPop');
+    if (!pop || pop.hidden) return;
+    if (!pop.contains(e.target) && e.target !== $('exToggle')) toggleExamples(false);
+  });
   $('hamburger').onclick = openSidebar;
   $('tiersBtn').onclick = openTiers;
   $('routingBtn').onclick = openRouting;

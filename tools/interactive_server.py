@@ -372,6 +372,15 @@ def _routing_from_headers(h: dict, overlay: dict, mode: str) -> dict:
         if dec.startswith("route_"):
             tid = dec[len("route_"):]
             tier = next((t for t in overlay.get("tiers", []) if t.get("id") == tid), None)
+    # _routing_scores reads the LAST router_replay_start from the container log,
+    # which can be a different request than this one (the log line lands slightly
+    # after the response, and concurrent calls interleave). Only trust the
+    # log-derived difficulty/signals/decision when the log's selected model
+    # matches THIS response's header model — otherwise we'd paint a difficulty +
+    # decision (e.g. route_tier2) that disagrees with the tier the card shows.
+    header_sel = h.get("x-vsr-selected-model")
+    log_sel = scores.get("log_selected_model")
+    consistent = (not header_sel) or (not log_sel) or (header_sel == log_sel)
     return {
         "selected_tier_id": tier["id"] if tier else selected,
         "selected_tier_name": tier["name"] if tier else (selected or "?"),
@@ -379,12 +388,14 @@ def _routing_from_headers(h: dict, overlay: dict, mode: str) -> dict:
         "category": h.get("x-vsr-selected-category"),
         "reasoning": h.get("x-vsr-selected-reasoning"),
         "confidence": _to_float(h.get("x-vsr-selected-confidence")),
-        "decision": h.get("x-vsr-selected-decision") or scores.get("log_decision"),
+        "decision": h.get("x-vsr-selected-decision")
+        or (scores.get("log_decision") if consistent else None),
         "matched": _matched_signals(h),
         "forced": mode != "auto",
         "cache_hit": "x-vsr-selected-model" not in h,
-        "request_difficulty": scores.get("request_difficulty"),
-        "signal_confidences": scores.get("signal_confidences"),
+        "request_difficulty": scores.get("request_difficulty") if consistent else None,
+        "signal_confidences": scores.get("signal_confidences") if consistent else None,
+        "scores_stale": not consistent,
     }
 
 
