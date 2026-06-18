@@ -20,6 +20,7 @@ Endpoints:
   GET  /api/queries           -> the benchmark queries grouped by category
   POST /api/chat              -> proxy {query, mode} to vllm-sr; return
                                  {routing, answer | error}
+  GET  /api/defaults          -> committed demo default overlay (per-section reset)
   GET  /api/diag              -> per-tier upstreams + container status + router log
   GET  /api/diag/log[?tail=N] -> just the parsed router log rows
   GET  /                      -> the static UI
@@ -738,6 +739,11 @@ def _make_handler():
             path = self.path.split("?", 1)[0]
             if path == "/api/config":
                 self._json(200, masked_overlay(load_overlay()))
+                return
+            if path == "/api/defaults":
+                # The committed demo default overlay — powers per-section
+                # "reset to default" in the Routing dialog.
+                self._json(200, masked_overlay(json.loads(DEFAULT_OVERLAY.read_text())))
                 return
             if path == "/api/queries":
                 self._json(200, grouped_queries())

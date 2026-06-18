@@ -458,6 +458,16 @@ function openSidebar() {
 function closeSidebar() { $('sidebar').classList.remove('open'); const s = $('scrim'); if (s) s.hidden = true; }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
+// Re-space cutoffs evenly for the current tier count (cutoffs must always be
+// tiers.length-1, or build_router_config rejects the config). Called after
+// add/delete so the bands stay valid.
+function respaceCutoffs() {
+  const n = CONFIG.tiers.length;
+  const cuts = [];
+  for (let k = 1; k < n; k++) cuts.push(+(AXIS_MAX * k / n).toFixed(2));
+  CONFIG.tier_cutoffs = cuts;
+}
+
 function renderTierEditors() {
   const host = $('tierEditors'); host.innerHTML = '';
   CONFIG.tiers.forEach((t, i) => {
@@ -465,6 +475,7 @@ function renderTierEditors() {
     const root = node.querySelector('.tier-editor');
     root.dataset.id = t.id; root.dataset.keyset = t.key_set ? '1' : '';
     node.querySelector('.tier-dot').style.background = tierColor(i);
+    node.querySelector('.te-rank').textContent = '#' + (i + 1);
     node.querySelector('.te-name').value = t.name || '';
     node.querySelector('.te-provider').value =
       ['OpenAI', 'Anthropic', 'Google', 'OpenAI-compatible'].includes(t.provider) ? t.provider : 'OpenAI-compatible';
@@ -474,7 +485,20 @@ function renderTierEditors() {
     const setKs = has => { ks.textContent = has ? 'key set' : 'no key'; ks.className = 'te-keystate ' + (has ? 'has' : 'no'); };
     setKs(t.key_set);
     node.querySelector('.te-key').oninput = e => setKs(!!e.target.value.trim() || t.key_set);
-    node.querySelector('.te-del').onclick = () => root.remove();
+    // reorder (cheap → frontier order matters: it IS the tier ladder)
+    const up = node.querySelector('.te-up'), down = node.querySelector('.te-down');
+    up.disabled = i === 0; down.disabled = i === CONFIG.tiers.length - 1;
+    up.onclick = () => moveTier(i, -1);
+    down.onclick = () => moveTier(i, 1);
+    // delete (with confirmation + cutoff-impact note)
+    node.querySelector('.te-del').onclick = () => {
+      if (CONFIG.tiers.length <= 2) { alert('Keep at least two tiers — routing needs a ladder.'); return; }
+      if (!confirm(`Delete "${t.name || 'this tier'}"?\n\nThe difficulty cutoffs will be re-spaced evenly across the remaining ${CONFIG.tiers.length - 1} tiers when you Save & Apply.`)) return;
+      collectTiers();
+      CONFIG.tiers = CONFIG.tiers.filter(x => x.id !== t.id);
+      respaceCutoffs();
+      renderTierEditors();
+    };
     const dl = node.querySelector('.te-models');
     dl.id = 'te-models-' + t.id;
     node.querySelector('.te-model').setAttribute('list', dl.id);
@@ -483,29 +507,41 @@ function renderTierEditors() {
   });
 }
 
+function moveTier(i, dir) {
+  collectTiers();                       // capture in-progress edits first
+  const arr = CONFIG.tiers, j = i + dir;
+  if (j < 0 || j >= arr.length) return;
+  [arr[i], arr[j]] = [arr[j], arr[i]];
+  renderTierEditors();
+}
+
+// Load the provider's model list into the datalist AND act as a connection test
+// (success/failure feedback inline). Uses this tier's provider/base_url/key.
 async function loadTierModels(root, tierId, btn) {
   const provider = root.querySelector('.te-provider').value;
   const base_url = root.querySelector('.te-base').value.trim();
   const api_key = root.querySelector('.te-key').value.trim();
   const dl = root.querySelector('.te-models');
+  const status = root.querySelector('.te-model-status');
   const orig = btn.textContent;
-  btn.disabled = true; btn.textContent = '…';
+  btn.disabled = true; btn.textContent = 'Testing…';
+  status.className = 'te-model-status busy'; status.textContent = 'Connecting…';
   try {
-    const res = await fetch('/api/models', {
+    const j = await (await fetch('/api/models', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tier_id: tierId, provider, base_url, api_key }),
-    });
-    const j = await res.json();
-    if (j.error) { btn.textContent = '!'; btn.title = j.error; return; }
+    })).json();
+    if (j.error) { status.className = 'te-model-status err'; status.textContent = '✕ ' + j.error; return; }
     const models = j.models || [];
     dl.innerHTML = models.map(m => `<option value="${esc(m)}"></option>`).join('');
-    btn.textContent = models.length ? '✓' : '∅';
-    btn.title = models.length ? `${models.length} models — click the model field to pick` : 'provider returned no models';
+    status.className = 'te-model-status ok';
+    status.textContent = models.length
+      ? `✓ connected · ${models.length} models (click the field to pick)`
+      : '✓ connected · provider returned no chat models';
   } catch (e) {
-    btn.textContent = '!'; btn.title = String(e);
+    status.className = 'te-model-status err'; status.textContent = '✕ ' + e;
   } finally {
-    btn.disabled = false;
-    setTimeout(() => { btn.textContent = orig; btn.title = 'Load models from provider (uses this tier\'s key)'; }, 2000);
+    btn.disabled = false; btn.textContent = orig;
   }
 }
 
@@ -534,7 +570,7 @@ function renderCutoffs() {
       const hi = i < cuts.length - 1 ? cuts[i + 1] - 0.01 : AXIS_MAX - 0.005;
       const v = Math.min(Math.max(parseFloat(input.value), lo), hi);
       input.value = v.toFixed(2); cuts[i] = v; val.textContent = v.toFixed(2);
-      renderScoreAxis();
+      renderScoreAxis(); livePreview();
     });
     host.appendChild(row);
   });
@@ -551,12 +587,23 @@ const sigDir = w => w < 0 ? { txt: '↓ cheaper', cls: 'down' } : { txt: '↑ st
 
 function renderSignals() {
   const host = $('signalEditors'); host.innerHTML = '';
-  (CONFIG.signals || []).forEach(s => {
+  (CONFIG.signals || []).forEach((s, idx) => {
     const node = $('signalEditorTpl').content.cloneNode(true);
     const root = node.querySelector('.signal-editor');
     root.dataset.id = s.id;
+    if (idx === 0) root.classList.add('open');   // first signal open by default
     node.querySelector('.sig-label').textContent = sigInfo(s).label;
     node.querySelector('.sig-blurb').textContent = sigInfo(s).hint;
+    // accordion: one panel open at a time
+    const head = node.querySelector('.acc-head');
+    head.setAttribute('aria-expanded', idx === 0 ? 'true' : 'false');
+    head.addEventListener('click', () => {
+      const open = root.classList.contains('open');
+      host.querySelectorAll('.signal-editor.open').forEach(o => {
+        o.classList.remove('open'); o.querySelector('.acc-head')?.setAttribute('aria-expanded', 'false');
+      });
+      if (!open) { root.classList.add('open'); head.setAttribute('aria-expanded', 'true'); }
+    });
     const w = node.querySelector('.sig-weight'), t = node.querySelector('.sig-threshold');
     const wv = node.querySelector('.sig-weight-val'), tv = node.querySelector('.sig-threshold-val');
     const dir = node.querySelector('.sig-dir');
@@ -565,6 +612,7 @@ function renderSignals() {
       const v = parseFloat(w.value);
       wv.textContent = (v > 0 ? '+' : '') + v.toFixed(2);
       const d = sigDir(v); dir.textContent = d.txt; dir.className = 'sig-dir ' + d.cls;
+      livePreview();
     };
     const syncT = () => { tv.textContent = parseFloat(t.value).toFixed(2); };
     syncW(); syncT();
@@ -576,6 +624,39 @@ function renderSignals() {
     ta.addEventListener('input', () => { count.textContent = ta.value.split('\n').filter(l => l.trim()).length; });
     host.appendChild(node);
   });
+}
+
+// Live preview: for the most-recent routed prompt, show which tier its measured
+// difficulty lands in under the CURRENT cutoffs (updates as cutoffs move). Note:
+// changing a signal's influence needs a re-run of the router to recompute the
+// score, so we label this as "at difficulty D" to stay honest.
+function lastRoutedDifficulty() {
+  for (let ci = 0; ci < chats.length; ci++) {
+    const msgs = chats[ci].msgs || [];
+    for (let mi = msgs.length - 1; mi >= 0; mi--) {
+      const r = msgs[mi].routing;
+      if (r && typeof r.request_difficulty === 'number') return { d: r.request_difficulty, q: msgs[mi].query };
+    }
+  }
+  return null;
+}
+function tierForDifficulty(d) {
+  const cuts = CONFIG.tier_cutoffs || [];
+  let i = 0; while (i < cuts.length && d >= cuts[i]) i++;
+  return CONFIG.tiers[Math.min(i, CONFIG.tiers.length - 1)];
+}
+function livePreview() {
+  const host = $('livePreview'); if (!host) return;
+  const last = lastRoutedDifficulty();
+  if (!last) { host.hidden = true; return; }
+  const tier = tierForDifficulty(Math.max(0, last.d));
+  const idx = CONFIG.tiers.indexOf(tier);
+  host.hidden = false;
+  host.innerHTML = `<span class="lp-label">Live preview</span>
+    <span class="lp-body">Latest prompt (difficulty <b>${Math.max(0, last.d).toFixed(3)}</b>) would route to
+    <span class="lp-tier" style="--c:${tierColor(idx)}">${esc(tier?.name || '?')}</span></span>`;
+  // pulse on change
+  host.classList.remove('lp-pulse'); void host.offsetWidth; host.classList.add('lp-pulse');
 }
 
 // ── Collect per modal (only the open modal's editors are in the DOM) ────────────
@@ -612,6 +693,7 @@ function addTier() {
   collectTiers();
   CONFIG.tiers.push({ id: `tier${Date.now().toString(36)}`, name: `Tier ${CONFIG.tiers.length + 1}`,
     provider: 'OpenAI-compatible', model: '', base_url: '', api_key: '', key_set: false });
+  respaceCutoffs();
   renderTierEditors();
 }
 
@@ -622,9 +704,26 @@ function openTiers() {
   $('tiersModal').hidden = false; closeSidebar();
 }
 function openRouting() {
-  renderSignals(); renderCutoffs();
+  renderSignals(); renderCutoffs(); livePreview();
   $('routingStatus').textContent = ''; $('routingStatus').className = 'save-status';
   $('routingModal').hidden = false; closeSidebar();
+}
+
+// Per-section "reset to default": pull the committed demo overlay and restore
+// just this section (signals + cutoffs), leaving tiers/keys untouched.
+async function resetSection(which) {
+  if (which !== 'routing') return;
+  if (!confirm('Restore signals and cutoffs to the demo defaults? Your tier/model settings are kept.')) return;
+  try {
+    const def = await (await fetch('/api/defaults')).json();
+    if (def.signals) CONFIG.signals = JSON.parse(JSON.stringify(def.signals));
+    if (def.tier_cutoffs) CONFIG.tier_cutoffs = def.tier_cutoffs.slice();
+    renderSignals(); renderCutoffs(); livePreview();
+    const st = $('routingStatus'); st.className = 'save-status ok';
+    st.textContent = '↺ Reset to defaults — Save & Apply to make it live';
+  } catch (e) {
+    const st = $('routingStatus'); st.className = 'save-status err'; st.textContent = 'Reset failed: ' + e;
+  }
 }
 
 async function persist(which) {
@@ -643,13 +742,38 @@ async function doSave(which) {
 }
 
 async function doApply(which) {
+  const modalId = which === 'tiers' ? 'tiersModal' : 'routingModal';
+  const modal = $(modalId);
   const st = which === 'tiers' ? $('tiersStatus') : $('routingStatus');
+  const applyBtn = modal.querySelector('[data-apply]');
+  // Gate the whole dialog while the live router reloads: disable inputs + the
+  // primary action ("Applying…") so nothing can be double-submitted mid-reload.
+  modal.classList.add('applying');
+  modal.querySelectorAll('button, input, select, textarea').forEach(el => {
+    if (el !== applyBtn) el.disabled = true;
+  });
+  const applyOrig = applyBtn.textContent;
+  applyBtn.disabled = true; applyBtn.textContent = 'Applying…';
   st.className = 'save-status';
   st.innerHTML = applyProgressHTML({ steps: [], step: 0, detail: 'Saving settings…' });
   setRouterStatus('warming');
   await persist(which);
   await fetch('/api/apply', { method: 'POST' });
-  await pollApply(st);
+  const final = await pollApply(st);
+  modal.classList.remove('applying');
+  modal.querySelectorAll('button, input, select, textarea').forEach(el => { el.disabled = false; });
+  applyBtn.textContent = applyOrig;
+  if (final && final.ok) {
+    // Success: flash a check, then auto-close.
+    modal.classList.add('apply-success');
+    await sleep(900);
+    modal.classList.remove('apply-success');
+    modal.hidden = true;
+  } else {
+    // Failure: keep the dialog open, surface the error inline + a shake.
+    modal.classList.add('apply-fail');
+    setTimeout(() => modal.classList.remove('apply-fail'), 600);
+  }
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -807,11 +931,24 @@ function autoGrow() {
   $('diagAuto').onchange = toggleDiagAuto;
   $('addTier').onclick = addTier;
   $('resetCfg').onclick = resetCfg;
-  document.querySelectorAll('[data-save]').forEach(b => b.onclick = () => doSave(b.dataset.save));
   document.querySelectorAll('[data-apply]').forEach(b => b.onclick = () => doApply(b.dataset.apply));
+  document.querySelectorAll('[data-reset-section]').forEach(b =>
+    b.onclick = () => resetSection(b.dataset.resetSection));
   document.querySelectorAll('[data-close]').forEach(b => b.onclick = () =>
     (b.dataset.close === 'diagModal' ? closeDiag() : ($(b.dataset.close).hidden = true)));
   ['tiersModal', 'routingModal'].forEach(id => $(id).addEventListener('click',
-    e => { if (e.target.id === id) $(id).hidden = true; }));
+    e => { if (e.target.id === id && !$(id).querySelector('.modal').classList.contains('applying')) $(id).hidden = true; }));
   $('diagModal').addEventListener('click', e => { if (e.target.id === 'diagModal') closeDiag(); });
+  // Esc closes the open modal (unless an apply is in flight) — no need to scroll
+  // up to the X.
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    ['tiersModal', 'routingModal', 'diagModal'].forEach(id => {
+      const m = $(id);
+      if (m && !m.hidden) {
+        if (m.querySelector('.modal')?.classList.contains('applying')) return;
+        if (id === 'diagModal') closeDiag(); else m.hidden = true;
+      }
+    });
+  });
 })();

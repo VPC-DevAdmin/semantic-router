@@ -422,3 +422,83 @@ input[type=range]::-moz-range-thumb { width:16px; height:16px; border-radius:50%
   *, *::before, *::after { animation-duration:.001ms !important; animation-iteration-count:1 !important;
     transition-duration:.001ms !important; scroll-behavior:auto !important; }
 }
+
+/* ═══════════════ Settings dialogs — restructure (Batch 2) ═══════════════ */
+/* Modals with a .modal-body get a fixed head + scrollable body + sticky foot so
+   the primary action is always reachable and there's no hidden top-scroll.
+   The Diagnostics modal has no .modal-body, so it keeps its own scroll. */
+.modal:has(.modal-body) { display:flex; flex-direction:column; padding:0; overflow:hidden; }
+.modal:has(.modal-body) .modal-head { padding:20px 26px 14px; border-bottom:1px solid var(--border-2); }
+.modal-body { flex:1 1 auto; overflow-y:auto; padding:18px 26px 10px; }
+.modal-body .modal-intro { margin-top:0; }
+.modal-foot { flex:0 0 auto; display:flex; align-items:center; gap:12px; padding:13px 26px;
+  border-top:1px solid var(--border); background:var(--surface);
+  box-shadow:0 -8px 20px rgba(13,22,38,.05); }     /* top shadow = "more above" scroll cue */
+.modal-foot .spacer { flex:1; }
+.modal-foot .save-status { margin:0; min-height:0; font-size:12.5px; text-align:right; max-width:340px; }
+.btn.text-ghost { background:none; border:none; color:var(--muted); padding:9px 4px; font-weight:600; cursor:pointer; }
+.btn.text-ghost:hover { color:var(--ink); }
+.mini-btn.ghost-mini { background:none; border:1px solid var(--border); color:var(--muted); margin-left:auto; }
+.mini-btn.ghost-mini:hover { color:var(--ink); background:var(--bg); }
+
+/* Model-tiers legend + dot captions */
+.tier-legend { display:flex; align-items:center; gap:10px; margin:0 0 16px; padding:9px 13px;
+  background:var(--bg); border:1px solid var(--border); border-radius:9px; font-size:12px;
+  font-weight:600; color:var(--muted); flex-wrap:wrap; }
+.leg-item { display:inline-flex; align-items:center; gap:6px; }
+.leg-dot { width:10px; height:10px; border-radius:50%; box-shadow:0 0 0 3px color-mix(in srgb,currentColor 0%,transparent); }
+.leg-arrow { color:var(--faint); }
+
+/* Tier reorder + rank + Load/test button + connection status */
+.te-reorder { display:flex; flex-direction:column; gap:0; }
+.te-reorder .icon-btn { padding:0 5px; font-size:9px; line-height:1.15; color:var(--muted); }
+.te-reorder .icon-btn:disabled { opacity:.28; cursor:default; }
+.te-rank { font-size:11px; font-weight:800; color:var(--faint); }
+.te-model-row { display:flex; gap:6px; align-items:center; margin-top:5px; }
+.te-model-row .te-model { flex:1; min-width:0; margin-top:0; }
+.btn-mini { background:var(--accent-weak); border:1px solid #d6deff; color:var(--accent); border-radius:7px;
+  font:inherit; font-size:11.5px; font-weight:700; padding:7px 11px; cursor:pointer; white-space:nowrap;
+  transition:background .15s, transform .08s; }
+.btn-mini:hover { background:#e3e9ff; } .btn-mini:active { transform:scale(.97); }
+.btn-mini:disabled { opacity:.6; cursor:default; }
+.te-model-status { display:block; font-size:11px; margin-top:5px; min-height:14px; font-weight:600; line-height:1.4; }
+.te-model-status.busy { color:var(--muted); }
+.te-model-status.ok { color:var(--ok); }
+.te-model-status.err { color:var(--bad); }
+
+/* Signals accordion (one open at a time) */
+.signal-editor.acc-item { padding:0; overflow:hidden; }
+.acc-head { width:100%; display:flex; align-items:center; gap:10px; background:none; border:none;
+  font:inherit; cursor:pointer; padding:13px 15px; text-align:left; }
+.acc-head:hover { background:var(--bg); }
+.acc-caret { color:var(--faint); font-size:11px; transition:transform .2s ease; flex:0 0 auto; }
+.signal-editor.open .acc-caret { transform:rotate(90deg); }
+.acc-panel { max-height:0; opacity:0; overflow:hidden; padding:0 15px;
+  transition:max-height .28s ease, opacity .2s ease, padding .28s ease; }
+.signal-editor.open .acc-panel { max-height:680px; opacity:1; padding:2px 15px 15px; }
+
+/* Signed influence slider — centered zero tick */
+.slider-signed { position:relative; flex:1; display:flex; align-items:center; }
+.slider-signed input[type=range] { flex:1; }
+.zero-tick { position:absolute; left:50%; top:50%; width:2px; height:13px; transform:translate(-50%,-50%);
+  background:var(--faint); border-radius:1px; pointer-events:none; opacity:.55; }
+
+/* Live tier preview */
+.live-preview { margin-top:16px; padding:11px 14px; border:1px dashed #cbd5ee; border-radius:10px;
+  background:var(--accent-weak); font-size:12.5px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.live-preview[hidden] { display:none; }
+.lp-label { font-size:9.5px; font-weight:800; letter-spacing:.09em; text-transform:uppercase; color:var(--accent); }
+.lp-tier { font-weight:800; color:var(--c,var(--accent)); }
+@keyframes lpPulse { from { box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 45%,transparent); } to { box-shadow:0 0 0 9px transparent; } }
+.lp-pulse { animation:lpPulse .5s ease-out; }
+
+/* Modal open transition + apply success/failure feedback */
+@keyframes modalIn { from { opacity:0; transform:scale(.97) translateY(6px); } to { opacity:1; transform:none; } }
+.modal { animation:modalIn .2s cubic-bezier(.22,.61,.36,1); }
+.modal.applying { cursor:progress; }
+@keyframes successGlow { 0%,100% { box-shadow:0 24px 70px rgba(13,22,38,.4); }
+  45% { box-shadow:0 0 0 3px var(--ok), 0 24px 70px rgba(13,22,38,.4); } }
+.modal.apply-success { animation:successGlow .9s ease; }
+@keyframes shakeX { 10%,90%{transform:translateX(-2px);} 20%,80%{transform:translateX(3px);}
+  30%,50%,70%{transform:translateX(-6px);} 40%,60%{transform:translateX(6px);} }
+.modal.apply-fail { animation:shakeX .5s; box-shadow:0 0 0 2px var(--bad), 0 24px 70px rgba(13,22,38,.4); }

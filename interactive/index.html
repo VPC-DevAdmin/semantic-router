@@ -92,61 +92,68 @@
 
 <!-- ════════════════ Model Tiers modal ════════════════ -->
 <div class="modal-backdrop" id="tiersModal" hidden>
-  <div class="modal">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="Model tiers">
     <div class="modal-head">
       <h2>Model tiers</h2>
-      <button class="icon-btn modal-close" data-close="tiersModal">✕</button>
+      <button class="icon-btn modal-close" data-close="tiersModal" title="Close (Esc)">✕</button>
     </div>
-    <p class="modal-intro">The ladder of models the router picks from — cheapest/fastest first,
-       frontier last. Each tier fronts one model. Saved to <code>config/live_demo.local.json</code>;
-       the benchmark config is never touched.</p>
-
-    <label class="field">vLLM Semantic Router URL
-      <input id="vllmUrl" placeholder="http://localhost:8899">
-    </label>
-
-    <h3 class="sec">Tiers <button class="mini-btn" id="addTier">+ add tier</button></h3>
-    <div id="tierEditors"></div>
-
-    <div class="modal-actions">
+    <div class="modal-body">
+      <p class="modal-intro">The model ladder, cheapest first. Every prompt is scored for difficulty and
+         sent to the <strong>lowest tier that clears its bar</strong> — easy prompts stay cheap, only hard
+         ones reach the frontier. Saved to <code>config/live_demo.local.json</code>; the benchmark config
+         is never touched.</p>
+      <div class="tier-legend">
+        <span class="leg-item"><span class="leg-dot" style="background:var(--t1)"></span> cheap · fast</span>
+        <span class="leg-arrow">⟶</span>
+        <span class="leg-item"><span class="leg-dot" style="background:var(--t5)"></span> frontier · costly</span>
+      </div>
+      <label class="field">vLLM Semantic Router URL
+        <input id="vllmUrl" placeholder="http://localhost:8899">
+      </label>
+      <h3 class="sec">Tiers <button class="mini-btn" id="addTier">+ add tier</button></h3>
+      <div id="tierEditors"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn text-ghost" id="resetCfg"
+              title="Discard your edits and restore the demo defaults">↺ Reset to demo</button>
       <div class="spacer"></div>
-      <button class="btn ghost" id="resetCfg">Reset to demo</button>
-      <button class="btn" data-save="tiers">Save</button>
+      <span class="save-status" id="tiersStatus"></span>
       <button class="btn primary" data-apply="tiers">Save &amp; Apply</button>
     </div>
-    <div class="save-status" id="tiersStatus"></div>
   </div>
 </div>
 
 <!-- ════════════════ Routing modal ════════════════ -->
 <div class="modal-backdrop" id="routingModal" hidden>
-  <div class="modal">
+  <div class="modal" role="dialog" aria-modal="true" aria-label="Routing logic">
     <div class="modal-head">
       <h2>Routing logic</h2>
-      <button class="icon-btn modal-close" data-close="routingModal">✕</button>
+      <button class="icon-btn modal-close" data-close="routingModal" title="Close (Esc)">✕</button>
     </div>
-    <p class="modal-intro">How a prompt becomes a tier. Each <strong>signal</strong> measures how much a
-       prompt looks like a kind of work; its <strong>influence</strong> moves the prompt's
-       <strong>difficulty score</strong> up or down. The score then lands in a tier via the
-       <strong>cutoffs</strong>. Tune below — <strong>Apply</strong> reloads the router live.</p>
+    <div class="modal-body">
+      <p class="modal-intro">Decide which prompts are worth a bigger model. Each <strong>signal</strong>
+         recognises a kind of work; raising its <strong>influence</strong> pushes matching prompts toward
+         pricier tiers (cheap signals push the other way). The <strong>cutoffs</strong> set where one tier
+         hands off to the next. Changes apply to the live router.</p>
 
-    <h3 class="sec">Signals <span class="sec-tag">what the classifier looks for</span></h3>
-    <div id="signalEditors"></div>
+      <h3 class="sec">Signals <span class="sec-tag">what the classifier looks for</span>
+        <button class="mini-btn ghost-mini" data-reset-section="routing" title="Restore signals + cutoffs to the demo defaults">↺ reset</button></h3>
+      <div id="signalEditors" class="accordion"></div>
 
-    <h3 class="sec">Difficulty cutoffs <span class="sec-tag">where each tier begins</span></h3>
-    <p class="sec-note">The difficulty score (0 → high) runs left to right. Drag a boundary to change
-       where one tier hands off to the next.</p>
-    <div class="scoring">
-      <div class="score-axis" id="scoreAxis"></div>
-      <div class="cutoff-sliders" id="cutoffEditors"></div>
+      <h3 class="sec">Difficulty cutoffs <span class="sec-tag">where each tier begins</span></h3>
+      <p class="sec-note">The difficulty score (0 → high) runs left to right. Drag a boundary to change
+         where one tier hands off to the next.</p>
+      <div class="scoring">
+        <div class="score-axis" id="scoreAxis"></div>
+        <div class="cutoff-sliders" id="cutoffEditors"></div>
+      </div>
+      <div class="live-preview" id="livePreview" hidden></div>
     </div>
-
-    <div class="modal-actions">
+    <div class="modal-foot">
       <div class="spacer"></div>
-      <button class="btn" data-save="routing">Save</button>
+      <span class="save-status" id="routingStatus"></span>
       <button class="btn primary" data-apply="routing">Save &amp; Apply</button>
     </div>
-    <div class="save-status" id="routingStatus"></div>
   </div>
 </div>
 
@@ -185,7 +192,12 @@
 <template id="tierEditorTpl">
   <div class="tier-editor">
     <div class="tier-editor-head">
+      <span class="te-reorder">
+        <button type="button" class="icon-btn te-up" title="Move up (cheaper)">▲</button>
+        <button type="button" class="icon-btn te-down" title="Move down (pricier)">▼</button>
+      </span>
       <span class="tier-dot"></span>
+      <span class="te-rank"></span>
       <input class="te-name" placeholder="Tier name">
       <span class="te-keystate"></span>
       <button class="icon-btn te-del" title="Delete tier">🗑</button>
@@ -198,11 +210,12 @@
         </select>
       </label>
       <label>Model
-        <span class="te-model-row" style="display:flex;gap:6px;align-items:center">
-          <input class="te-model" placeholder="model id" style="flex:1;min-width:0">
-          <button type="button" class="icon-btn te-load" title="Load models from provider (uses this tier's key)">⤓</button>
+        <span class="te-model-row">
+          <input class="te-model" placeholder="model id" list="">
+          <button type="button" class="te-load btn-mini">Load / test</button>
           <datalist class="te-models"></datalist>
         </span>
+        <span class="te-model-status"></span>
       </label>
       <label>Base URL <input class="te-base" placeholder="provider default"></label>
       <label>API key <input class="te-key" type="password" placeholder="paste to set"></label>
@@ -211,39 +224,43 @@
 </template>
 
 <template id="signalEditorTpl">
-  <div class="signal-editor">
-    <div class="sig-head">
+  <div class="signal-editor acc-item">
+    <button type="button" class="sig-head acc-head" aria-expanded="false">
+      <span class="acc-caret">▸</span>
       <span class="sig-label"></span>
       <span class="sig-dir"></span>
-    </div>
-    <div class="sig-blurb"></div>
-    <div class="sig-sliders">
-      <div class="slider-row">
-        <div class="slider-top"><span class="slider-name">Influence on difficulty</span>
-          <span class="slider-val sig-weight-val"></span></div>
-        <div class="slider-line">
-          <span class="slider-end down">cheaper ◀</span>
-          <input class="sig-weight" type="range" min="-0.5" max="0.5" step="0.01">
-          <span class="slider-end up">▶ stronger</span>
+    </button>
+    <div class="acc-panel">
+      <div class="sig-blurb"></div>
+      <div class="sig-sliders">
+        <div class="slider-row">
+          <div class="slider-top"><span class="slider-name">Influence on difficulty
+            <span class="slider-help">how hard a match pushes the score (− cheaper / + pricier)</span></span>
+            <span class="slider-val sig-weight-val"></span></div>
+          <div class="slider-line">
+            <span class="slider-end down">◀ cheaper</span>
+            <span class="slider-signed"><input class="sig-weight" type="range" min="-0.5" max="0.5" step="0.01"><span class="zero-tick" title="no influence (0)"></span></span>
+            <span class="slider-end up">pricier ▶</span>
+          </div>
+        </div>
+        <div class="slider-row">
+          <div class="slider-top"><span class="slider-name">Match sensitivity
+            <span class="slider-help">how close a prompt must be before this signal fires</span></span>
+            <span class="slider-val sig-threshold-val"></span></div>
+          <div class="slider-line">
+            <span class="slider-end">loose</span>
+            <input class="sig-threshold" type="range" min="0.3" max="0.95" step="0.01">
+            <span class="slider-end">strict</span>
+          </div>
         </div>
       </div>
-      <div class="slider-row">
-        <div class="slider-top"><span class="slider-name">Match sensitivity
-          <span class="slider-help">similarity needed before it fires</span></span>
-          <span class="slider-val sig-threshold-val"></span></div>
-        <div class="slider-line">
-          <span class="slider-end">loose</span>
-          <input class="sig-threshold" type="range" min="0.3" max="0.95" step="0.01">
-          <span class="slider-end">strict</span>
-        </div>
-      </div>
+      <details class="sig-ex">
+        <summary>Example prompts (<span class="sig-count"></span>)</summary>
+        <p class="sig-ex-help">A query that reads like these moves the difficulty score in this signal's
+           direction. Edit to change what counts as this kind of work.</p>
+        <textarea class="sig-cands-ta" rows="6" spellcheck="false"></textarea>
+      </details>
     </div>
-    <details class="sig-ex">
-      <summary>Example prompts (<span class="sig-count"></span>)</summary>
-      <p class="sig-ex-help">A query that reads like these moves the difficulty score in this signal's
-         direction. Edit to change what counts as this kind of work.</p>
-      <textarea class="sig-cands-ta" rows="6" spellcheck="false"></textarea>
-    </details>
   </div>
 </template>
 
