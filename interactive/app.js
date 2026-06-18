@@ -235,20 +235,10 @@ function rationaleHTML(r) {
   // Confidence is an AUTO-routing signal; when a tier is forced the router
   // didn't choose, so showing a "% confidence" alongside "forced" is a
   // contradiction — suppress it. Forced is labelled "(manual)" to distinguish.
-  const conf = (!r.forced && r.confidence != null) ? Math.round(r.confidence * 100) : null;
   const verb = r.forced ? 'forced →' : 'routed →';
-  const cat = r.category ? esc(r.category) : null;
-  // The % is vllm-sr's own confidence in how it CLASSIFIED this prompt (the
-  // category/decision it picked) — the classification that then selects the
-  // tier. It is NOT a head-to-head vs another tier, and not answer quality.
-  const confTip = cat
-    ? `vLLM Semantic Router classified this prompt as “${cat}” with ${conf}% confidence — that classification is what picks the tier. It's the router's own score, not a head-to-head vs Tier 2 and not answer quality.`
-    : `vLLM Semantic Router's confidence in how it classified this prompt — the decision that picks the tier. Not a head-to-head vs another tier, and not answer quality.`;
   const head = `<div class="rat-head">
     <span class="rat-badge${r.forced ? ' forced' : ''}" style="--c:${color}">${verb} ${esc(r.selected_tier_name || '?')}${r.forced ? ' <span class="rat-manual">(manual)</span>' : ''}</span>
     <span class="rat-model">${esc(r.served_model || '')}</span>
-    ${cat ? `<span class="rat-cat" title="The prompt category the router classified this as — this is what the confidence below refers to.">${cat}</span>` : ''}
-    ${conf != null ? `<span class="rat-conf${cat ? ' has-cat' : ''}" title="${confTip}">${conf}% confidence</span>` : ''}
   </div>`;
   return `<div class="rationale">${head}${difficultyMeter(r)}${signalBars(r)}</div>`;
 }

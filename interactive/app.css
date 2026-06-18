@@ -67,6 +67,13 @@ body {
   background:var(--surface); border-bottom:1px solid var(--border); flex:0 0 auto; }
 .hamburger { display:none; background:none; border:none; font-size:20px; cursor:pointer; color:var(--ink); }
 .head-titles { min-width:0; }
+/* partner brand lockup, top-right of the masthead */
+.head-brands { margin-left:auto; display:flex; align-items:center; gap:14px; flex:0 0 auto; }
+.head-brands .brand-logo { display:block; width:auto; }
+.head-brands .brand-logo.dell { height:26px; }
+.head-brands .brand-logo.xeon { height:30px; border-radius:5px; }
+.head-brands::before { content:"powered by"; font-size:9.5px; font-weight:700; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--faint); margin-right:2px; }
 .main-title { font-weight:700; font-size:15.5px; letter-spacing:-.01em;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .main-sub { font-size:12.5px; color:var(--muted); margin-top:1px; }

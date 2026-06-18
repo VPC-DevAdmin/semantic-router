@@ -767,8 +767,12 @@ def _make_handler():
             if not str(f).startswith(str(STATIC_DIR.resolve())) or not f.is_file():
                 self._json(404, {"error": "not found"})
                 return
-            ctype = {"html": "text/html", "css": "text/css", "js": "text/javascript"}.get(
-                f.suffix.lstrip("."), "text/plain")
+            ctype = {
+                "html": "text/html", "css": "text/css", "js": "text/javascript",
+                "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+                "svg": "image/svg+xml", "webp": "image/webp", "gif": "image/gif",
+                "ico": "image/x-icon",
+            }.get(f.suffix.lstrip(".").lower(), "text/plain")
             data = f.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", ctype)
