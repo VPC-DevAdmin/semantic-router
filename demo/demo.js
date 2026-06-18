@@ -11,6 +11,45 @@ const TIER_COLORS = {
 };
 const TIER_HEX = { 1:'#1FB67A', 2:'#11A8C4', 3:'#F2A93B', 4:'#E8743B', 5:'#E64B5C' };
 
+// ── Usage telemetry ────────────────────────────────────────────────
+// Fire-and-forget beacons to the shell worker's public usage endpoint. The
+// demo is path-mounted on the same origin (enterpriseai.center/demos/<slug>/),
+// so an ABSOLUTE-path URL ("/api/...") routes to the shell worker regardless of
+// the injected <base> tag — and it's same-origin, so no CORS. Off-origin (local
+// `make demo`) the route 404s; we swallow that so telemetry never breaks the demo.
+const USAGE_SLUG = 'semantic-router';
+function anonId() {
+  try {
+    let id = localStorage.getItem('eai_anon_id');
+    if (!id) {
+      id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+        : 'a' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      localStorage.setItem('eai_anon_id', id);
+    }
+    return id;
+  } catch { return null; }
+}
+function trackUsage(event, meta = {}) {
+  try {
+    const body = JSON.stringify({
+      events: [{ category: 'demos', slug: USAGE_SLUG, event, meta, anon_id: anonId() }],
+    });
+    const url = '/api/public/usage-events';
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }));
+    } else {
+      fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true })
+        .catch(() => {});
+    }
+  } catch { /* never let telemetry break the demo */ }
+}
+let _usageTimers = {};
+function trackUsageDebounced(event, meta = {}, ms = 800) {
+  clearTimeout(_usageTimers[event]);
+  _usageTimers[event] = setTimeout(() => trackUsage(event, meta), ms);
+}
+trackUsage('view');   // page visit
+
 // Honor the OS "reduce motion" setting: skip trails, pulses, float-ups,
 // and the cross-fade. The replay still advances - it just doesn't animate.
 const REDUCED_MOTION = window.matchMedia
@@ -209,7 +248,10 @@ function makePicker(label, hex, models, onChange, isFrontier, selected) {
   div.innerHTML = `
     <div class="ptier"><span class="pdot" style="background:${hex}"></span>${esc(label)}</div>
     <select>${opts}</select>`;
-  div.querySelector('select').addEventListener('change', e => onChange(e.target.value));
+  div.querySelector('select').addEventListener('change', e => {
+    onChange(e.target.value);
+    trackUsage('change_model', { tier: label, model: e.target.value });
+  });
   return div;
 }
 function onPickerChange() {
@@ -765,6 +807,7 @@ document.getElementById('playBtn').addEventListener('click', e => {
   paused = !paused;
   e.target.textContent = paused ? '▶ Play' : '⏸ Pause';
   el('serverStatus').textContent = paused ? 'PAUSED' : 'CLASSIFYING';
+  trackUsage(paused ? 'pause' : 'play');
 });
 document.getElementById('resetBtn').addEventListener('click', () => {
   cumulative = { count:0, routed:0, baseline:0 };
@@ -934,6 +977,7 @@ function initQueryPickers() {
     if (!btn) return;
     if (btn.dataset.qid === '__rand') selectQuery(null);
     else selectQuery(btn.dataset.qid);
+    trackUsage('select_query', { qid: btn.dataset.qid });
     closeAllPickers();
   });
 
@@ -1023,7 +1067,10 @@ let slider, qvalue;
 function initCalculator() {
   slider = document.getElementById('qslider');
   qvalue = document.getElementById('qvalue');
-  slider.addEventListener('input', updateCalc);
+  slider.addEventListener('input', () => {
+    updateCalc();
+    trackUsageDebounced('adjust_volume', { queries_per_day: parseInt(slider.value, 10) });
+  });
   updateCalc();
 }
 function updateCalc() {
