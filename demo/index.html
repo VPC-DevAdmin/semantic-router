@@ -196,14 +196,14 @@
   <div class="container">
     <div class="section-eyebrow">The hardware</div>
     <h2 class="section-title">One server orchestrates the whole stack.</h2>
-    <p class="section-lede">The router runs on a Dell PowerEdge R770 that sits between your users and every inference backend, classifying each prompt and dispatching it to the right place: on-prem CPU, on-prem GPU, or the cloud.</p>
+    <p class="section-lede">The router runs on a Dell PowerEdge R770 that sits between your users and a cloud inference (AIaaS) endpoint, classifying each prompt and dispatching it to the right tier — the cheapest model that can answer it well, from a fast small model up to a frontier API.</p>
 
     <div class="hw-panel">
       <!-- LEFT: topology diagram -->
       <div class="hw-figure">
         <svg viewBox="0 0 560 440" role="img" aria-labelledby="hwTitle hwDesc" preserveAspectRatio="xMidYMid meet">
           <title id="hwTitle">Routing topology</title>
-          <desc id="hwDesc">Users and applications send prompts to a Dell PowerEdge R770 router, which dispatches each query to one of five tiers and three backends: an on-prem CPU server, an on-prem GPU server, or a cloud inference service.</desc>
+          <desc id="hwDesc">Users and applications send prompts to a Dell PowerEdge R770 router, which classifies each query and dispatches it to a cloud inference (AIaaS) endpoint, picking the cheapest of five model tiers that can answer it well.</desc>
           <defs>
             <radialGradient id="hwHalo" cx="50%" cy="50%" r="50%">
               <stop offset="0%" stop-color="#7FE0FF" stop-opacity="0.55"/>
@@ -215,12 +215,10 @@
             </marker>
           </defs>
 
-          <!-- connectors (drawn under nodes) -->
+          <!-- connectors (drawn under nodes): users → router → one cloud target -->
           <g class="hw-links" fill="none" stroke="#9FD6F2" stroke-width="2">
             <path class="hw-flow" d="M104 219 L168 219" marker-end="url(#hwArrow)"/>
-            <path class="hw-flow" d="M406 219 C 430 219 424 110 448 110" marker-end="url(#hwArrow)"/>
-            <path class="hw-flow" d="M406 219 L448 219" marker-end="url(#hwArrow)"/>
-            <path class="hw-flow" d="M406 219 C 430 219 424 332 448 332" marker-end="url(#hwArrow)"/>
+            <path class="hw-flow" d="M406 219 L418 219" marker-end="url(#hwArrow)"/>
           </g>
 
           <!-- USER / PROMPTS node -->
@@ -256,35 +254,23 @@
           <image class="hw-chassis" href="assets/dell_per770.png" x="172" y="176" width="230" height="88" preserveAspectRatio="xMidYMid meet"/>
           <text x="287" y="298" text-anchor="middle" fill="#CFE8F7" style="font-size:11px;font-weight:700;">Routing &amp; orchestration</text>
 
-          <!-- BACKEND targets -->
-          <!-- on-prem CPU -->
-          <g transform="translate(448,70)">
-            <rect width="102" height="80" rx="12" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.28)"/>
-            <g transform="translate(51,30)" stroke="#BFE6FA" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="-13" y="-13" width="26" height="26" rx="3"/>
-              <rect x="-6" y="-6" width="12" height="12" rx="1.5"/>
-              <path d="M-7 -13 v-5 M0 -13 v-5 M7 -13 v-5 M-7 13 v5 M0 13 v5 M7 13 v5 M-13 -7 h-5 M-13 0 h-5 M-13 7 h-5 M13 -7 h5 M13 0 h5 M13 7 h5"/>
-            </g>
-            <text x="51" y="66" text-anchor="middle" fill="#EAF5FF" style="font-size:11px;font-weight:700;">On-prem CPU</text>
-          </g>
-          <!-- on-prem GPU -->
-          <g transform="translate(448,181)">
-            <rect width="102" height="80" rx="12" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.28)"/>
-            <g transform="translate(51,30)" stroke="#BFE6FA" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="-17" y="-11" width="34" height="22" rx="3"/>
-              <circle cx="-6" cy="0" r="5"/>
-              <circle cx="9" cy="0" r="5"/>
-              <path d="M-17 13 v4 M-9 13 v4"/>
-            </g>
-            <text x="51" y="66" text-anchor="middle" fill="#EAF5FF" style="font-size:11px;font-weight:700;">On-prem GPU</text>
-          </g>
-          <!-- cloud -->
-          <g transform="translate(448,292)">
-            <rect width="102" height="80" rx="12" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.28)"/>
-            <g transform="translate(51,30)" stroke="#BFE6FA" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <!-- BACKEND target: one AIaaS cloud-inference endpoint that fronts the
+               five model tiers; the router picks the cheapest tier that fits -->
+          <g transform="translate(420,96)">
+            <rect width="132" height="248" rx="14" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.28)"/>
+            <g transform="translate(66,30)" stroke="#BFE6FA" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round">
               <path d="M-16 8 a9 9 0 0 1 1 -18 a12 12 0 0 1 22 4 a8 8 0 0 1 -1 14 Z"/>
             </g>
-            <text x="51" y="66" text-anchor="middle" fill="#EAF5FF" style="font-size:11px;font-weight:700;">Cloud inference</text>
+            <text x="66" y="56" text-anchor="middle" fill="#9DEBFF" style="font-size:8.5px;font-weight:800;letter-spacing:0.14em;">AIaaS</text>
+            <text x="66" y="71" text-anchor="middle" fill="#EAF5FF" style="font-size:12px;font-weight:700;">Cloud inference</text>
+            <line x1="14" y1="84" x2="118" y2="84" stroke="rgba(255,255,255,0.18)"/>
+            <g font-weight="700" fill="#EAF5FF" style="font-size:10.5px;">
+              <circle cx="18" cy="104" r="5" fill="#1FB67A"/><text x="30" y="108">Tier 1 · cheapest</text>
+              <circle cx="18" cy="132" r="5" fill="#11A8C4"/><text x="30" y="136">Tier 2</text>
+              <circle cx="18" cy="160" r="5" fill="#F2A93B"/><text x="30" y="164">Tier 3</text>
+              <circle cx="18" cy="188" r="5" fill="#E8743B"/><text x="30" y="192">Tier 4</text>
+              <circle cx="18" cy="216" r="5" fill="#E64B5C"/><text x="30" y="220">Tier 5 · frontier</text>
+            </g>
           </g>
         </svg>
       </div>
