@@ -594,3 +594,9 @@ input[type=range]:active::-moz-range-thumb { box-shadow:0 0 0 6px rgba(47,84,255
 .ex-chips { scroll-behavior:smooth; -webkit-overflow-scrolling:touch;
   -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 24px), transparent);
   mask-image:linear-gradient(to right, #000 calc(100% - 24px), transparent); }
+
+/* Read-only viewer (no Cloudflare Access admin identity): hide the admin-only
+   Settings/Diagnostics menus. The chat stays fully usable. */
+body.viewer .foot-btns { display:none; }
+body.viewer .sidebar-foot::after { content:"Viewer — read-only"; font-size:10.5px; font-weight:700;
+  letter-spacing:.04em; color:var(--sidebar-muted); text-align:center; }

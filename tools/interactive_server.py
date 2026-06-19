@@ -56,6 +56,26 @@ LIVE_ROUTER_CFG = ROOT / "config" / "router-config.yaml"
 
 # ── Overlay config ───────────────────────────────────────────────────────────
 
+# ── Admin gate (Cloudflare Access) ───────────────────────────────────────────
+# When SR_ADMIN_EMAILS is set (comma-separated), only those Cloudflare-Access-
+# authenticated emails may MUTATE config / run Apply / read diagnostics; everyone
+# else gets a read-only chat. Unset → open mode (local `make interactive`).
+# Access injects the verified identity in this header and strips any client-
+# supplied copy, so it's trustworthy *behind Access* (don't expose the port raw).
+ADMIN_EMAILS = frozenset(
+    e.strip().lower() for e in os.environ.get("SR_ADMIN_EMAILS", "").split(",") if e.strip()
+)
+ACCESS_EMAIL_HEADER = "Cf-Access-Authenticated-User-Email"
+
+
+def is_admin(email: str | None) -> bool:
+    """Admin if no allowlist is configured (local dev) OR the Access-verified email
+    is on it."""
+    if not ADMIN_EMAILS:
+        return True
+    return bool(email) and email.strip().lower() in ADMIN_EMAILS
+
+
 def load_overlay() -> dict:
     path = USER_OVERLAY if USER_OVERLAY.exists() else DEFAULT_OVERLAY
     return json.loads(path.read_text())
@@ -735,10 +755,29 @@ def _make_handler():
             n = int(self.headers.get("Content-Length", 0))
             return json.loads(self.rfile.read(n) or b"{}")
 
+        def _email(self) -> str:
+            return self.headers.get(ACCESS_EMAIL_HEADER, "")
+
+        def _admin(self) -> bool:
+            return is_admin(self._email())
+
+        def _deny_non_admin(self) -> bool:
+            """Reject + return True if the caller isn't an admin (config/apply/diag
+            are admin-only so a public viewer can't reload the shared router or
+            spend budget). True means 'handled — stop'."""
+            if self._admin():
+                return False
+            who = self._email() or "a viewer (not signed in)"
+            self._json(403, {"error": f"Admin-only action. You're signed in as {who}."})
+            return True
+
         def do_GET(self):
             path = self.path.split("?", 1)[0]
             if path == "/api/config":
-                self._json(200, masked_overlay(load_overlay()))
+                cfg = masked_overlay(load_overlay())
+                cfg["is_admin"] = self._admin()       # UI hides Settings for viewers
+                cfg["email"] = self._email()
+                self._json(200, cfg)
                 return
             if path == "/api/defaults":
                 # The committed demo default overlay — powers per-section
@@ -752,12 +791,16 @@ def _make_handler():
                 self._json(200, _apply_snapshot())
                 return
             if path == "/api/diag":
+                if self._deny_non_admin():
+                    return
                 self._json(200, {"upstreams": _diag_upstreams(),
                                  "containers": _diag_containers(),
                                  "log": _diag_log(ROUTER_LOG_CONTAINER),
                                  "envoy_log": _diag_log(ENVOY_LOG_CONTAINER)})
                 return
             if path == "/api/diag/log":
+                if self._deny_non_admin():
+                    return
                 tail = int(self.path.split("tail=", 1)[1]) if "tail=" in self.path else 250
                 self._json(200, {"log": _diag_log(ROUTER_LOG_CONTAINER, tail),
                                  "envoy_log": _diag_log(ENVOY_LOG_CONTAINER, tail)})
@@ -789,12 +832,17 @@ def _make_handler():
                 self._json(400, {"error": "invalid JSON"})
                 return
             if path == "/api/config":
+                if self._deny_non_admin():
+                    return
+                payload.pop("is_admin", None); payload.pop("email", None)   # never persist UI flags
                 if payload.get("_reset"):
                     USER_OVERLAY.unlink(missing_ok=True)   # revert to committed default
                 else:
                     merge_overlay(payload)
                 self._json(200, {"ok": True})
             elif path == "/api/apply":
+                if self._deny_non_admin():
+                    return
                 # Non-blocking: launch the apply on a worker thread and let the
                 # client poll /api/apply/status for the progress bar.
                 if _apply_snapshot().get("running"):
@@ -804,6 +852,8 @@ def _make_handler():
                     threading.Thread(target=_run_apply, args=(overlay,), daemon=True).start()
                     self._json(200, {"started": True})
             elif path == "/api/models":
+                if self._deny_non_admin():
+                    return
                 self._json(200, list_models(payload))
             elif path == "/api/chat":
                 self._json(200, vllm_chat(load_overlay(), payload.get("query", ""),

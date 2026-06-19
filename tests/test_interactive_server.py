@@ -26,6 +26,23 @@ OVERLAY = {
 }
 
 
+def test_is_admin_open_when_no_allowlist(monkeypatch):
+    # No SR_ADMIN_EMAILS configured → open mode (local dev): everyone is admin.
+    monkeypatch.setattr(srv, "ADMIN_EMAILS", frozenset())
+    assert srv.is_admin("anyone@example.com") is True
+    assert srv.is_admin("") is True
+    assert srv.is_admin(None) is True
+
+
+def test_is_admin_enforces_allowlist(monkeypatch):
+    monkeypatch.setattr(srv, "ADMIN_EMAILS", frozenset({"boss@corp.com", "ops@corp.com"}))
+    assert srv.is_admin("boss@corp.com") is True
+    assert srv.is_admin("BOSS@CORP.COM") is True          # case-insensitive
+    assert srv.is_admin(" ops@corp.com ") is True          # trimmed
+    assert srv.is_admin("viewer@corp.com") is False        # not on the list
+    assert srv.is_admin("") is False and srv.is_admin(None) is False
+
+
 def test_masked_overlay_hides_keys_and_flags():
     m = srv.masked_overlay(OVERLAY)
     assert m["tiers"][0]["api_key"] == "" and m["tiers"][0]["key_set"] is True

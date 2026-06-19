@@ -38,6 +38,10 @@ const maxTierId = () => CONFIG.tiers.length ? CONFIG.tiers[CONFIG.tiers.length -
 async function boot() {
   CONFIG = await (await fetch('/api/config')).json();
   QUERIES = (await (await fetch('/api/queries')).json()).categories || {};
+  // Viewer vs admin (Cloudflare Access identity, resolved server-side). Viewers
+  // get a read-only chat: the Settings/Diagnostics menus are hidden and the
+  // server rejects config/apply/diag for them as defense in depth.
+  document.body.classList.toggle('viewer', !CONFIG.is_admin);
   $('routerTag').textContent = CONFIG.vllm_sr_url || 'vllm-sr';
   $('routeSummary').textContent = 'Routes every prompt to the right-sized model';
   loadChats();
@@ -476,6 +480,7 @@ function renderPills() {
 
 function renderKeyBanner() {
   const banner = $('keyBanner');
+  if (!CONFIG.is_admin) { banner.hidden = true; return; }   // viewers can't fix keys
   const withKey = CONFIG.tiers.filter(t => t.key_set).length;
   if (CONFIG.tiers.length && withKey === CONFIG.tiers.length) { banner.hidden = true; return; }
   banner.hidden = false;
@@ -767,12 +772,14 @@ function addTier() {
 }
 
 function openTiers() {
+  if (!CONFIG.is_admin) return;
   $('vllmUrl').value = CONFIG.vllm_sr_url || '';
   renderTierEditors();
   $('tiersStatus').textContent = ''; $('tiersStatus').className = 'save-status';
   $('tiersModal').hidden = false; closeSidebar();
 }
 function openRouting() {
+  if (!CONFIG.is_admin) return;
   renderSignals(); renderCutoffs(); livePreview();
   $('routingStatus').textContent = ''; $('routingStatus').className = 'save-status';
   $('routingModal').hidden = false; closeSidebar();
@@ -900,6 +907,7 @@ async function resetCfg() {
 let DIAG_TIMER = null;
 
 async function openDiag() {
+  if (!CONFIG.is_admin) return;
   $('diagModal').hidden = false; closeSidebar();
   $('diagUpstreams').innerHTML = '<div class="diag-empty">loading…</div>';
   $('diagContainers').innerHTML = '';
