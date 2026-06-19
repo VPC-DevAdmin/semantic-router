@@ -43,6 +43,28 @@ def test_is_admin_enforces_allowlist(monkeypatch):
     assert srv.is_admin("") is False and srv.is_admin(None) is False
 
 
+def test_resolve_email_by_auth_mode(monkeypatch):
+    h = {"Cf-Access-Authenticated-User-Email": "a@x.com", "X-Auth-Email": "b@x.com"}
+    monkeypatch.setattr(srv, "AUTH_MODE", "open")
+    assert srv.resolve_email(h) == ""
+    monkeypatch.setattr(srv, "AUTH_MODE", "access")
+    assert srv.resolve_email(h) == "a@x.com"
+    monkeypatch.setattr(srv, "AUTH_MODE", "proxy")
+    assert srv.resolve_email(h) == "b@x.com"
+
+
+def test_proxy_authorized_requires_shared_secret(monkeypatch):
+    monkeypatch.setattr(srv, "AUTH_MODE", "open")
+    assert srv.proxy_authorized({}) is True                    # no-op outside proxy mode
+    monkeypatch.setattr(srv, "AUTH_MODE", "proxy")
+    monkeypatch.setattr(srv, "PROXY_SECRET", "s3cr3t")
+    assert srv.proxy_authorized({"X-Proxy-Secret": "s3cr3t"}) is True
+    assert srv.proxy_authorized({"X-Proxy-Secret": "wrong"}) is False
+    assert srv.proxy_authorized({}) is False                   # missing → rejected
+    monkeypatch.setattr(srv, "PROXY_SECRET", "")
+    assert srv.proxy_authorized({"X-Proxy-Secret": ""}) is False   # unset secret never authorizes
+
+
 def test_masked_overlay_hides_keys_and_flags():
     m = srv.masked_overlay(OVERLAY)
     assert m["tiers"][0]["api_key"] == "" and m["tiers"][0]["key_set"] is True

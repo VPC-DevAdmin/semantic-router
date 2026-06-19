@@ -59,6 +59,38 @@ In the Cloudflare dashboard → **Zero Trust → Access → Applications → Add
 
 Now only allow-listed people can load the page, and only admins see Settings.
 
+## Alternative auth: proxy through your Supabase-gated admin Worker (recommended if you already have one)
+
+If the main site already gates admin pages with Supabase magic-link, the cleanest
+option is to serve the demo **as another admin page** — proxy it through the Worker
+that already enforces Supabase, instead of putting Cloudflare Access in front. The
+box-side server then trusts only that Worker.
+
+Set the demo into **proxy mode**:
+
+```bash
+export SR_AUTH_MODE=proxy
+export SR_PROXY_SECRET="<long-random-shared-secret>"   # same value the Worker sends
+export SR_ADMIN_EMAILS="you@corp.com"                  # who may edit/Apply (vs view)
+make interactive
+make tunnel                                            # tunnel hostname stays private-ish; the secret gates it
+```
+
+In proxy mode the server **rejects any request without `X-Proxy-Secret`**, so the
+tunnel origin can't be hit directly — only the Worker can reach it.
+
+**Worker contract** (in your main-site repo): for `…/admin/router-demo/*`,
+1. enforce the Supabase session exactly like your other admin pages;
+2. `fetch()` the tunnel origin for the same path, **adding two headers**:
+   - `X-Proxy-Secret: <SR_PROXY_SECRET>` — proves it's the trusted Worker;
+   - `X-Auth-Email: <supabase user email>` — drives the demo's admin gate + usage;
+3. stream the response back; don't set a short subrequest timeout (chat can take
+   up to ~180s — fine on Workers, since awaiting a fetch doesn't burn CPU);
+4. forward request/response bodies and the `Content-Type` verbatim.
+
+The demo's existing admin gate then applies to the forwarded `X-Auth-Email`
+(admins edit/Apply/diagnostics; everyone else is read-only chat).
+
 ## 5. Usage telemetry (optional, needs the shell-worker side)
 Two parts — both require the shell worker to accept the events:
 - **Server-side** (rich): `interactive_server.py` POSTs chat events (routed tier,

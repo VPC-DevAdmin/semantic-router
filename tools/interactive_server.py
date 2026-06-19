@@ -30,6 +30,7 @@ Stdlib + httpx + pyyaml (deps). Run:  python tools/interactive_server.py --port 
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import re
@@ -67,10 +68,40 @@ ADMIN_EMAILS = frozenset(
 )
 ACCESS_EMAIL_HEADER = "Cf-Access-Authenticated-User-Email"
 
+# How the caller's identity is established:
+#   open   — local dev; no gating, everyone is admin (default).
+#   access — Cloudflare Access in front; identity from Cf-Access-… header.
+#   proxy  — fronted by a trusted reverse proxy (e.g. a Supabase-gated admin
+#            Worker) that injects X-Auth-Email and proves itself with a shared
+#            X-Proxy-Secret. Every request must carry the secret, so the tunnel
+#            origin can't be hit directly.
+AUTH_MODE = os.environ.get("SR_AUTH_MODE", "open").strip().lower()
+PROXY_SECRET = os.environ.get("SR_PROXY_SECRET", "")
+PROXY_EMAIL_HEADER = "X-Auth-Email"
+PROXY_SECRET_HEADER = "X-Proxy-Secret"
+
+
+def resolve_email(headers) -> str:
+    """The caller's identity for the active auth mode (`headers` has a .get)."""
+    if AUTH_MODE == "proxy":
+        return (headers.get(PROXY_EMAIL_HEADER) or "").strip()
+    if AUTH_MODE == "access":
+        return (headers.get(ACCESS_EMAIL_HEADER) or "").strip()
+    return ""   # open
+
+
+def proxy_authorized(headers) -> bool:
+    """In proxy mode, require the shared secret on EVERY request so only the
+    trusted front-proxy can reach the origin. No-op in other modes."""
+    if AUTH_MODE != "proxy":
+        return True
+    return bool(PROXY_SECRET) and hmac.compare_digest(
+        (headers.get(PROXY_SECRET_HEADER) or ""), PROXY_SECRET)
+
 
 def is_admin(email: str | None) -> bool:
-    """Admin if no allowlist is configured (local dev) OR the Access-verified email
-    is on it."""
+    """Admin if no allowlist is configured (local dev) OR the verified email is on
+    it."""
     if not ADMIN_EMAILS:
         return True
     return bool(email) and email.strip().lower() in ADMIN_EMAILS
@@ -756,10 +787,18 @@ def _make_handler():
             return json.loads(self.rfile.read(n) or b"{}")
 
         def _email(self) -> str:
-            return self.headers.get(ACCESS_EMAIL_HEADER, "")
+            return resolve_email(self.headers)
 
         def _admin(self) -> bool:
             return is_admin(self._email())
+
+        def _proxy_gate(self) -> bool:
+            """In proxy mode, reject anything missing the shared secret (i.e. not
+            coming through the trusted front-proxy). True means 'handled — stop'."""
+            if proxy_authorized(self.headers):
+                return False
+            self._json(403, {"error": "forbidden"})
+            return True
 
         def _deny_non_admin(self) -> bool:
             """Reject + return True if the caller isn't an admin (config/apply/diag
@@ -772,6 +811,8 @@ def _make_handler():
             return True
 
         def do_GET(self):
+            if self._proxy_gate():
+                return
             path = self.path.split("?", 1)[0]
             if path == "/api/config":
                 cfg = masked_overlay(load_overlay())
@@ -825,6 +866,8 @@ def _make_handler():
             self.wfile.write(data)
 
         def do_POST(self):
+            if self._proxy_gate():
+                return
             path = self.path.split("?", 1)[0]
             try:
                 payload = self._body()
