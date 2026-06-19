@@ -8,7 +8,7 @@
 #   make export       # write data/routed_queries_with_answers.json
 
 .PHONY: help setup install-vllm-sr-pypi load route answers evaluate export resume misroutes scores \
-        import-answers update-gold demo-data demo gateway interactive \
+        import-answers update-gold demo-data demo gateway interactive tunnel \
         clean-results router-smoke router-stop test fmt lint \
         mock-bg mock-stop start_LLM stop_LLM fetch-router-model
 
@@ -39,6 +39,7 @@ help:
 	@echo "  demo [DEMO_PORT=<n>]           serve the cost-routing replay demo + open browser (single command, no setup needed)"
 	@echo "  gateway [GATEWAY_PORT=<n>] [ROUTER_URL=<url>]  OpenAI-compatible contract gateway for agent orchestrators"
 	@echo "  interactive [INTERACTIVE_PORT=<n>]  chat UI: type a query, watch it routed across tiers + get answers (keys in Settings)"
+	@echo "  tunnel                         expose the interactive UI via Cloudflare Tunnel + Access (see docs/DEPLOY_INTERACTIVE.md)"
 	@echo "  misroutes [RUN=<id>]           diagnostic: list queries routed BELOW their min tier"
 	@echo "  scores [RUN=<id>]              diagnostic: per-signal score + threshold gap for each misroute"
 	@echo "  resume [RUN=<id>]              re-run pending/error rows; mark done if clean"
@@ -462,6 +463,14 @@ interactive:
 	@echo "Interactive demo at http://localhost:$(INTERACTIVE_PORT)/  (Ctrl-C to stop)"
 	@( sleep 1 && $(OPEN_CMD) http://localhost:$(INTERACTIVE_PORT)/ >/dev/null 2>&1 & ) || true
 	@$(DEMO_PY) tools/interactive_server.py --port $(INTERACTIVE_PORT)
+
+# Expose the interactive demo over a Cloudflare Tunnel (run AFTER `make interactive`
+# is up on $(INTERACTIVE_PORT)). One-time setup: see docs/DEPLOY_INTERACTIVE.md.
+# Requires a named tunnel + config/cloudflared.yml (gitignored; copy the example).
+tunnel:
+	@command -v cloudflared >/dev/null || { echo "cloudflared not installed — see docs/DEPLOY_INTERACTIVE.md"; exit 1; }
+	@test -f config/cloudflared.yml || { echo "config/cloudflared.yml missing — copy config/cloudflared.example.yml and edit"; exit 1; }
+	cloudflared tunnel --config config/cloudflared.yml run
 
 resume:
 	$(BENCHMARK) resume --db $(DB) $(if $(RUN),--run $(RUN),)

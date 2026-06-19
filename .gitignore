@@ -102,3 +102,6 @@ dist/
 .wrangler
 .dev.vars*
 !.dev.vars.example
+
+# Cloudflare Tunnel config (holds the tunnel id; example is committed)
+config/cloudflared.yml

@@ -1,0 +1,13 @@
+# Cloudflare Tunnel config for the interactive demo.
+# Copy to config/cloudflared.yml (gitignored) and fill in your tunnel id + host.
+# Full setup: docs/DEPLOY_INTERACTIVE.md
+
+tunnel: <TUNNEL-UUID>                       # from `cloudflared tunnel create router-demo`
+credentials-file: /home/devadmin/.cloudflared/<TUNNEL-UUID>.json
+
+ingress:
+  # The auth wall is Cloudflare Access (configured in the dashboard / via API),
+  # applied to this hostname — not in this file.
+  - hostname: router.enterpriseai.center
+    service: http://localhost:8900          # the `make interactive` server
+  - service: http_status:404                # required catch-all
