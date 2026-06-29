@@ -20,6 +20,11 @@ Endpoints:
   GET  /api/queries           -> the benchmark queries grouped by category
   POST /api/chat              -> proxy {query, mode} to vllm-sr; return
                                  {routing, answer | error}
+  POST /v1/chat/completions   -> tier-abstracted OpenAI gateway for external
+                                 apps: `model` is a TIER id ("auto"|"tier1"…),
+                                 resolved to the real model server-side; routing
+                                 headers + body `model` are remapped back to the
+                                 tier id so model identity never leaks
   GET  /api/defaults          -> committed demo default overlay (per-section reset)
   GET  /api/diag              -> per-tier upstreams + container status + router log
   GET  /api/diag/log[?tail=N] -> just the parsed router log rows
@@ -467,17 +472,102 @@ def _token_param_for(model: str) -> str:
     return "max_tokens"
 
 
+# ── Tier-abstracted OpenAI gateway (POST /v1/chat/completions) ────────────────
+# The public, stable contract for EXTERNAL apps. They send the OpenAI body but
+# set `model` to a TIER id ("auto" | "tier1"…"tier5") — never a real model id.
+# We resolve the tier id → real model id server-side, forward to vllm-sr, then
+# remap the routing decision (x-vsr-selected-model header + body `model`) from
+# the real model id BACK to a tier id. So callers speak ONLY tier ids in both
+# directions: the model behind a tier can change (edit live_demo.json) with zero
+# external code change, and the real model identity never leaks past this hop.
+_PASSTHRU_RESP_HEADERS = (
+    "x-vsr-selected-category", "x-vsr-selected-reasoning",
+    "x-vsr-selected-confidence", "x-vsr-selected-decision",
+    "x-vsr-matched-embeddings", "x-vsr-matched-complexity",
+    "x-vsr-matched-structure", "x-vsr-matched-projections",
+)
+
+
+def _resolve_tier_model(overlay: dict, model: str | None):
+    """(real_model, tier, error). `model` is a tier id or 'auto'. Real model ids
+    are deliberately REJECTED — the point of this gateway is that callers speak
+    tiers, not models — so an unknown/model-shaped value returns a helpful error
+    listing the valid tier ids."""
+    m = (model or "auto").strip()
+    if m == "auto":
+        return "auto", None, None
+    tier = next((t for t in overlay.get("tiers", []) if t.get("id") == m), None)
+    if tier:
+        return (tier.get("model") or m), tier, None
+    ids = ", ".join(t.get("id", "?") for t in overlay.get("tiers", []))
+    return None, None, (f"unknown tier {m!r}. Set model to 'auto' to let the router "
+                        f"choose, or pin one of: {ids}.")
+
+
+def tier_chat(overlay: dict, body: dict):
+    """OpenAI-compatible chat passthrough keyed by TIER id. Returns
+    (status, response_headers, json_body) — the x-vsr routing headers and the
+    body `model` are remapped from the real upstream model back to its tier id."""
+    real_model, _tier, err = _resolve_tier_model(overlay, body.get("model"))
+    if err:
+        return 400, {}, {"error": {"message": err, "type": "invalid_request_error"}}
+    if body.get("stream"):
+        return 400, {}, {"error": {"message": "streaming is not supported by the tier "
+                                              "gateway; omit `stream` or set it false.",
+                                   "type": "invalid_request_error"}}
+    base = (overlay.get("vllm_sr_url") or "http://localhost:8899").rstrip("/")
+    fwd = dict(body)
+    fwd["model"] = real_model
+    # Cross-provider token-param split: gpt-5.x/o-series reject `max_tokens` while
+    # Anthropic's OAI adapter wants it. If the caller set one and the upstream
+    # 400s asking for the other, retry once with it swapped.
+    sent = next((p for p in ("max_tokens", "max_completion_tokens") if p in fwd), None)
+    try:
+        with httpx.Client(timeout=180.0) as c:
+            r = c.post(f"{base}/v1/chat/completions", json=fwd)
+            if r.status_code == 400 and sent:
+                alt = "max_completion_tokens" if sent == "max_tokens" else "max_tokens"
+                if alt in _upstream_error_text(r):
+                    fwd = {**{k: v for k, v in fwd.items() if k != sent}, alt: fwd[sent]}
+                    r = c.post(f"{base}/v1/chat/completions", json=fwd)
+    except httpx.HTTPError as exc:
+        return 502, {}, {"error": {"message": f"vllm-sr not reachable at {base} ({exc}).",
+                                   "type": "upstream_error"}}
+    h = {k.lower(): v for k, v in r.headers.items()}
+    out_headers = {}
+    selected = h.get("x-vsr-selected-model")
+    if selected is not None:                       # absent on cache hits
+        hit = _tier_for(overlay, selected)
+        out_headers["x-vsr-selected-model"] = hit["id"] if hit else selected
+    for k in _PASSTHRU_RESP_HEADERS:
+        if k in h:
+            out_headers[k] = h[k]
+    try:
+        data = r.json()
+    except ValueError:
+        return r.status_code, out_headers, {
+            "error": {"message": _upstream_error_text(r), "type": "upstream_error"}}
+    # The body's `model` reflects the real upstream model (and is the cache-hit
+    # fallback when the header is absent) — abstract it back to the tier id too.
+    if isinstance(data, dict) and data.get("model"):
+        hit = _tier_for(overlay, data["model"])
+        if hit:
+            data["model"] = hit["id"]
+    return r.status_code, out_headers, data
+
+
 def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
     """Forward one query to the live vllm-sr. mode='auto' routes; otherwise mode
     is a tier id to pin. Returns {routing, answer} or {routing, error}."""
     base = (overlay.get("vllm_sr_url") or "http://localhost:8899").rstrip("/")
-    # mode 'auto' routes; otherwise it's a tier id to pin. The live config names
-    # model cards by the real model id, so pin by that name (fall back to the id).
-    if mode == "auto":
-        model = "auto"
-    else:
-        pinned = next((t for t in overlay.get("tiers", []) if t.get("id") == mode), None)
-        model = (pinned.get("model") if pinned else None) or mode
+    # The UI only ever sends a TIER id (or 'auto') — never a model name. Resolve
+    # the tier → real model id HERE via the same mapper the external
+    # /v1/chat/completions gateway uses (_resolve_tier_model), so there's ONE
+    # server-side place that maps tiers to models. The live config names model
+    # cards by the real model id (vllm-sr forwards the name upstream), so we pin
+    # by that name. A mode the UI never produces falls back to itself.
+    model, _pinned, _ = _resolve_tier_model(overlay, mode)
+    model = model or mode
     # Token-budget param is provider-split: Anthropic *requires* `max_tokens`
     # (vllm-sr's OAI→Anthropic adapter keys off it), but newer OpenAI models
     # (gpt-5.x / o-series) REJECT it and require `max_completion_tokens`. When a
@@ -773,12 +863,14 @@ def _make_handler():
         def log_message(self, *a):
             pass
 
-        def _json(self, code: int, payload: dict):
+        def _json(self, code: int, payload: dict, extra_headers: dict | None = None):
             data = json.dumps(payload).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(data)))
+            for k, v in (extra_headers or {}).items():
+                self.send_header(k, v)
             self.end_headers()
             self.wfile.write(data)
 
@@ -901,6 +993,11 @@ def _make_handler():
             elif path == "/api/chat":
                 self._json(200, vllm_chat(load_overlay(), payload.get("query", ""),
                                           payload.get("mode", "auto")))
+            elif path == "/v1/chat/completions":
+                # Tier-abstracted OpenAI gateway for EXTERNAL apps: model is a
+                # tier id ("auto"|"tier1"…). See tier_chat() for the contract.
+                status, hdrs, data = tier_chat(load_overlay(), payload)
+                self._json(status, data, extra_headers=hdrs)
             else:
                 self._json(404, {"error": "not found"})
 

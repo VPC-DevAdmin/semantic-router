@@ -315,6 +315,111 @@ def test_vllm_chat_retries_with_max_completion_tokens(monkeypatch):
     assert "max_completion_tokens" in calls[1] and "max_tokens" not in calls[1]
 
 
+def _gateway_overlay():
+    return {"vllm_sr_url": "http://localhost:8899", "tiers": [
+        {"id": "tier3", "name": "Tier 3", "model": "gpt-5.4-mini"},
+        {"id": "tier4", "name": "Tier 4", "model": "gemini-3.1-pro-preview"},
+        {"id": "tier5", "name": "Tier 5", "model": "Opus 4.7"}]}
+
+
+def _gateway_client(calls, responder):
+    class _Client:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, url, json):
+            calls.append(json)
+            return responder(json)
+    return _Client
+
+
+def test_tier_chat_pins_tier_and_remaps_back(monkeypatch):
+    # External caller pins a TIER id; we forward the real model id upstream, then
+    # remap the routing header AND body model BACK to the tier id so the model
+    # identity never leaks past the gateway.
+    calls = []
+    body = {"id": "x", "model": "gemini-3.1-pro-preview",
+            "choices": [{"message": {"content": "hi"}}]}
+    monkeypatch.setattr(srv.httpx, "Client", _gateway_client(
+        calls, lambda j: _Resp({"x-vsr-selected-model": "gemini-3.1-pro-preview",
+                                 "x-vsr-selected-category": "reasoning"}, body)))
+    status, headers, out = srv.tier_chat(_gateway_overlay(),
+        {"model": "tier4", "messages": [{"role": "user", "content": "q"}]})
+    assert status == 200
+    assert calls[0]["model"] == "gemini-3.1-pro-preview"   # real id forwarded upstream
+    assert headers["x-vsr-selected-model"] == "tier4"      # header remapped to tier id
+    assert headers["x-vsr-selected-category"] == "reasoning"
+    assert out["model"] == "tier4"                          # body model remapped too
+
+
+def test_tier_chat_auto_routes_and_remaps_decision(monkeypatch):
+    # model='auto' lets the router classify; the real model it picks is remapped
+    # back to its tier id in both header and body.
+    calls = []
+    body = {"model": "gpt-5.4-mini", "choices": [{"message": {"content": "a"}}]}
+    monkeypatch.setattr(srv.httpx, "Client", _gateway_client(
+        calls, lambda j: _Resp({"x-vsr-selected-model": "gpt-5.4-mini"}, body)))
+    status, headers, out = srv.tier_chat(_gateway_overlay(),
+        {"model": "auto", "messages": [{"role": "user", "content": "q"}]})
+    assert status == 200
+    assert calls[0]["model"] == "auto"                     # auto forwarded verbatim
+    assert headers["x-vsr-selected-model"] == "tier3"      # classified model → tier id
+    assert out["model"] == "tier3"
+
+
+def test_tier_chat_rejects_real_model_id(monkeypatch):
+    # The whole point is to abstract models, so a real model id (not a tier id)
+    # is rejected with a helpful list of valid tier ids — no upstream call made.
+    calls = []
+    monkeypatch.setattr(srv.httpx, "Client", _gateway_client(calls, lambda j: None))
+    status, _h, out = srv.tier_chat(_gateway_overlay(), {"model": "gpt-5.4-mini"})
+    assert status == 400 and not calls
+    assert "unknown tier" in out["error"]["message"]
+    assert "tier4" in out["error"]["message"]              # lists valid tier ids
+
+
+def test_tier_chat_rejects_stream(monkeypatch):
+    calls = []
+    monkeypatch.setattr(srv.httpx, "Client", _gateway_client(calls, lambda j: None))
+    status, _h, out = srv.tier_chat(_gateway_overlay(), {"model": "tier4", "stream": True})
+    assert status == 400 and not calls
+    assert "streaming" in out["error"]["message"]
+
+
+def test_tier_chat_swaps_token_param_on_400(monkeypatch):
+    # Caller sent max_tokens but the pinned tier's model (gpt-5.x) rejects it;
+    # gateway retries once with max_completion_tokens swapped in.
+    calls = []
+    err = {"error": {"message": "Use 'max_completion_tokens' instead."}}
+    ok = {"model": "gpt-5.4-mini", "choices": [{"message": {"content": "hi"}}]}
+
+    def responder(j):
+        if "max_tokens" in j:
+            return _Resp({}, err, status_code=400)
+        return _Resp({"x-vsr-selected-model": "gpt-5.4-mini"}, ok)
+
+    monkeypatch.setattr(srv.httpx, "Client", _gateway_client(calls, responder))
+    status, _h, out = srv.tier_chat(_gateway_overlay(),
+        {"model": "tier3", "messages": [{"role": "user", "content": "q"}], "max_tokens": 10})
+    assert status == 200 and len(calls) == 2
+    assert "max_tokens" in calls[0] and "max_completion_tokens" not in calls[0]
+    assert "max_completion_tokens" in calls[1] and "max_tokens" not in calls[1]
+    assert out["model"] == "tier3"
+
+
+def test_tier_chat_unreachable_returns_502(monkeypatch):
+    class _Boom:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, *a, **k): raise srv.httpx.ConnectError("refused")
+
+    monkeypatch.setattr(srv.httpx, "Client", _Boom)
+    status, _h, out = srv.tier_chat(_gateway_overlay(),
+        {"model": "tier4", "messages": []})
+    assert status == 502 and "not reachable" in out["error"]["message"]
+
+
 def test_vllm_chat_upstream_error_surfaces_reason(monkeypatch):
     # The router routed fine but the upstream model 404'd (e.g. a bad model id).
     # The UI must show the upstream reason + the routed tier, NOT "not reachable".
