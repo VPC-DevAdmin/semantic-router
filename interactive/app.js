@@ -42,7 +42,7 @@ async function boot() {
   // get a read-only chat: the Settings/Diagnostics menus are hidden and the
   // server rejects config/apply/diag for them as defense in depth.
   document.body.classList.toggle('viewer', !CONFIG.is_admin);
-  $('routerTag').textContent = CONFIG.vllm_sr_url || 'vllm-sr';
+  $('routerTag').textContent = 'Live router';
   $('routeSummary').textContent = 'Routes every prompt to the right-sized model';
   loadChats();
   if (!chats.length) newChat(); else { currentId = chats[0].id; }
@@ -476,6 +476,15 @@ function renderPills() {
   };
   mk('auto', 'auto', false);
   CONFIG.tiers.forEach(t => mk(t.id, t.name, !t.key_set));
+
+  // Mobile mirror: a native <select> (shown only on narrow screens via CSS) that
+  // re-keys routeMode without wrapping the pills into a messy multi-row grid.
+  const sel = $('routeSelect');
+  if (sel) {
+    const opt = (mode, label) => `<option value="${esc(mode)}"${routeMode === mode ? ' selected' : ''}>${esc(label)}</option>`;
+    sel.innerHTML = opt('auto', 'Auto') + CONFIG.tiers.map(t => opt(t.id, t.name + (t.key_set ? '' : ' (no key)'))).join('');
+    sel.onchange = () => { routeMode = sel.value; renderPills(); };
+  }
 }
 
 function renderKeyBanner() {
@@ -874,7 +883,7 @@ function applyProgressHTML(s) {
 function setRouterStatus(state) {
   const dot = document.querySelector('#routerStatus .status-dot');
   if (dot) dot.className = 'status-dot' + (state === 'live' ? '' : state === 'warming' ? ' warm' : ' down');
-  $('routerTag').textContent = state === 'warming' ? 'reloading vllm-sr…' : (CONFIG.vllm_sr_url || 'vllm-sr');
+  $('routerTag').textContent = state === 'warming' ? 'reloading router…' : 'Live router';
 }
 
 // Poll the background apply until done, driving both the modal progress bar

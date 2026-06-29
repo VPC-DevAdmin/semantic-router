@@ -229,6 +229,12 @@ body {
 .pill:hover { border-color:#c5d0ff; color:var(--ink); }
 .pill.active { background:var(--ink); border-color:var(--ink); color:#fff; }
 .pill .nokey { color:var(--warn); font-size:9px; }
+/* Mobile mirror of the route pills — hidden on desktop, swapped in below 600px. */
+.route-select { display:none; border:1px solid var(--border); background:var(--surface);
+  border-radius:999px; padding:6px 30px 6px 14px; font:inherit; font-size:13px; font-weight:600;
+  color:var(--ink); cursor:pointer; appearance:none; -webkit-appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%237a8aa8' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat; background-position:right 12px center; }
 .ex-toggle { margin-left:auto; border:1px solid var(--border); background:var(--surface); border-radius:9px;
   padding:6px 12px; font:inherit; font-size:12.5px; font-weight:600; color:var(--muted); cursor:pointer; }
 .ex-toggle:hover { border-color:#c5d0ff; color:var(--ink); }
@@ -391,6 +397,12 @@ input[type=range]::-moz-range-thumb { width:16px; height:16px; border-radius:50%
   .suggestions { grid-template-columns:1fr; }
   .thread, .composer-row, .input-wrap, .examples-pop, .composer-hint { padding-left:16px; padding-right:16px; }
   .main-head { padding:12px 16px; }
+}
+/* Below 600px the 7 route pills wrap into a messy grid — collapse them into a
+   single native dropdown instead. */
+@media (max-width:600px) {
+  .seg .pill { display:none; }
+  .route-select { display:inline-block; }
 }
 .scrim { position:fixed; inset:0; background:rgba(13,22,38,.4); z-index:39; }
 
