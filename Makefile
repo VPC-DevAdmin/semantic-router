@@ -462,7 +462,7 @@ INTERACTIVE_PORT ?= 8900
 interactive:
 	@echo "Interactive demo at http://localhost:$(INTERACTIVE_PORT)/  (Ctrl-C to stop)"
 	@( sleep 1 && $(OPEN_CMD) http://localhost:$(INTERACTIVE_PORT)/ >/dev/null 2>&1 & ) || true
-	@$(DEMO_PY) tools/interactive_server.py --port $(INTERACTIVE_PORT)
+	@PATH="$(VLLM_SR_BIN_DIR):$$PATH" $(DEMO_PY) tools/interactive_server.py --port $(INTERACTIVE_PORT)
 
 # Expose the interactive demo over a Cloudflare Tunnel (run AFTER `make interactive`
 # is up on $(INTERACTIVE_PORT)). One-time setup: see docs/DEPLOY_INTERACTIVE.md.

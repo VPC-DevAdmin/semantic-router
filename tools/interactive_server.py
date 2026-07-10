@@ -39,6 +39,7 @@ import hmac
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -694,6 +695,22 @@ VLLM_SR_IMAGE = "ghcr.io/vllm-project/semantic-router/vllm-sr:v0.3.0"
 MODELS_DIR = ROOT / "config" / "models"
 
 
+def _vllm_sr_bin() -> str:
+    """Absolute path to the vllm-sr launcher (fall back to the bare name).
+
+    `make setup` installs vllm-sr into an isolated venv and symlinks it into
+    ~/.local/bin — which is NOT on the PATH of a systemd unit or a non-login
+    shell. Trusting PATH there makes Apply die with FileNotFoundError even
+    though the CLI is installed. Resolve via PATH first, then the standard
+    ~/.local/bin location; fall back to the bare name so a genuinely-missing
+    binary still raises the clear 'install vllm-sr' error downstream."""
+    found = shutil.which("vllm-sr")
+    if found:
+        return found
+    local = Path.home() / ".local" / "bin" / "vllm-sr"
+    return str(local) if local.exists() else "vllm-sr"
+
+
 def _ensure_router_model() -> None:
     """Pre-seed the router's embedding model into config/models if absent, so
     `vllm-sr serve` doesn't fail downloading it behind a firewalled Xet CDN.
@@ -809,11 +826,11 @@ def apply_overlay(overlay: dict) -> dict:
         # would keep showing mock answers despite real models being configured.
         # Stop first to guarantee the rebuilt config is loaded on relaunch.
         _apply_set(step=3, phase="stopping", detail="tearing down the running stack")
-        subprocess.run(["vllm-sr", "stop"], cwd=str(ROOT), env=env,
+        subprocess.run([_vllm_sr_bin(), "stop"], cwd=str(ROOT), env=env,
                        capture_output=True, text=True)
         _apply_set(step=4, phase="launching",
                    detail="starting containers (router, envoy, datastores)")
-        serve = subprocess.run(["vllm-sr", "serve", "--config", str(LIVE_ROUTER_CFG),
+        serve = subprocess.run([_vllm_sr_bin(), "serve", "--config", str(LIVE_ROUTER_CFG),
                                 "--minimal", "--image", VLLM_SR_IMAGE],
                                cwd=str(ROOT), env=env, capture_output=True, text=True)
         if serve.returncode != 0:
