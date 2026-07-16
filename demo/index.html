@@ -26,7 +26,7 @@
 <section class="hero" aria-label="Cost savings calculator">
   <div class="container">
     <h1>Most AI queries don't need a frontier model.<br><span class="accent">Stop paying as if they do.</span></h1>
-    <p class="lede">A Dell PowerEdge R770 sits in front of your AI stack and classifies every query in milliseconds, then forwards it to the cheapest tier that can answer it well. These numbers are computed from a real 800-query benchmark run: actual routing decisions, actual answers, actual judge verdicts.</p>
+    <p class="lede">Add a Dell PowerEdge R770 in front of your AI stack to classify queries in milliseconds, then forward them to the cheapest tier that can answer them well. See the results from a real-world benchmark below showing the impact.</p>
 
     <div class="calc-card">
       <div class="calc-input">
@@ -192,11 +192,10 @@
 </section>
 
 <!-- HARDWARE -->
-<section class="body-section hw-section" aria-label="The hardware">
+<section class="body-section hw-section" aria-label="hardware">
   <div class="container">
-    <div class="section-eyebrow">The hardware</div>
-    <h2 class="section-title">One server orchestrates the whole stack.</h2>
-    <p class="section-lede">The router runs on a Dell PowerEdge R770 that sits between your users and a cloud inference (AIaaS) endpoint, classifying each prompt and dispatching it to the right tier — the cheapest model that can answer it well, from a fast small model up to a frontier API.</p>
+    <h2 class="section-title">Dell PowerEdge 770 with Intel® Xeon® runs the stack</h2>
+    <p class="section-lede">The router runs on a Dell PowerEdge R770 that sits between your users and a cloud inference (AIaaS) endpoint, classifying each prompt and dispatching it to the right tier, giving users the right answer at the lowest cost.</p>
 
     <div class="hw-panel">
       <!-- LEFT: topology diagram -->
@@ -323,9 +322,8 @@
 <!-- TIER DIAGRAM -->
 <section class="body-section">
   <div class="container">
-    <div class="section-eyebrow">The model lineup</div>
-    <h2 class="section-title">Five tiers. Each query goes to the cheapest one that fits.</h2>
-    <p class="section-lede">Models and per-1M-token pricing below come straight from the dataset and your supplier rates. Tier share is the observed routing distribution across the benchmark.</p>
+    <h2 class="section-title">Creating a Cost-Effective Tier Plan</h2>
+    <p class="section-lede">Smaller models are used for most of the traffic at a fraction of the cost of the frontier model.  Multiple tiers ensures queries are routed to the most economical option without sacrificing quality.</p>
     <div class="diagram"><div class="tier-row" id="tierRow"></div></div>
   </div>
 </section>
