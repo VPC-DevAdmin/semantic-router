@@ -14,8 +14,12 @@ server gates them — see "Admin gate" below) so a viewer can't reload the share
 router or spend budget.
 
 ## 0. Prerequisites
-- The box runs the demo locally: `make live-demo` (serves `:8900`) with a
-  healthy vllm-sr stack (`make route` etc.).
+- The box runs the demo locally: `make live-demo` (serves `:8900`). That one
+  command also brings the **vllm-sr stack** up if it isn't already serving —
+  it passes `--ensure-router`, which launches the router with the models
+  configured in Settings (a no-op when the stack is already up). No separate
+  `make route` needed; that target builds the *mock-backed benchmark* config,
+  which is not what the live demo wants.
 - A Cloudflare account with the `enterpriseai.center` zone.
 - `cloudflared` installed on the box: <https://pkg.cloudflare.com/>.
 
@@ -47,8 +51,28 @@ cloudflared tunnel route dns router-demo router.enterpriseai.center
 make live-demo          # terminal 1 (with SR_ADMIN_EMAILS set)
 make tunnel               # terminal 2 → cloudflared tunnel run, using config/cloudflared.yml
 ```
-`router.enterpriseai.center` now reaches the box. (Run both under systemd /
-`tmux` for persistence.)
+`router.enterpriseai.center` now reaches the box.
+
+**For perpetual operation, run both under systemd** — `make live-demo` is a
+foreground process and dies on logout. The units on the R470 are
+`sr-interactive.service` + `sr-tunnel.service` (`systemctl enable --now` so they
+survive reboots). Two things the unit needs, both of which a login shell gets
+for free but systemd does not:
+
+- **`--ensure-router` in `ExecStart`**, so a reboot relaunches the vllm-sr stack
+  instead of coming back with a live UI in front of a dead router:
+  ```ini
+  ExecStart=/…/.venv/bin/python tools/interactive_server.py --port 8900 --ensure-router
+  ```
+- **`vllm-sr` on the unit's PATH** — it installs to `~/.local/bin`, which is not
+  on systemd's default PATH. The server resolves it explicitly now, so this is
+  belt-and-suspenders:
+  ```ini
+  Environment=PATH=/home/devadmin/.local/bin:/usr/local/bin:/usr/bin:/bin
+  ```
+
+Don't run `make live-demo` by hand while the service is up — it will fail to
+bind the port. Stop the service first if you want a foreground session.
 
 ## 4. Put Cloudflare Access in front (the auth wall)
 In the Cloudflare dashboard → **Zero Trust → Access → Applications → Add (Self-hosted)**:

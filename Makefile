@@ -459,10 +459,12 @@ gateway:
 # are all editable in one settings panel. Routing works with NO keys; answers
 # need them. Separate from `make demo` (the cost replay) — both coexist.
 INTERACTIVE_PORT ?= 8900
+# One command starts EVERYTHING the live demo needs: --ensure-router launches the
+# vllm-sr Docker stack first (no-op if it's already serving), then serves the UI.
 live-demo:
 	@echo "Interactive demo at http://localhost:$(INTERACTIVE_PORT)/  (Ctrl-C to stop)"
 	@( sleep 1 && $(OPEN_CMD) http://localhost:$(INTERACTIVE_PORT)/ >/dev/null 2>&1 & ) || true
-	@PATH="$(VLLM_SR_BIN_DIR):$$PATH" $(DEMO_PY) tools/interactive_server.py --port $(INTERACTIVE_PORT)
+	@PATH="$(VLLM_SR_BIN_DIR):$$PATH" $(DEMO_PY) tools/interactive_server.py --port $(INTERACTIVE_PORT) --ensure-router
 
 # `make interactive` kept as an alias for `make live-demo` (backwards compatibility).
 interactive: live-demo

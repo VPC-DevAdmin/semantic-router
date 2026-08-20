@@ -595,7 +595,8 @@ def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
     except httpx.HTTPError as exc:
         # Couldn't reach the router at all (connection refused, DNS, timeout).
         return {"error": f"vllm-sr not reachable at {base} ({exc}). Start it with "
-                         f"`make route` (and configure your models in Settings → Apply)."}
+                         f"`make live-demo` (which launches the router), or use "
+                         f"Settings → Save & Apply."}
     h = {k.lower(): v for k, v in r.headers.items()}
     routing = _routing_from_headers(h, overlay, mode)
     if r.status_code >= 400:
@@ -637,6 +638,20 @@ def _router_ready() -> bool:
     """True if the router apiserver reports ready."""
     try:
         return httpx.get(ROUTER_READY_URL, timeout=2.0).status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+def _frontend_ready(overlay: dict) -> bool:
+    """True if the Envoy frontend (what chat actually posts to) is listening.
+
+    Any HTTP response proves the listener is up and routable — only a transport
+    error (connection refused / DNS / timeout) means it's down. The apiserver
+    answering /ready isn't sufficient on its own: chat goes through Envoy."""
+    base = (overlay.get("vllm_sr_url") or "http://localhost:8899").rstrip("/")
+    try:
+        httpx.get(base + "/v1/models", timeout=2.0)
+        return True
     except httpx.HTTPError:
         return False
 
@@ -871,6 +886,42 @@ def _run_apply(overlay: dict) -> None:
                    detail=f"{type(exc).__name__}: {exc}", failed_step="unexpected")
 
 
+def ensure_router(overlay: dict) -> bool:
+    """Bring the vllm-sr stack up if it isn't already serving. Returns True if the
+    demo can route once this call finishes.
+
+    `make live-demo` runs this before serving so ONE command starts everything
+    the demo needs. It's a no-op when the stack is already up (the common case —
+    relaunching costs minutes), so it's safe on every start, including from the
+    systemd unit. Launching uses the same live-config path as the UI's Apply, so
+    the router comes up bound to the models configured in Settings — NOT the
+    mock-backed benchmark config that `make route` builds."""
+    if _frontend_ready(overlay) and _router_ready():
+        print("[live-demo] vllm-sr already running — skipping launch.")
+        return True
+    print("[live-demo] vllm-sr not reachable; launching it now.")
+    if not _docker_ready():
+        print("[live-demo] ERROR: Docker daemon not reachable — vllm-sr runs as a "
+              "Docker stack.\n"
+              "            Start it (sudo systemctl start docker) and ensure your "
+              "user can\n"
+              "            access /var/run/docker.sock (sudo usermod -aG docker "
+              "$USER, re-login).")
+        return False
+    print("[live-demo] building config + starting containers "
+          "(first launch downloads the routing model; can take a few minutes)…")
+    result = apply_overlay(overlay)
+    if not result.get("ok"):
+        print(f"[live-demo] ERROR: router launch failed at step "
+              f"'{result.get('step', '?')}': {result.get('detail', '')}")
+        return False
+    if result.get("warming"):
+        print(f"[live-demo] {result.get('detail', 'router still warming up')}")
+    else:
+        print("[live-demo] vllm-sr is live and serving.")
+    return True
+
+
 # ── HTTP server ──────────────────────────────────────────────────────────────
 
 def _make_handler():
@@ -1024,8 +1075,15 @@ def _make_handler():
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--port", type=int, default=8900)
+    p.add_argument("--ensure-router", action="store_true",
+                   help="Launch the vllm-sr stack first if it isn't already "
+                        "serving, so one command starts the whole demo. No-op "
+                        "when the router is already up.")
     args = p.parse_args()
     ov = load_overlay()
+    if args.ensure_router and not ensure_router(ov):
+        print("[live-demo] starting the UI anyway — fix the error above, then use "
+              "Settings → Save & Apply to launch the router.")
     httpd = ThreadingHTTPServer(("", args.port), _make_handler())
     print(f"live interactive demo on http://localhost:{args.port}/  "
           f"[routes via vllm-sr at {ov.get('vllm_sr_url')}]")
