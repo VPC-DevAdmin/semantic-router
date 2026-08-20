@@ -910,15 +910,18 @@ def ensure_router(overlay: dict) -> bool:
         return False
     print("[live-demo] building config + starting containers "
           "(first launch downloads the routing model; can take a few minutes)…")
-    result = apply_overlay(overlay)
-    if not result.get("ok"):
+    # Go through _run_apply, not apply_overlay directly, so the launch publishes
+    # the same step-by-step status the UI's Apply progress bar polls — a visitor
+    # who lands mid-launch sees progress instead of a dead router.
+    _run_apply(overlay)
+    snap = _apply_snapshot()
+    if not snap.get("ok"):
         print(f"[live-demo] ERROR: router launch failed at step "
-              f"'{result.get('step', '?')}': {result.get('detail', '')}")
+              f"'{snap.get('failed_step', '?')}': {snap.get('detail', '')}")
+        print("[live-demo] the UI is still up — fix the cause, then use "
+              "Settings → Save & Apply.")
         return False
-    if result.get("warming"):
-        print(f"[live-demo] {result.get('detail', 'router still warming up')}")
-    else:
-        print("[live-demo] vllm-sr is live and serving.")
+    print(f"[live-demo] {snap.get('detail') or 'vllm-sr is live and serving.'}")
     return True
 
 
@@ -1081,10 +1084,14 @@ def main() -> int:
                         "when the router is already up.")
     args = p.parse_args()
     ov = load_overlay()
-    if args.ensure_router and not ensure_router(ov):
-        print("[live-demo] starting the UI anyway — fix the error above, then use "
-              "Settings → Save & Apply to launch the router.")
+    # Bind the port FIRST, then launch the router in the background. Launching a
+    # cold stack takes minutes; doing it before the bind leaves nothing listening,
+    # so a fronting proxy (cloudflared) gets connection-refused and serves a 502
+    # for the whole window. Binding first means the UI answers immediately and
+    # shows the launch progress instead.
     httpd = ThreadingHTTPServer(("", args.port), _make_handler())
+    if args.ensure_router:
+        threading.Thread(target=ensure_router, args=(ov,), daemon=True).start()
     print(f"live interactive demo on http://localhost:{args.port}/  "
           f"[routes via vllm-sr at {ov.get('vllm_sr_url')}]")
     try:
