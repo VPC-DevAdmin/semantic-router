@@ -1,6 +1,6 @@
 # Deploying the interactive demo behind Cloudflare Access
 
-The interactive demo (`tools/interactive_server.py`, `make interactive`) is a
+The interactive demo (`tools/interactive_server.py`, `make live-demo`) is a
 **stateful server bound to the box**: it proxies chat to the local vllm-sr stack,
 shells out to `docker`/`vllm-sr`, holds provider API keys, and can reload the
 router. It therefore can **not** be a Cloudflare Worker (no Python/Docker/`:8899`
@@ -14,7 +14,7 @@ server gates them — see "Admin gate" below) so a viewer can't reload the share
 router or spend budget.
 
 ## 0. Prerequisites
-- The box runs the demo locally: `make interactive` (serves `:8900`) with a
+- The box runs the demo locally: `make live-demo` (serves `:8900`) with a
   healthy vllm-sr stack (`make route` etc.).
 - A Cloudflare account with the `enterpriseai.center` zone.
 - `cloudflared` installed on the box: <https://pkg.cloudflare.com/>.
@@ -26,7 +26,7 @@ Apply / read diagnostics; everyone else gets a read-only chat. Unset = open
 
 ```bash
 export SR_ADMIN_EMAILS="you@corp.com,ops@corp.com"   # comma-separated
-make interactive                                      # picks it up from the env
+make live-demo                                      # picks it up from the env
 ```
 
 The verified identity comes from Cloudflare Access's
@@ -44,7 +44,7 @@ cloudflared tunnel route dns router-demo router.enterpriseai.center
 
 ## 3. Run it
 ```bash
-make interactive          # terminal 1 (with SR_ADMIN_EMAILS set)
+make live-demo          # terminal 1 (with SR_ADMIN_EMAILS set)
 make tunnel               # terminal 2 → cloudflared tunnel run, using config/cloudflared.yml
 ```
 `router.enterpriseai.center` now reaches the box. (Run both under systemd /
@@ -72,7 +72,7 @@ Set the demo into **proxy mode**:
 export SR_AUTH_MODE=proxy
 export SR_PROXY_SECRET="<long-random-shared-secret>"   # same value the Worker sends
 export SR_ADMIN_EMAILS="you@corp.com"                  # who may edit/Apply (vs view)
-make interactive
+make live-demo
 make tunnel                                            # tunnel hostname stays private-ish; the secret gates it
 ```
 
