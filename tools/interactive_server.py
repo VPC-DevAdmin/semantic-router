@@ -563,6 +563,14 @@ def tier_chat(overlay: dict, body: dict):
     return r.status_code, out_headers, data
 
 
+# Answer budget for the demo chat. Must cover reasoning models: Gemini 3.x Pro
+# spends its budget on hidden thinking first (at 1024 it returned ~40-token
+# fragments on hard prompts), and Opus answers to hard prompts ran past 1024
+# and were cut off mid-answer. Cheap tiers stop well short of the cap, so this
+# only costs more when a model actually needs the room (~$0.10 max on Opus).
+CHAT_MAX_TOKENS = 4096
+
+
 def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
     """Forward one query to the live vllm-sr. mode='auto' routes; otherwise mode
     is a tier id to pin. Returns {routing, answer} or {routing, error}."""
@@ -590,10 +598,10 @@ def vllm_chat(overlay: dict, query: str, mode: str) -> dict:
     try:
         with httpx.Client(timeout=180.0) as c:
             r = c.post(f"{base}/v1/chat/completions",
-                       json={"model": model, "messages": msgs, first: 1024})
+                       json={"model": model, "messages": msgs, first: CHAT_MAX_TOKENS})
             if r.status_code == 400 and alt in _upstream_error_text(r):
                 r = c.post(f"{base}/v1/chat/completions",
-                           json={"model": model, "messages": msgs, alt: 1024})
+                           json={"model": model, "messages": msgs, alt: CHAT_MAX_TOKENS})
                 if r.status_code < 400 and alt == "max_completion_tokens":
                     picked = r.headers.get("x-vsr-selected-model") or model
                     if picked and picked != "auto":
