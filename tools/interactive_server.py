@@ -44,6 +44,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -165,9 +166,14 @@ def grouped_queries() -> dict:
 def _upstream_error_text(r: httpx.Response) -> str:
     """Pull the human-readable error out of an upstream error response — the
     OpenAI/Anthropic-style {"error": {"message": ...}} shape, falling back to
-    raw text. Truncated; safe on non-JSON bodies."""
+    raw text. Truncated; safe on non-JSON bodies. Google's OpenAI-compat endpoint
+    wraps its error in a list — [{"error": {...}}] — so unwrap that first."""
     try:
         j = r.json()
+        if isinstance(j, list) and j and isinstance(j[0], dict):
+            j = j[0]
+        if not isinstance(j, dict):
+            raise ValueError("non-object JSON body")
         e = j.get("error")
         if isinstance(e, dict) and e.get("message"):
             return str(e["message"])[:400]
@@ -175,7 +181,7 @@ def _upstream_error_text(r: httpx.Response) -> str:
             return str(e)[:400]
         # Some adapters return a completion-shaped body (not an error object) on a
         # 4xx — dumping that raw JSON is noise, so summarize instead.
-        if isinstance(j, dict) and "choices" in j:
+        if "choices" in j:
             return "the upstream rejected the request (empty/blocked completion, no error detail)"
     except ValueError:
         pass
@@ -1062,8 +1068,16 @@ def _make_handler():
                     return
                 self._json(200, list_models(payload))
             elif path == "/api/chat":
-                self._json(200, vllm_chat(load_overlay(), payload.get("query", ""),
-                                          payload.get("mode", "auto")))
+                # Never let an unexpected upstream shape kill the request: the UI
+                # can render {"error": ...}, but a dropped connection shows only a
+                # generic failure and hides the real cause.
+                try:
+                    out = vllm_chat(load_overlay(), payload.get("query", ""),
+                                    payload.get("mode", "auto"))
+                except Exception as exc:  # noqa: BLE001
+                    traceback.print_exc()
+                    out = {"error": f"demo server error: {type(exc).__name__}: {exc}"}
+                self._json(200, out)
             elif path == "/v1/chat/completions":
                 # Tier-abstracted OpenAI gateway for EXTERNAL apps: model is a
                 # tier id ("auto"|"tier1"…). See tier_chat() for the contract.

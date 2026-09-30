@@ -36,7 +36,7 @@
     {
       "id": "tier5",
       "name": "Tier 5",
-      "model": "Opus 4.7",
+      "model": "claude-opus-4-7",
       "provider": "Anthropic",
       "base_url": "https://api.anthropic.com/v1",
       "api_key": ""

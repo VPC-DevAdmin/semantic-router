@@ -443,3 +443,24 @@ def test_vllm_chat_upstream_error_surfaces_reason(monkeypatch):
     # so the UI can still show the rationale on an upstream error.
     assert "Tier 2" in out["error"] and "gpt-5.4-nano" in out["error"]
     assert out["routing"]["selected_tier_id"] == "tier2"
+
+
+def test_vllm_chat_list_shaped_upstream_error(monkeypatch):
+    # Google's OpenAI-compat endpoint wraps errors in a LIST. The parser used to
+    # call .get() on it and crash the /api/chat handler, hiding the real reason.
+    err_body = [{"error": {"code": 400, "message": "Please pass a valid API key",
+                           "status": "INVALID_ARGUMENT"}}]
+    headers = {"x-vsr-selected-model": "gemini-3.1-pro-preview"}
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, url, json): return _Resp(headers, err_body, status_code=400)
+
+    monkeypatch.setattr(srv.httpx, "Client", _Client)
+    ov = {"vllm_sr_url": "http://localhost:8899",
+          "tiers": [{"id": "tier4", "name": "Tier 4", "model": "gemini-3.1-pro-preview"}]}
+    out = srv.vllm_chat(ov, "q", "auto")
+    assert "Please pass a valid API key" in out["error"]
+    assert "Tier 4" in out["error"]
