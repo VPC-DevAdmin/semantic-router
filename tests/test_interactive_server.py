@@ -87,6 +87,29 @@ def test_merge_overlay_preserves_blank_keys(tmp_path, monkeypatch):
     assert "key_set" not in saved["tiers"][0]          # stripped before persist
 
 
+
+def test_reset_overlay_restores_defaults_but_keeps_keys(tmp_path, monkeypatch):
+    # "Reset to demo" used to delete the saved overlay, falling back to the
+    # committed defaults — which ship BLANK keys, so every tier lost its key.
+    user = tmp_path / "live_demo.local.json"
+    default = ROOT / "config" / "live_demo.json"
+    monkeypatch.setattr(srv, "USER_OVERLAY", user)
+    monkeypatch.setattr(srv, "DEFAULT_OVERLAY", default)
+    edited = json.loads(default.read_text())
+    edited["tier_cutoffs"] = [0.9] * len(edited["tier_cutoffs"])    # an experiment
+    for t in edited["tiers"]:
+        t["api_key"] = f"KEY-{t['id']}"
+        t["model"] = "someone-changed-this"
+    user.write_text(json.dumps(edited))
+    srv.reset_overlay()
+    saved = json.loads(user.read_text())
+    committed = json.loads(default.read_text())
+    assert saved["tier_cutoffs"] == committed["tier_cutoffs"]
+    assert saved["signals"] == committed["signals"]
+    for t, c in zip(saved["tiers"], committed["tiers"], strict=True):
+        assert t["model"] == c["model"]                  # defaults restored
+        assert t["api_key"] == f"KEY-{t['id']}"          # keys kept
+
 def test_grouped_queries_shape():
     g = srv.grouped_queries()
     assert "categories" in g and g["categories"]

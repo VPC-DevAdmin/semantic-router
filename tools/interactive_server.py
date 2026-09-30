@@ -141,6 +141,14 @@ def merge_overlay(incoming: dict) -> dict:
     return incoming
 
 
+def reset_overlay() -> dict:
+    """Reset to the committed demo defaults (config/live_demo.json) but KEEP the
+    saved API keys. The committed file ships blank keys, so simply deleting the
+    user overlay would wipe every key and break every tier; merge_overlay already
+    treats a blank key as 'keep the saved one', matched by tier id."""
+    return merge_overlay(json.loads(DEFAULT_OVERLAY.read_text()))
+
+
 # ── Benchmark queries (the example picker) ────────────────────────────────────
 
 def grouped_queries() -> dict:
@@ -1056,7 +1064,7 @@ def _make_handler():
                     return
                 payload.pop("is_admin", None); payload.pop("email", None)   # never persist UI flags
                 if payload.get("_reset"):
-                    USER_OVERLAY.unlink(missing_ok=True)   # revert to committed default
+                    reset_overlay()   # committed defaults, saved API keys kept
                 else:
                     merge_overlay(payload)
                 self._json(200, {"ok": True})

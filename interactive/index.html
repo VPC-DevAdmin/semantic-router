@@ -142,8 +142,7 @@
          pricier tiers (cheap signals push the other way). The <strong>cutoffs</strong> set where one tier
          hands off to the next. Changes apply to the live router.</p>
 
-      <h3 class="sec">Signals <span class="sec-tag">what the classifier looks for</span>
-        <button class="mini-btn ghost-mini" data-reset-section="routing" title="Restore signals + cutoffs to the demo defaults">↺ reset</button></h3>
+      <h3 class="sec">Signals <span class="sec-tag">what the classifier looks for</span></h3>
       <div id="signalEditors" class="accordion"></div>
 
       <h3 class="sec">Difficulty cutoffs <span class="sec-tag">where each tier begins</span></h3>
@@ -156,6 +155,8 @@
       <div class="live-preview" id="livePreview" hidden></div>
     </div>
     <div class="modal-foot">
+      <button class="btn text-ghost" id="resetRouting"
+              title="Restore the default signals + cutoffs and apply them to the live router">↺ Reset to default</button>
       <div class="spacer"></div>
       <span class="save-status" id="routingStatus"></span>
       <button class="btn primary" data-apply="routing">Save &amp; Apply</button>

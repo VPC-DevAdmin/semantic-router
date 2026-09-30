@@ -794,21 +794,22 @@ function openRouting() {
   $('routingModal').hidden = false; closeSidebar();
 }
 
-// Per-section "reset to default": pull the committed demo overlay and restore
-// just this section (signals + cutoffs), leaving tiers/keys untouched.
-async function resetSection(which) {
-  if (which !== 'routing') return;
-  if (!confirm('Restore signals and cutoffs to the demo defaults? Your tier/model settings are kept.')) return;
+// "Reset to default": restore the committed signals + cutoffs (config/live_demo.json)
+// and apply them to the live router in one step, so an experiment can always be
+// undone with one click. Tiers, models and API keys are untouched.
+async function resetRouting() {
+  if (!confirm('Reset the routing signals and cutoffs to the default and apply them to the live router?\n\n'
+             + 'Your tier/model settings and API keys are kept. The router reloads (~30s).')) return;
   try {
     const def = await (await fetch('/api/defaults')).json();
     if (def.signals) CONFIG.signals = JSON.parse(JSON.stringify(def.signals));
     if (def.tier_cutoffs) CONFIG.tier_cutoffs = def.tier_cutoffs.slice();
     renderSignals(); renderCutoffs(); livePreview();
-    const st = $('routingStatus'); st.className = 'save-status ok';
-    st.textContent = '↺ Reset to defaults — Save & Apply to make it live';
   } catch (e) {
     const st = $('routingStatus'); st.className = 'save-status err'; st.textContent = 'Reset failed: ' + e;
+    return;
   }
+  await doApply('routing');
 }
 
 async function persist(which) {
@@ -904,6 +905,8 @@ async function pollApply(st) {
 }
 
 async function resetCfg() {
+  if (!confirm('Reset every tier (models, providers, base URLs) and the routing settings to the demo defaults?\n\n'
+             + 'Saved API keys are kept. Save & Apply afterwards to make it live.')) return;
   const st = $('tiersStatus'); st.className = 'save-status busy'; st.textContent = 'Resetting…';
   await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...CONFIG, _reset: true }) });
@@ -1017,9 +1020,8 @@ function autoGrow() {
   $('diagAuto').onchange = toggleDiagAuto;
   $('addTier').onclick = addTier;
   $('resetCfg').onclick = resetCfg;
+  $('resetRouting').onclick = resetRouting;
   document.querySelectorAll('[data-apply]').forEach(b => b.onclick = () => doApply(b.dataset.apply));
-  document.querySelectorAll('[data-reset-section]').forEach(b =>
-    b.onclick = () => resetSection(b.dataset.resetSection));
   document.querySelectorAll('[data-close]').forEach(b => b.onclick = () =>
     (b.dataset.close === 'diagModal' ? closeDiag() : ($(b.dataset.close).hidden = true)));
   ['tiersModal', 'routingModal'].forEach(id => $(id).addEventListener('click',
