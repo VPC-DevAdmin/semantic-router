@@ -272,5 +272,78 @@
 </template>
 
 <script src="app.js"></script>
+<!-- Time-on-page beacon (enterpriseai.center usage-events), same as the replay
+     demo's, adapted for this host. Differences from the stock snippet:
+     - slug "router": the admin Router Demo panel reads demos/router (the gate
+       Worker already logs "access" events there).
+     - sendView true: nothing else sends a "view" for this page, and the admin
+       page table only lists slugs that have views.
+     - Absolute endpoint + text/plain body: this page is on router.enterpriseai.center,
+       so the endpoint is cross-origin and has no CORS. text/plain is a "simple"
+       request (no preflight); the endpoint parses the body as JSON regardless. -->
+<script>
+(function () {
+  var ENDPOINT = "https://enterpriseai.center/api/public/usage-events";
+  var cfg = {
+    category: "demos",
+    slug: "router",            // this demo's registry slug
+    sendView: true,            // true only if the page does not already report "view"
+    anonId: null               // function returning the page's existing anon id, or null
+  };
+  try {
+    var id = cfg.anonId && cfg.anonId();
+    if (!id) {
+      var K = "eac.anon";
+      id = sessionStorage.getItem(K);
+      if (!id) {
+        id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+        sessionStorage.setItem(K, id);
+      }
+    }
+    var loadId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    var post = function (ev, meta, useBeacon) {
+      var body = JSON.stringify({
+        events: [{ category: cfg.category, slug: cfg.slug, event: ev, anon_id: id, meta: meta }]
+      });
+      if (useBeacon && navigator.sendBeacon) {
+        navigator.sendBeacon(ENDPOINT, new Blob([body], { type: "text/plain;charset=UTF-8" }));
+        return;
+      }
+      fetch(ENDPOINT, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "text/plain;charset=UTF-8" },
+        keepalive: true,
+        body: body
+      }).catch(function () {});
+    };
+
+    if (cfg.sendView) {
+      var sent = false;
+      var sendView = function () {
+        if (sent) return;
+        sent = true;
+        post("view", { path: location.pathname, load_id: loadId }, false);
+      };
+      if (document.readyState === "complete") sendView();
+      else addEventListener("load", sendView, { once: true });
+    }
+
+    // Visible time: pause while the tab is hidden, report on hide and on leave.
+    var visibleMs = 0;
+    var since = document.visibilityState === "hidden" ? null : Date.now();
+    var leave = function () {
+      if (since !== null) { visibleMs += Date.now() - since; since = null; }
+      if (visibleMs < 1000) return;
+      post("leave", { path: location.pathname, load_id: loadId, duration_ms: visibleMs }, true);
+    };
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "hidden") leave();
+      else if (since === null) since = Date.now();
+    });
+    addEventListener("pagehide", leave);
+  } catch (e) {}
+})();
+</script>
 </body>
 </html>
