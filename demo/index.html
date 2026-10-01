@@ -360,5 +360,72 @@
 </footer>
 
 <script src="demo.js"></script>
+<!-- Time-on-page beacon (enterpriseai.center usage-events). demo.js already sends
+     the "view" event, so sendView stays false; anonId reuses demo.js's id so
+     "leave" and "view" events attribute to the same visitor. -->
+<script>
+(function () {
+  var cfg = {
+    category: "demos",
+    slug: "semantic-router",   // this demo's registry slug
+    sendView: false,           // true only if the page does not already report "view"
+    anonId: function () {      // the page's existing anon id (demo.js, localStorage eai_anon_id)
+      return typeof window.anonId === "function" ? window.anonId() : null;
+    }
+  };
+  try {
+    var id = cfg.anonId && cfg.anonId();
+    if (!id) {
+      var K = "eac.anon";
+      id = sessionStorage.getItem(K);
+      if (!id) {
+        id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+        sessionStorage.setItem(K, id);
+      }
+    }
+    var loadId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    var post = function (ev, meta, useBeacon) {
+      var body = JSON.stringify({
+        events: [{ category: cfg.category, slug: cfg.slug, event: ev, anon_id: id, meta: meta }]
+      });
+      if (useBeacon && navigator.sendBeacon) {
+        navigator.sendBeacon("/api/public/usage-events", new Blob([body], { type: "application/json" }));
+        return;
+      }
+      fetch("/api/public/usage-events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        keepalive: true,
+        body: body
+      }).catch(function () {});
+    };
+
+    if (cfg.sendView) {
+      var sent = false;
+      var sendView = function () {
+        if (sent) return;
+        sent = true;
+        post("view", { path: location.pathname, load_id: loadId }, false);
+      };
+      if (document.readyState === "complete") sendView();
+      else addEventListener("load", sendView, { once: true });
+    }
+
+    // Visible time: pause while the tab is hidden, report on hide and on leave.
+    var visibleMs = 0;
+    var since = document.visibilityState === "hidden" ? null : Date.now();
+    var leave = function () {
+      if (since !== null) { visibleMs += Date.now() - since; since = null; }
+      if (visibleMs < 1000) return;
+      post("leave", { path: location.pathname, load_id: loadId, duration_ms: visibleMs }, true);
+    };
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "hidden") leave();
+      else if (since === null) since = Date.now();
+    });
+    addEventListener("pagehide", leave);
+  } catch (e) {}
+})();
+</script>
 </body>
 </html>
